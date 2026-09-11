@@ -527,12 +527,11 @@ fn invoke(
             path: executable_path,
             source,
         })?;
-    child
+    let request_write = child
         .stdin
         .take()
         .ok_or_else(|| Error::Invalid("pack stdin unavailable".into()))?
-        .write_all(&request_bytes)
-        .map_err(|source| Error::Collection(format!("cannot write pack request: {source}")))?;
+        .write_all(&request_bytes);
     let (status, stdout, stderr) = wait_for_pack(
         &mut child,
         StdDuration::from_secs(config.timeout_seconds),
@@ -545,6 +544,8 @@ fn invoke(
             String::from_utf8_lossy(&stderr).trim()
         )));
     }
+    request_write
+        .map_err(|source| Error::Collection(format!("cannot write pack request: {source}")))?;
     let mut deserializer = serde_json::Deserializer::from_slice(&stdout);
     let response = Response::deserialize(&mut deserializer).map_err(|error| {
         Error::Collection(format!("invalid pack {operation} response: {error}"))
