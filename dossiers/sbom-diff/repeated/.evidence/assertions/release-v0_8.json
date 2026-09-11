@@ -1,0 +1,349 @@
+[
+  {
+    "id": "asrt_1cb66c2ddfdc59bf625c",
+    "assertion_type": "configured_review_requirement",
+    "claim": "main is configured to require two approvals, including approval of the last push by someone else",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "branch": "main"
+    },
+    "outcome": "insufficient_evidence",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "point_in_time"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "configured-reviews/v1"
+    },
+    "support": [],
+    "contradictions": [],
+    "considered": [],
+    "missing": [
+      {
+        "requirement": "branch_protection_snapshot",
+        "subject": "github:cyberwitchery/sbom-diff#main",
+        "reason": "configured review intent cannot be established without a branch-protection observation at or before the evaluation time"
+      }
+    ],
+    "identity_joins": [],
+    "reasoning": [
+      {
+        "code": "configuration_missing",
+        "conclusion": "no applicable branch-protection observation was available",
+        "evidence_ids": []
+      }
+    ],
+    "limitations": [],
+    "coverage": []
+  },
+  {
+    "id": "asrt_ee04bd3695cc841da63a",
+    "assertion_type": "release_review_operation",
+    "claim": "every change included in release v0.8.0 received the configured number of reviews before merge",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "release": "v0.8.0"
+    },
+    "outcome": "insufficient_evidence",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "historical_release"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "release-reviews/v1"
+    },
+    "support": [],
+    "contradictions": [],
+    "considered": [],
+    "missing": [
+      {
+        "requirement": "release_membership",
+        "subject": "github:cyberwitchery/sbom-diff:v0.8.0",
+        "reason": "the evaluator cannot determine which pull requests belong to the release"
+      }
+    ],
+    "identity_joins": [],
+    "reasoning": [
+      {
+        "code": "release_membership_missing",
+        "conclusion": "release coverage cannot be established",
+        "evidence_ids": []
+      }
+    ],
+    "limitations": [],
+    "coverage": []
+  },
+  {
+    "id": "asrt_ec3c9ed1bb0919f7fef7",
+    "assertion_type": "release_supply_chain_policy",
+    "claim": "release v0.8.0 introduced no dependency changes forbidden by supply-chain/default",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "release": "v0.8.0"
+    },
+    "outcome": "supported",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "historical_release",
+      "through": "2026-08-17T14:16:00Z"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "release-supply-chain/v1"
+    },
+    "support": [
+      {
+        "observation_id": "ev_89e0beeaa278b10b370f",
+        "source_id": "src_106216ade137ac8ee25b",
+        "reason": "establishes the dependency changes from the release base to target revision"
+      },
+      {
+        "observation_id": "ev_e3e73638ba770fdefc4f",
+        "source_id": "src_a092f407ff5c2353e45a",
+        "reason": "the configured supply-chain policy evaluated this exact SBOM delta and passed"
+      }
+    ],
+    "contradictions": [],
+    "considered": [],
+    "missing": [],
+    "identity_joins": [
+      {
+        "left_observation_id": "ev_89e0beeaa278b10b370f",
+        "right_observation_id": "ev_e3e73638ba770fdefc4f",
+        "fields": {
+          "base_revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211",
+          "release": "v0.8.0",
+          "revision": "94a1942b16f620a8c2ce292d292dd47c542e6d7e",
+          "sbom_diff_sha256": "106216ade137ac8ee25b75dad2e62cce4b4de7e747b3371f24e507d80a21f44d"
+        }
+      }
+    ],
+    "reasoning": [
+      {
+        "code": "matching_gate_passed",
+        "conclusion": "the gate consumed the exact normalized change source and returned pass",
+        "evidence_ids": [
+          "ev_89e0beeaa278b10b370f",
+          "ev_e3e73638ba770fdefc4f"
+        ]
+      }
+    ],
+    "limitations": [
+      "coverage is limited to dependencies represented in the supplied SBOMs and rules recorded by supply-chain/default"
+    ],
+    "coverage": []
+  },
+  {
+    "id": "asrt_db721053e04032ae85e2",
+    "assertion_type": "adequate_human_security_review",
+    "claim": "all security-relevant changes in release v0.8.0 received adequate human security review",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "release": "v0.8.0"
+    },
+    "outcome": "not_automatable",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "not_established"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "adequate-security-review/v1"
+    },
+    "support": [],
+    "contradictions": [],
+    "considered": [
+      {
+        "observation_id": "ev_e3e73638ba770fdefc4f",
+        "source_id": "src_a092f407ff5c2353e45a",
+        "reason": "establishes recorded reviews or automated checks, but not review adequacy or security focus"
+      }
+    ],
+    "missing": [
+      {
+        "requirement": "security_review_scope_and_content",
+        "subject": "github:cyberwitchery/sbom-diff:v0.8.0",
+        "reason": "the corpus contains no evidence describing what reviewers examined, which changes were security-relevant, or the criteria for adequate review"
+      }
+    ],
+    "identity_joins": [],
+    "reasoning": [
+      {
+        "code": "semantic_limit",
+        "conclusion": "review occurrence and automated gate results cannot establish the quality or security focus of human judgement",
+        "evidence_ids": []
+      }
+    ],
+    "limitations": [
+      "adequacy is a judgement requiring declared criteria and evidence about review content; it cannot be inferred from approval counts"
+    ],
+    "coverage": []
+  },
+  {
+    "id": "asrt_f773508080eafade44af",
+    "assertion_type": "every_main_change_reviewed",
+    "claim": "every change to main during 2026-08-07T00:00:00Z .. 2026-08-18T00:00:00Z was reviewed before integration",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "branch": "main",
+      "from": "2026-08-07T00:00:00Z",
+      "until": "2026-08-18T00:00:00Z"
+    },
+    "outcome": "insufficient_evidence",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "historical_release",
+      "from": "2026-08-07T00:00:00Z",
+      "through": "2026-08-18T00:00:00Z"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "main-changes-reviewed/v1"
+    },
+    "support": [],
+    "contradictions": [],
+    "considered": [],
+    "missing": [
+      {
+        "requirement": "complete_authoritative_repository_mutations_coverage",
+        "subject": "github:cyberwitchery/sbom-diff#main 2026-08-07T00:00:00Z .. 2026-08-18T00:00:00Z",
+        "reason": "no collection attempt matched this population and scope; uncovered intervals: 2026-08-07T00:00:00Z to 2026-08-18T00:00:00Z"
+      },
+      {
+        "requirement": "complete_authoritative_pull_request_reviews_coverage",
+        "subject": "github:cyberwitchery/sbom-diff#main 2026-08-07T00:00:00Z .. 2026-08-18T00:00:00Z",
+        "reason": "no collection attempt matched this population and scope; uncovered intervals: 2026-08-07T00:00:00Z to 2026-08-18T00:00:00Z"
+      }
+    ],
+    "identity_joins": [],
+    "reasoning": [
+      {
+        "code": "population_not_established",
+        "conclusion": "no counterexample was found, but the complete authoritative population was not established",
+        "evidence_ids": []
+      }
+    ],
+    "limitations": [
+      "github audit events are treated as authoritative for recorded repository mutations only because the collection run declares that proposition and complete scope"
+    ],
+    "coverage": [
+      {
+        "requirement": {
+          "proposition": "repository_mutations",
+          "repository": "github:cyberwitchery/sbom-diff",
+          "branch": "main",
+          "interval": {
+            "from": "2026-08-07T00:00:00Z",
+            "until": "2026-08-18T00:00:00Z"
+          }
+        },
+        "outcome": "incomplete",
+        "covered_intervals": [],
+        "uncovered_intervals": [
+          {
+            "from": "2026-08-07T00:00:00Z",
+            "until": "2026-08-18T00:00:00Z"
+          }
+        ],
+        "collection_runs": []
+      },
+      {
+        "requirement": {
+          "proposition": "pull_request_reviews",
+          "repository": "github:cyberwitchery/sbom-diff",
+          "branch": "main",
+          "interval": {
+            "from": "2026-08-07T00:00:00Z",
+            "until": "2026-08-18T00:00:00Z"
+          }
+        },
+        "outcome": "incomplete",
+        "covered_intervals": [],
+        "uncovered_intervals": [
+          {
+            "from": "2026-08-07T00:00:00Z",
+            "until": "2026-08-18T00:00:00Z"
+          }
+        ],
+        "collection_runs": []
+      }
+    ]
+  },
+  {
+    "id": "asrt_56921e85338a1cc3633c",
+    "assertion_type": "configured_independent_review",
+    "claim": "changes to main are configured to require approval before merge",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "branch": "main"
+    },
+    "outcome": "insufficient_evidence",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "point_in_time"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "configured-independent-review/v1"
+    },
+    "support": [],
+    "contradictions": [],
+    "considered": [],
+    "missing": [
+      {
+        "requirement": "branch_protection_snapshot",
+        "subject": "github:cyberwitchery/sbom-diff#main",
+        "reason": "current configured review intent was not observed"
+      }
+    ],
+    "identity_joins": [],
+    "reasoning": [],
+    "limitations": [],
+    "coverage": []
+  },
+  {
+    "id": "asrt_03e6574b868f175867f4",
+    "assertion_type": "dependency_change_visibility",
+    "claim": "dependency changes for release v0.8.0 are identified and preserved",
+    "subject": {
+      "repository": "github:cyberwitchery/sbom-diff",
+      "release": "v0.8.0"
+    },
+    "outcome": "supported",
+    "evaluated_at": "2026-08-18T00:00:00Z",
+    "validity": {
+      "basis": "historical_release",
+      "through": "2026-08-17T14:15:00Z"
+    },
+    "derivation": {
+      "evaluator": "evidence-spike",
+      "version": "dependency-change-visibility/v1"
+    },
+    "support": [
+      {
+        "observation_id": "ev_89e0beeaa278b10b370f",
+        "source_id": "src_106216ade137ac8ee25b",
+        "reason": "preserves the normalized dependency delta and its byte-exact source"
+      }
+    ],
+    "contradictions": [],
+    "considered": [],
+    "missing": [],
+    "identity_joins": [],
+    "reasoning": [
+      {
+        "code": "dependency_delta_preserved",
+        "conclusion": "a source-backed SBOM delta matches the release scope",
+        "evidence_ids": [
+          "ev_89e0beeaa278b10b370f"
+        ]
+      }
+    ],
+    "limitations": [
+      "the delta covers dependencies declared by the two supplied SBOMs. it does not establish runtime-loaded software or comparable generator environments"
+    ],
+    "coverage": []
+  }
+]

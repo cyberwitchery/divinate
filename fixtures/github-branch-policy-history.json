@@ -1,0 +1,9 @@
+{
+  "branch": "main",
+  "complete_from": "2026-09-01T08:00:00Z",
+  "complete_through": "2026-09-04T10:00:00Z",
+  "events": [
+    {"event_id":"policy-201","effective_at":"2026-09-01T08:00:00Z","required_approving_review_count":2,"requires_last_push_approval":true},
+    {"event_id":"policy-202","effective_at":"2026-09-03T08:00:00Z","required_approving_review_count":1,"requires_last_push_approval":true}
+  ]
+}

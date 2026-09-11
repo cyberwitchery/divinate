@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "project-config.schema.json",
+  "title": "repository-local security evidence configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["repository", "branch"],
+  "properties": {
+    "repository": {"type":"string","minLength":1},
+    "branch": {"type":"string","minLength":1},
+    "packs": {
+      "type":"object",
+      "additionalProperties": {
+        "type":"object","additionalProperties":false,"required":["executable"],
+        "properties":{"executable":{"type":"string","minLength":1},"configuration":{},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}
+      }
+    }
+  }
+}

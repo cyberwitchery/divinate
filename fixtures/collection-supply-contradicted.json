@@ -1,0 +1,7 @@
+{
+  "sources": [
+    {"adapter":"sbom-diff","path":"sbom-diff.json","observed_at":"2026-09-04T10:07:00Z","producer":{"name":"sbom-diff","version":"0.8.0","collector":"evidence-spike/sbom-diff"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+    {"adapter":"supply-chain-gate","path":"supply-chain-gate.json","observed_at":"2026-09-04T10:08:00Z","producer":{"name":"sbom-diff-gate","version":"0.8.0","collector":"evidence-spike/supply-chain-gate"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
+    {"adapter":"supply-chain-gate","path":"supply-chain-gate-failed.json","observed_at":"2026-09-04T10:09:00Z","producer":{"name":"sbom-diff-gate","version":"0.8.0","collector":"evidence-spike/supply-chain-gate"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}
+  ]
+}

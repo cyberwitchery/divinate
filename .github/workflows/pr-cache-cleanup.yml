@@ -1,0 +1,39 @@
+name: pr cache cleanup
+
+# delete branch-scoped caches after a pull request closes. main caches remain.
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    name: cleanup
+    runs-on: ubuntu-latest
+    # repository caches require a local pull request token.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: delete the caches this pull request created
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -uo pipefail
+          freed=0
+          # branch and merge-ref runs use separate cache scopes.
+          for ref in "refs/pull/${PR_NUMBER}/merge" "refs/heads/${HEAD_REF}"; do
+            while read -r id size; do
+              [ -n "$id" ] || continue
+              if gh api -X DELETE "repos/${REPO}/actions/caches/${id}" >/dev/null 2>&1; then
+                freed=$((freed + size))
+                echo "deleted $id ($ref)"
+              fi
+            done < <(gh api "repos/${REPO}/actions/caches?ref=${ref}&per_page=100" \
+                       --jq '.actions_caches[]? | "\(.id) \(.size_in_bytes)"' 2>/dev/null)
+          done
+          echo "freed $((freed / 1048576)) MB" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,19 @@
+{
+  "added": [
+    {"id":"pkg:npm/pkg-c@1.0.0","name":"pkg-c","version":"1.0.0","ecosystem":"npm","supplier":null,"description":null,"purl":"pkg:npm/pkg-c@1.0.0","licenses":[],"hashes":{},"source_ids":[]}
+  ],
+  "removed": [
+    {"id":"pkg:npm/pkg-b@1.0.0","name":"pkg-b","version":"1.0.0","ecosystem":"npm","supplier":null,"description":null,"purl":"pkg:npm/pkg-b@1.0.0","licenses":[],"hashes":{},"source_ids":[]}
+  ],
+  "changed": [
+    {"id":"pkg:npm/parent@1.1.0","old":{"id":"pkg:npm/parent@1.0.0","name":"parent","version":"1.0.0","ecosystem":"npm","supplier":null,"description":null,"purl":"pkg:npm/parent@1.0.0","licenses":[],"hashes":{},"source_ids":["parent-old"]},"new":{"id":"pkg:npm/parent@1.1.0","name":"parent","version":"1.1.0","ecosystem":"npm","supplier":null,"description":null,"purl":"pkg:npm/parent@1.1.0","licenses":[],"hashes":{},"source_ids":["parent-new"]},"changes":[{"Version":["1.0.0","1.1.0"]},{"Purl":["pkg:npm/parent@1.0.0","pkg:npm/parent@1.1.0"]}]},
+    {"id":"pkg:npm/pkg-a@1.1.0","old":{"id":"pkg:npm/pkg-a@1.0.0","name":"pkg-a","version":"1.0.0","ecosystem":"npm","supplier":null,"description":null,"purl":"pkg:npm/pkg-a@1.0.0","licenses":[],"hashes":{},"source_ids":[]},"new":{"id":"pkg:npm/pkg-a@1.1.0","name":"pkg-a","version":"1.1.0","ecosystem":"npm","supplier":null,"description":null,"purl":"pkg:npm/pkg-a@1.1.0","licenses":[],"hashes":{},"source_ids":[]},"changes":[{"Version":["1.0.0","1.1.0"]},{"Purl":["pkg:npm/pkg-a@1.0.0","pkg:npm/pkg-a@1.1.0"]}]}
+  ],
+  "edge_diffs": [
+    {"parent":"pkg:npm/parent@1.1.0","added":{"pkg:npm/child-b@1.0.0":"runtime"},"removed":{"pkg:npm/child-a@1.0.0":"runtime"}}
+  ],
+  "metadata_changed":{"timestamp":["2023-01-01T00:00:00Z","2023-01-02T00:00:00Z"]},
+  "old_total":5,
+  "new_total":5,
+  "unchanged":2
+}

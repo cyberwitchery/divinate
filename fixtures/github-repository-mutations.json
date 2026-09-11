@@ -1,0 +1,19 @@
+{
+  "branch": "main",
+  "events": [
+    {
+      "event_id": "audit-401",
+      "kind": "pull_request_merge",
+      "occurred_at": "2026-09-02T12:00:00Z",
+      "commit": "1111111111111111111111111111111111111111",
+      "pull_request": 101
+    },
+    {
+      "event_id": "audit-402",
+      "kind": "pull_request_merge",
+      "occurred_at": "2026-09-03T12:00:00Z",
+      "commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "pull_request": 102
+    }
+  ]
+}

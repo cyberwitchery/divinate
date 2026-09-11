@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "acquisition-transcript.schema.json",
+  "title": "security evidence acquisition transcript",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "contents"],
+  "properties": {
+    "id": {"type":"string","pattern":"^acq_[0-9a-f]{20}$"},
+    "schema_version": {"const":"0.1.0"},
+    "contents": {
+      "type":"object","additionalProperties":false,
+      "required":["collector_contract","collector_version","subject","proposition","requested_scope","captured_at","initial_request","exchanges","termination"],
+      "properties": {
+        "collector_contract":{"type":"string"},
+        "collector_version":{"type":"string"},
+        "subject":{"type":"object","required":["kind","id"],"properties":{"kind":{"type":"string"},"id":{"type":"string"},"branch":{"type":"string"}}},
+        "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","supply_chain_policy_decision","declared_dependencies"]},
+        "requested_scope":{"$ref":"#/$defs/interval"},
+        "captured_at":{"type":"string","format":"date-time"},
+        "initial_request":{"$ref":"#/$defs/request"},
+        "exchanges":{"type":"array","items":{"$ref":"#/$defs/exchange"}},
+        "termination":{"oneOf":[
+          {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"exhausted"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","next_url"],"properties":{"kind":{"const":"truncated"},"next_url":{"type":"string"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"permission_denied"},"diagnostic":{"type":"string"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"failed"},"diagnostic":{"type":"string"}}}
+        ]}
+      }
+    }
+  },
+  "$defs": {
+    "interval":{"type":"object","additionalProperties":false,"required":["from","until"],"properties":{"from":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"}}},
+    "request":{"type":"object","additionalProperties":false,"required":["method","url"],"properties":{"method":{"const":"GET"},"url":{"type":"string"}}},
+    "exchange": {
+      "type":"object","additionalProperties":false,"required":["request","response"],
+      "properties": {
+        "request":{"$ref":"#/$defs/request"},
+        "response": {
+          "type":"object","additionalProperties":false,"required":["status","headers","body","body_sha256","item_count"],
+          "properties":{"status":{"type":"integer","minimum":100,"maximum":599},"headers":{"type":"object","additionalProperties":{"type":"string"}},"body":{"type":"string"},"body_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"item_count":{"type":"integer","minimum":0}}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "id": "acq_3c9d5215283b500f3f22",
+  "schema_version": "0.1.0",
+  "contents": {
+    "collector_contract": "github-branch-protection/v1",
+    "collector_version": "0.1.0",
+    "subject": {
+      "kind": "repository",
+      "id": "github:cyberwitchery/sbom-diff",
+      "branch": "main"
+    },
+    "proposition": "branch_configuration",
+    "requested_scope": {
+      "from": "2026-09-08T00:00:00Z",
+      "until": "2026-09-09T00:00:00Z"
+    },
+    "captured_at": "2026-09-08T07:00:02Z",
+    "initial_request": {
+      "method": "GET",
+      "url": "repos/cyberwitchery/sbom-diff/branches/main/protection"
+    },
+    "exchanges": [
+      {
+        "request": {
+          "method": "GET",
+          "url": "repos/cyberwitchery/sbom-diff/branches/main/protection"
+        },
+        "response": {
+          "status": 200,
+          "headers": {
+            "date": "Mon, 07 Sep 2026 22:04:29 GMT",
+            "etag": "W/\"e7d32d2dd043553e9fc8843d25415e03e581aea0db0f5959c3ceacf945982320\"",
+            "x-accepted-oauth-scopes": "",
+            "x-github-api-version-selected": "2022-11-28",
+            "x-github-request-id": "F09A:BF8C4:1599F430:14E1A1A5:6A9F34ED",
+            "x-oauth-scopes": "gist, read:org, repo"
+          },
+          "body": "{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection\",\"required_pull_request_reviews\":{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection/required_pull_request_reviews\",\"dismiss_stale_reviews\":true,\"require_code_owner_reviews\":false,\"require_last_push_approval\":false,\"required_approving_review_count\":1},\"required_signatures\":{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection/required_signatures\",\"enabled\":false},\"enforce_admins\":{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection/enforce_admins\",\"enabled\":false},\"required_linear_history\":{\"enabled\":false},\"allow_force_pushes\":{\"enabled\":false},\"allow_deletions\":{\"enabled\":false},\"block_creations\":{\"enabled\":false},\"required_conversation_resolution\":{\"enabled\":false},\"lock_branch\":{\"enabled\":false},\"allow_fork_syncing\":{\"enabled\":false}}",
+          "body_sha256": "7e468a2204eb03855836c671b3217c46a15953342ab93e7d8de0f36fbf56f472",
+          "item_count": 1
+        }
+      }
+    ],
+    "termination": {
+      "kind": "exhausted"
+    }
+  }
+}

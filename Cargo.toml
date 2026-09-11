@@ -1,0 +1,45 @@
+[package]
+name = "divinate"
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.95"
+license = "Apache-2.0"
+description = "Preserve technical security evidence with provenance and derive traceable typed claims from it."
+repository = "https://github.com/cyberwitchery/divinate"
+homepage = "https://github.com/cyberwitchery/divinate"
+documentation = "https://docs.rs/divinate"
+readme = "README.md"
+keywords = ["security", "evidence", "provenance", "sbom", "audit"]
+categories = ["command-line-utilities", "development-tools"]
+
+# the example corpus exceeds the crates.io package limit. its integration test is
+# excluded with it.
+exclude = ["/dossiers/", "/tests/product.rs"]
+
+[lib]
+name = "divinate"
+
+[[bin]]
+name = "divinate"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[profile.dev.package.sha2]
+opt-level = 3

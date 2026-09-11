@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pack-invocation.schema.json",
+  "title": "divinate pack invocation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "contents"],
+  "properties": {
+    "id": {"type":"string","pattern":"^packrun_[0-9a-f]{20}$"},
+    "schema_version": {"const":"0.1.0"},
+    "contents": {
+      "type":"object","additionalProperties":false,
+      "required":["pack_id","pack_version","protocol_version","operation","executable","request_sha256","response_sha256","request","response"],
+      "properties": {
+        "pack_id":{"type":"string","minLength":1},
+        "pack_version":{"type":"string","minLength":1},
+        "protocol_version":{"const":1},
+        "operation":{"enum":["describe","collect","normalize","evaluate"]},
+        "execution_transcript_id":{"type":"string","pattern":"^exec_[0-9a-f]{20}$"},
+        "executable":{"type":"object","additionalProperties":false,"required":["sha256","size"],"properties":{"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"size":{"type":"integer","minimum":0}}},
+        "request_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "response_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+        "request":{"type":"string"},
+        "response":{"type":"string"}
+      }
+    }
+  }
+}

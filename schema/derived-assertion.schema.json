@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "derived-assertion.schema.json",
+  "title": "derived security assertion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id","assertion_type","claim","subject","outcome","evaluated_at","validity","derivation","support","contradictions","considered","missing","identity_joins","reasoning","limitations","coverage"],
+  "properties": {
+    "id":{"type":"string","pattern":"^asrt_[0-9a-f]{20}$"},
+    "assertion_type":{"type":"string","minLength":1},
+    "claim":{"type":"string"},
+    "subject":{"type":"object","additionalProperties":false,"required":["repository"],"properties":{"repository":{"type":"string"},"branch":{"type":"string"},"release":{"type":"string"},"from":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"}}},
+    "outcome":{"enum":["supported","contradicted","insufficient_evidence","stale","not_automatable"]},
+    "evaluated_at":{"type":"string","format":"date-time"},
+    "validity":{"type":"object","additionalProperties":false,"required":["basis"],"properties":{"basis":{"enum":["point_in_time","historical_release","not_established"]},"at":{"type":"string","format":"date-time"},"from":{"type":"string","format":"date-time"},"through":{"type":"string","format":"date-time"},"fresh_until":{"type":"string","format":"date-time"}}},
+    "derivation":{"type":"object","additionalProperties":false,"required":["evaluator","version"],"properties":{"evaluator":{"type":"string"},"version":{"type":"string"},"pack_invocation_id":{"type":"string","pattern":"^packrun_[0-9a-f]{20}$"}}},
+    "support":{"type":"array","items":{"$ref":"#/$defs/evidence_use"}},
+    "contradictions":{"type":"array","items":{"$ref":"#/$defs/evidence_use"}},
+    "considered":{"type":"array","items":{"$ref":"#/$defs/evidence_use"}},
+    "missing":{"type":"array","items":{"$ref":"#/$defs/missing"}},
+    "identity_joins":{"type":"array","items":{"$ref":"#/$defs/join"}},
+    "reasoning":{"type":"array","items":{"$ref":"#/$defs/reason"}},
+    "limitations":{"type":"array","items":{"type":"string"}},
+    "coverage":{"type":"array","items":{"$ref":"#/$defs/coverage"}}
+  },
+  "$defs": {
+    "interval":{"type":"object","additionalProperties":false,"required":["from","until"],"properties":{"from":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"}}},
+    "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","supply_chain_policy_decision","declared_dependencies"]},
+    "evidence_use":{"type":"object","additionalProperties":false,"required":["observation_id","source_id","reason"],"properties":{"observation_id":{"type":"string"},"source_id":{"type":"string"},"reason":{"type":"string"}}},
+    "missing":{"type":"object","additionalProperties":false,"required":["requirement","subject","reason"],"properties":{"requirement":{"type":"string"},"subject":{"type":"string"},"reason":{"type":"string"}}},
+    "join":{"type":"object","additionalProperties":false,"required":["left_observation_id","right_observation_id","fields"],"properties":{"left_observation_id":{"type":"string"},"right_observation_id":{"type":"string"},"fields":{"type":"object","additionalProperties":{"type":"string"}}}},
+    "reason":{"type":"object","additionalProperties":false,"required":["code","conclusion","evidence_ids"],"properties":{"code":{"type":"string"},"conclusion":{"type":"string"},"evidence_ids":{"type":"array","items":{"type":"string"}}}},
+    "coverage": {
+      "type":"object","additionalProperties":false,"required":["requirement","outcome","covered_intervals","uncovered_intervals","collection_runs"],
+      "properties": {
+        "requirement":{"type":"object","additionalProperties":false,"required":["proposition","repository","interval"],"properties":{"proposition":{"$ref":"#/$defs/proposition"},"repository":{"type":"string"},"branch":{"type":"string"},"interval":{"$ref":"#/$defs/interval"}}},
+        "outcome":{"enum":["complete","incomplete"]},
+        "covered_intervals":{"type":"array","items":{"$ref":"#/$defs/interval"}},
+        "uncovered_intervals":{"type":"array","items":{"$ref":"#/$defs/interval"}},
+        "collection_runs":{"type":"array","items":{
+          "type":"object","additionalProperties":false,"required":["collection_run_id","disposition","reason"],
+          "properties":{"collection_run_id":{"type":"string"},"disposition":{"enum":["used","scope_mismatch","not_authoritative","pagination_incomplete","permission_denied","retention_limited","interrupted","failed","not_attempted"]},"reason":{"type":"string"},"contributed_interval":{"$ref":"#/$defs/interval"}}
+        }}
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "sources": [
+    {"adapter":"github-branch-protection","path":"github-branch-protection.json","observed_at":"2026-09-05T12:04:00Z","producer":{"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-protection"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+    {"adapter":"github-branch-protection","path":"github-branch-protection-weakened.json","observed_at":"2026-09-06T12:04:00Z","producer":{"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-protection"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main","revision":"cccccccccccccccccccccccccccccccccccccccc"}}
+  ]
+}

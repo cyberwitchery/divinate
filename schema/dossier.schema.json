@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "dossier.schema.json",
+  "title": "technical controls dossier",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "contents"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^dossier_[0-9a-f]{20}$"},
+    "schema_version": {"const": "0.1.0"},
+    "contents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "evaluated_at", "interval", "release", "corpus_sha256", "evidence_sources", "acquisitions", "collections", "historical_context", "controls", "reproduction"],
+      "properties": {
+        "repository": {"type": "string"},
+        "evaluated_at": {"type": "string", "format": "date-time"},
+        "interval": {"$ref": "#/$defs/interval"},
+        "release": {"type": "string"},
+        "corpus_sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_sources": {"type": "array", "items": {"$ref": "#/$defs/source_summary"}},
+        "acquisitions": {"type": "array", "items": {"$ref": "#/$defs/acquisition"}},
+        "collections": {"type": "array", "items": {"$ref": "#/$defs/collection"}},
+        "historical_context": {"type": "array", "items": {"$ref": "#/$defs/history"}},
+        "controls": {"type": "array", "items": {"$ref": "#/$defs/control"}},
+        "reproduction": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "interval": {"type": "object", "additionalProperties": false, "required": ["from", "until"], "properties": {"from": {"type": "string", "format": "date-time"}, "until": {"type": "string", "format": "date-time"}}},
+    "source_summary": {"type": "object", "additionalProperties": false, "required": ["producer", "version", "collector", "observations"], "properties": {"producer": {"type": "string"}, "version": {"type": "string"}, "collector": {"type": "string"}, "observations": {"type": "integer", "minimum": 0}}},
+    "acquisition": {"type": "object", "additionalProperties": false, "required": ["transcript_id", "contract", "contract_status", "subject", "proposition", "requested_scope", "integrity", "enumeration", "authority", "pages", "items", "reasons"], "properties": {"transcript_id": {"type": "string"}, "contract": {"type": "string"}, "contract_status": {"type": "string"}, "subject": {"type": "string"}, "proposition": {"type": "string"}, "requested_scope": {"type": "string"}, "integrity": {"type": "string"}, "enumeration": {"type": "string"}, "authority": {"type": "array", "items": {"type": "string"}}, "pages": {"type": "integer", "minimum": 0}, "items": {"type": "integer", "minimum": 0}, "reasons": {"type": "array", "items": {"type": "string"}}}},
+    "collection": {"type": "object", "additionalProperties": false, "required": ["id", "acquisition_transcript_ids", "subject", "proposition", "requested_scope", "outcome", "authority", "limitations"], "properties": {"id": {"type": "string"}, "acquisition_transcript_ids": {"type":"array","items":{"type":"string"}}, "subject": {"type": "string"}, "proposition": {"type": "string"}, "requested_scope": {"type": "string"}, "outcome": {"type": "string"}, "authority": {"type": "array", "items": {"type": "string"}}, "limitations": {"type": "array", "items": {"type": "string"}}}},
+    "history": {"type": "object", "additionalProperties": false, "required": ["observed_at", "subject", "summary", "observation_id"], "properties": {"observed_at": {"type": "string", "format": "date-time"}, "subject": {"type": "string"}, "summary": {"type": "string"}, "observation_id": {"type": "string"}}},
+    "evidence": {"type": "object", "additionalProperties": false, "required": ["observation_id", "source_id", "source_sha256", "reason", "drill_down"], "properties": {"observation_id": {"type": "string"}, "source_id": {"type": "string"}, "source_sha256": {"$ref": "#/$defs/sha256"}, "collection_run_id": {"type": ["string", "null"]}, "reason": {"type": "string"}, "drill_down": {"type": "string"}}},
+    "coverage": {"type": "object", "additionalProperties": false, "required": ["proposition", "outcome", "interval", "collection_runs", "uncovered"], "properties": {"proposition": {"type": "string"}, "outcome": {"type": "string"}, "interval": {"type": "string"}, "collection_runs": {"type": "array", "items": {"type": "string"}}, "uncovered": {"type": "array", "items": {"type": "string"}}}},
+    "gap": {"type": "object", "additionalProperties": false, "required": ["requirement", "subject", "reason"], "properties": {"requirement": {"type": "string"}, "subject": {"type": "string"}, "reason": {"type": "string"}}},
+    "control": {"type": "object", "additionalProperties": false, "required": ["assertion_id", "title", "semantics", "state", "why", "evidence", "coverage", "contradictions", "missing", "identity_joins", "limitations", "evaluator", "manual_work_without_dossier"], "properties": {"assertion_id": {"type": "string"}, "title": {"type": "string"}, "semantics": {"type": "string"}, "state": {"type": "string"}, "why": {"type": "array", "items": {"type": "string"}}, "evidence": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}, "coverage": {"type": "array", "items": {"$ref": "#/$defs/coverage"}}, "contradictions": {"type": "array", "items": {"$ref": "#/$defs/evidence"}}, "missing": {"type": "array", "items": {"$ref": "#/$defs/gap"}}, "identity_joins": {"type": "array", "items": {"type": "string"}}, "limitations": {"type": "array", "items": {"type": "string"}}, "evaluator": {"type": "string"}, "manual_work_without_dossier": {"type": "array", "items": {"type": "string"}}}}
+  }
+}

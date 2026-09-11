@@ -1,0 +1,7 @@
+{
+  "tool": {"name":"sbom-diff","version":"0.8.0"},
+  "policy": {"id":"supply-chain/default","rules":["no-copyleft-added","no-version-downgrade","checksums-required"]},
+  "input": {"sbom_diff_sha256":"3ab027d146bdee7a98361dcf078a0063e6a20e25a742d3e6af8d763c5375245e","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},
+  "passed": false,
+  "violations": [{"rule":"checksums-required","component":"pkg:npm/pkg-c@1.0.0"}]
+}

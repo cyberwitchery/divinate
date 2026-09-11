@@ -1,0 +1,12 @@
+{
+  "scan": {
+    "tool_version": "0.5.1",
+    "analyzer_id": "rustc_unsafe_lint",
+    "language": "rust",
+    "scope": {"workspace_only":false,"include_deps":true,"features":[],"all_features":false,"no_default_features":false,"all_targets":false,"targets":[]},
+    "units": [],
+    "totals": {"workspace_unsafe":0,"deps_unsafe":0,"overall_unsafe":0}
+  },
+  "violations": [],
+  "passed": true
+}

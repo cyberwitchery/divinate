@@ -1,0 +1,347 @@
+{
+  "collections": [
+    {
+      "id": "run-branch-protection-current",
+      "acquisition_transcript_ids": [],
+      "collector": {
+        "name": "github-rest-api",
+        "version": "2022-11-28",
+        "collector": "evidence-spike/github-branch-protection"
+      },
+      "endpoint": "GET /repos/cyberwitchery/sbom-diff/branches/main/protection",
+      "subject": {
+        "kind": "repository",
+        "id": "github:cyberwitchery/sbom-diff"
+      },
+      "requested_scope": {
+        "proposition": "branch_configuration",
+        "branch": "main",
+        "interval": {
+          "from": "2026-09-07T00:00:00Z",
+          "until": "2026-09-08T00:00:00Z"
+        }
+      },
+      "observed_scope": {
+        "proposition": "branch_configuration",
+        "branch": "main",
+        "interval": {
+          "from": "2026-09-07T00:00:00Z",
+          "until": "2026-09-08T00:00:00Z"
+        }
+      },
+      "enumeration": {
+        "items_fetched": 1,
+        "items_reported": 1,
+        "pages_fetched": 1,
+        "terminal_page_reached": true,
+        "next_token_present": false
+      },
+      "outcome": "complete",
+      "limitations": [],
+      "authority": [
+        "branch_configuration"
+      ],
+      "observation_ids": [
+        "ev_909774ab86bfeadeed6a"
+      ],
+      "started_at": "2026-09-07T07:00:00Z",
+      "completed_at": "2026-09-07T07:00:02Z"
+    },
+    {
+      "id": "run-pr-reviews-not-attempted",
+      "acquisition_transcript_ids": [],
+      "collector": {
+        "name": "github-review-collector",
+        "version": "0.1.0",
+        "collector": "evidence-spike/github-pull-request-reviews"
+      },
+      "endpoint": "GET /repos/cyberwitchery/sbom-diff/pulls + reviews",
+      "subject": {
+        "kind": "repository",
+        "id": "github:cyberwitchery/sbom-diff"
+      },
+      "requested_scope": {
+        "proposition": "pull_request_reviews",
+        "branch": "main",
+        "interval": {
+          "from": "2026-08-07T00:00:00Z",
+          "until": "2026-08-18T00:00:00Z"
+        }
+      },
+      "enumeration": {
+        "items_fetched": 0,
+        "pages_fetched": 0,
+        "terminal_page_reached": false,
+        "next_token_present": false
+      },
+      "outcome": "not_attempted",
+      "limitations": [
+        {
+          "kind": "not_attempted",
+          "detail": "pull-request review collection is not configured"
+        }
+      ],
+      "authority": [
+        "pull_request_reviews"
+      ],
+      "observation_ids": [],
+      "started_at": "2026-09-07T07:01:00Z",
+      "completed_at": "2026-09-07T07:01:00Z"
+    },
+    {
+      "id": "run-repository-mutations-denied",
+      "acquisition_transcript_ids": [],
+      "collector": {
+        "name": "github-audit-log-collector",
+        "version": "0.1.0",
+        "collector": "evidence-spike/github-repository-mutations"
+      },
+      "endpoint": "GET /orgs/cyberwitchery/audit-log",
+      "subject": {
+        "kind": "repository",
+        "id": "github:cyberwitchery/sbom-diff"
+      },
+      "requested_scope": {
+        "proposition": "repository_mutations",
+        "branch": "main",
+        "interval": {
+          "from": "2026-08-07T00:00:00Z",
+          "until": "2026-08-18T00:00:00Z"
+        }
+      },
+      "enumeration": {
+        "items_fetched": 0,
+        "pages_fetched": 0,
+        "terminal_page_reached": false,
+        "next_token_present": false
+      },
+      "outcome": "failed",
+      "limitations": [
+        {
+          "kind": "source_error",
+          "detail": "organization audit-log endpoint returned HTTP 404; repository mutation visibility is unavailable"
+        }
+      ],
+      "authority": [
+        "repository_mutations"
+      ],
+      "observation_ids": [],
+      "started_at": "2026-09-07T07:02:00Z",
+      "completed_at": "2026-09-07T07:02:01Z"
+    }
+  ],
+  "observations": [
+    {
+      "claim_key": "github:branch-protection:main",
+      "collection_run_id": "run-branch-protection-current",
+      "data": {
+        "allows_deletions": false,
+        "allows_force_pushes": false,
+        "dismisses_stale_reviews": true,
+        "enforces_admins": false,
+        "required_approving_review_count": 1,
+        "required_status_checks": [],
+        "requires_code_owner_reviews": false,
+        "requires_last_push_approval": false,
+        "requires_strict_status_checks": false
+      },
+      "evidence_class": "configured_intent",
+      "id": "ev_909774ab86bfeadeed6a",
+      "kind": "configuration_snapshot",
+      "observed_at": "2026-09-07T07:00:02Z",
+      "producer": {
+        "name": "github-rest-api",
+        "version": "2022-11-28",
+        "collector": "evidence-spike/github-branch-protection"
+      },
+      "provenance": {
+        "pointer": "",
+        "source_id": "src_7e468a2204eb03855836"
+      },
+      "subject": {
+        "kind": "repository",
+        "id": "github:cyberwitchery/sbom-diff",
+        "branch": "main",
+        "revision": "b47cb5f441416ff4adbe7a7287190fcf8c3e4531"
+      }
+    },
+    {
+      "claim_key": "sbom-diff:dependency-change",
+      "data": {
+        "components": {
+          "added": [],
+          "changed": [
+            "pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.",
+            "pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.#src/lib.rs",
+            "pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.#src/main.rs",
+            "pkg:cargo/sbom-model-cyclonedx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-cyclonedx",
+            "pkg:cargo/sbom-model-spdx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-spdx",
+            "pkg:cargo/sbom-model@0.8.0?download_url=file:%2F%2F..%2Fsbom-model",
+            "pkg:cargo/thiserror-impl@2.0.20",
+            "pkg:cargo/thiserror@2.0.20"
+          ],
+          "removed": []
+        },
+        "counts": {
+          "added": 0,
+          "changed": 8,
+          "dependency_edges_changed": 0,
+          "new_total": 103,
+          "old_total": 103,
+          "removed": 0,
+          "unchanged": 95
+        },
+        "metadata_changed": {
+          "timestamp": [
+            "2026-08-07T22:20:15.652978387Z",
+            "2026-08-17T14:10:49.796558154Z"
+          ]
+        }
+      },
+      "evidence_class": "observed_state",
+      "id": "ev_f76ef7f50276e197b4a3",
+      "kind": "change_set",
+      "observed_at": "2026-09-07T07:10:00Z",
+      "producer": {
+        "name": "sbom-diff",
+        "version": "0.8.0",
+        "collector": "evidence-spike/sbom-diff"
+      },
+      "provenance": {
+        "pointer": "",
+        "source_id": "src_106216ade137ac8ee25b"
+      },
+      "subject": {
+        "kind": "release",
+        "id": "github:cyberwitchery/sbom-diff:v0.8.0",
+        "base_revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211",
+        "release": "v0.8.0",
+        "repository": "github:cyberwitchery/sbom-diff",
+        "revision": "94a1942b16f620a8c2ce292d292dd47c542e6d7e"
+      }
+    },
+    {
+      "claim_key": "supply-chain-gate:supply-chain/default",
+      "data": {
+        "base_revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211",
+        "evaluated_sbom_diff_sha256": "106216ade137ac8ee25b75dad2e62cce4b4de7e747b3371f24e507d80a21f44d",
+        "policy_id": "supply-chain/default",
+        "target_revision": "94a1942b16f620a8c2ce292d292dd47c542e6d7e",
+        "violations": []
+      },
+      "evidence_class": "observed_operation",
+      "id": "ev_4e918173ad4bc1cfff3a",
+      "kind": "policy_check",
+      "observed_at": "2026-09-07T07:11:00Z",
+      "producer": {
+        "name": "sbom-diff",
+        "version": "0.8.0",
+        "collector": "evidence-spike/supply-chain-gate"
+      },
+      "provenance": {
+        "pointer": "",
+        "source_id": "src_a092f407ff5c2353e45a"
+      },
+      "status": "pass",
+      "subject": {
+        "kind": "release",
+        "id": "github:cyberwitchery/sbom-diff:v0.8.0",
+        "base_revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211",
+        "release": "v0.8.0",
+        "repository": "github:cyberwitchery/sbom-diff",
+        "revision": "94a1942b16f620a8c2ce292d292dd47c542e6d7e"
+      }
+    },
+    {
+      "claim_key": "sbom-diff:dependency-change",
+      "data": {
+        "components": {
+          "added": [
+            "pkg:cargo/core-foundation-sys@0.8.7"
+          ],
+          "changed": [],
+          "removed": []
+        },
+        "counts": {
+          "added": 1,
+          "changed": 0,
+          "dependency_edges_changed": 3,
+          "new_total": 104,
+          "old_total": 103,
+          "removed": 0,
+          "unchanged": 103
+        },
+        "metadata_changed": {
+          "timestamp": [
+            "2026-08-17T14:10:49.796558154Z",
+            "2026-09-07T07:03:48.995868000Z"
+          ],
+          "tools": [
+            [
+              "CycloneDX cargo-cyclonedx 0.5.9"
+            ],
+            [
+              "CycloneDX cargo-cyclonedx 0.5.7"
+            ]
+          ]
+        }
+      },
+      "evidence_class": "observed_state",
+      "id": "ev_1a6c6e2427d202e9e0a8",
+      "kind": "change_set",
+      "observed_at": "2026-09-07T07:12:00Z",
+      "producer": {
+        "name": "sbom-diff",
+        "version": "0.8.0",
+        "collector": "evidence-spike/sbom-diff"
+      },
+      "provenance": {
+        "pointer": "",
+        "source_id": "src_dbe77740e4e0be914e05"
+      },
+      "subject": {
+        "kind": "release",
+        "id": "github:cyberwitchery/sbom-diff:HEAD",
+        "base_revision": "94a1942b16f620a8c2ce292d292dd47c542e6d7e",
+        "release": "HEAD",
+        "repository": "github:cyberwitchery/sbom-diff",
+        "revision": "b47cb5f441416ff4adbe7a7287190fcf8c3e4531"
+      }
+    }
+  ],
+  "schema_version": "0.1.0",
+  "sources": [
+    {
+      "content": "{\n  \"added\": [],\n  \"removed\": [],\n  \"changed\": [\n    {\n      \"id\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.\",\n      \"old\": {\n        \"id\": \"pkg:cargo/sbom-diff@0.7.0?download_url=file:%2F%2F.\",\n        \"name\": \"sbom-diff\",\n        \"version\": \"0.7.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"diff engine and cli for sbom comparison\",\n        \"purl\": \"pkg:cargo/sbom-diff@0.7.0?download_url=file://.\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-diff#0.7.0\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.\",\n        \"name\": \"sbom-diff\",\n        \"version\": \"0.8.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"diff engine and cli for sbom comparison\",\n        \"purl\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file://.\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-diff#0.8.0\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"0.7.0\",\n            \"0.8.0\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/sbom-diff@0.7.0?download_url=file://.\",\n            \"pkg:cargo/sbom-diff@0.8.0?download_url=file://.\"\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.#src/lib.rs\",\n      \"old\": {\n        \"id\": \"pkg:cargo/sbom-diff@0.7.0?download_url=file:%2F%2F.#src/lib.rs\",\n        \"name\": \"sbom_diff\",\n        \"version\": \"0.7.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": null,\n        \"purl\": \"pkg:cargo/sbom-diff@0.7.0?download_url=file://.#src/lib.rs\",\n        \"licenses\": [],\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-diff#0.7.0 bin-target-0\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.#src/lib.rs\",\n        \"name\": \"sbom_diff\",\n        \"version\": \"0.8.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": null,\n        \"purl\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file://.#src/lib.rs\",\n        \"licenses\": [],\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-diff#0.8.0 bin-target-0\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"0.7.0\",\n            \"0.8.0\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/sbom-diff@0.7.0?download_url=file://.#src/lib.rs\",\n            \"pkg:cargo/sbom-diff@0.8.0?download_url=file://.#src/lib.rs\"\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.#src/main.rs\",\n      \"old\": {\n        \"id\": \"pkg:cargo/sbom-diff@0.7.0?download_url=file:%2F%2F.#src/main.rs\",\n        \"name\": \"sbom-diff\",\n        \"version\": \"0.7.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": null,\n        \"purl\": \"pkg:cargo/sbom-diff@0.7.0?download_url=file://.#src/main.rs\",\n        \"licenses\": [],\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-diff#0.7.0 bin-target-1\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file:%2F%2F.#src/main.rs\",\n        \"name\": \"sbom-diff\",\n        \"version\": \"0.8.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": null,\n        \"purl\": \"pkg:cargo/sbom-diff@0.8.0?download_url=file://.#src/main.rs\",\n        \"licenses\": [],\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-diff#0.8.0 bin-target-1\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"0.7.0\",\n            \"0.8.0\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/sbom-diff@0.7.0?download_url=file://.#src/main.rs\",\n            \"pkg:cargo/sbom-diff@0.8.0?download_url=file://.#src/main.rs\"\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/sbom-model-cyclonedx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-cyclonedx\",\n      \"old\": {\n        \"id\": \"pkg:cargo/sbom-model-cyclonedx@0.7.0?download_url=file:%2F%2F..%2Fsbom-model-cyclonedx\",\n        \"name\": \"sbom-model-cyclonedx\",\n        \"version\": \"0.7.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"cyclonedx adapter for sbom-model\",\n        \"purl\": \"pkg:cargo/sbom-model-cyclonedx@0.7.0?download_url=file://../sbom-model-cyclonedx\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-model-cyclonedx#0.7.0\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/sbom-model-cyclonedx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-cyclonedx\",\n        \"name\": \"sbom-model-cyclonedx\",\n        \"version\": \"0.8.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"cyclonedx adapter for sbom-model\",\n        \"purl\": \"pkg:cargo/sbom-model-cyclonedx@0.8.0?download_url=file://../sbom-model-cyclonedx\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-model-cyclonedx#0.8.0\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"0.7.0\",\n            \"0.8.0\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/sbom-model-cyclonedx@0.7.0?download_url=file://../sbom-model-cyclonedx\",\n            \"pkg:cargo/sbom-model-cyclonedx@0.8.0?download_url=file://../sbom-model-cyclonedx\"\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/sbom-model-spdx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-spdx\",\n      \"old\": {\n        \"id\": \"pkg:cargo/sbom-model-spdx@0.7.0?download_url=file:%2F%2F..%2Fsbom-model-spdx\",\n        \"name\": \"sbom-model-spdx\",\n        \"version\": \"0.7.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"spdx adapter for sbom-model\",\n        \"purl\": \"pkg:cargo/sbom-model-spdx@0.7.0?download_url=file://../sbom-model-spdx\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-model-spdx#0.7.0\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/sbom-model-spdx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-spdx\",\n        \"name\": \"sbom-model-spdx\",\n        \"version\": \"0.8.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"spdx adapter for sbom-model\",\n        \"purl\": \"pkg:cargo/sbom-model-spdx@0.8.0?download_url=file://../sbom-model-spdx\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-model-spdx#0.8.0\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"0.7.0\",\n            \"0.8.0\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/sbom-model-spdx@0.7.0?download_url=file://../sbom-model-spdx\",\n            \"pkg:cargo/sbom-model-spdx@0.8.0?download_url=file://../sbom-model-spdx\"\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/sbom-model@0.8.0?download_url=file:%2F%2F..%2Fsbom-model\",\n      \"old\": {\n        \"id\": \"pkg:cargo/sbom-model@0.7.0?download_url=file:%2F%2F..%2Fsbom-model\",\n        \"name\": \"sbom-model\",\n        \"version\": \"0.7.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"core format-agnostic sbom model and query api\",\n        \"purl\": \"pkg:cargo/sbom-model@0.7.0?download_url=file://../sbom-model\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-model#0.7.0\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/sbom-model@0.8.0?download_url=file:%2F%2F..%2Fsbom-model\",\n        \"name\": \"sbom-model\",\n        \"version\": \"0.8.0\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"core format-agnostic sbom model and query api\",\n        \"purl\": \"pkg:cargo/sbom-model@0.8.0?download_url=file://../sbom-model\",\n        \"licenses\": [\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT\",\n        \"hashes\": {},\n        \"source_ids\": [\n          \"path+file:///home/runner/work/sbom-diff/sbom-diff/crates/sbom-model#0.8.0\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"0.7.0\",\n            \"0.8.0\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/sbom-model@0.7.0?download_url=file://../sbom-model\",\n            \"pkg:cargo/sbom-model@0.8.0?download_url=file://../sbom-model\"\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/thiserror-impl@2.0.20\",\n      \"old\": {\n        \"id\": \"pkg:cargo/thiserror-impl@2.0.19\",\n        \"name\": \"thiserror-impl\",\n        \"version\": \"2.0.19\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"Implementation detail of the `thiserror` crate\",\n        \"purl\": \"pkg:cargo/thiserror-impl@2.0.19\",\n        \"licenses\": [\n          \"Apache-2.0\",\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT OR Apache-2.0\",\n        \"hashes\": {\n          \"sha-256\": \"43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd\"\n        },\n        \"source_ids\": [\n          \"registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.19\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/thiserror-impl@2.0.20\",\n        \"name\": \"thiserror-impl\",\n        \"version\": \"2.0.20\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"Implementation detail of the `thiserror` crate\",\n        \"purl\": \"pkg:cargo/thiserror-impl@2.0.20\",\n        \"licenses\": [\n          \"Apache-2.0\",\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT OR Apache-2.0\",\n        \"hashes\": {\n          \"sha-256\": \"bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af\"\n        },\n        \"source_ids\": [\n          \"registry+https://github.com/rust-lang/crates.io-index#thiserror-impl@2.0.20\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"2.0.19\",\n            \"2.0.20\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/thiserror-impl@2.0.19\",\n            \"pkg:cargo/thiserror-impl@2.0.20\"\n          ]\n        },\n        {\n          \"Hashes\": [\n            {\n              \"sha-256\": \"43cbfe0cf76104d42a574802844187e84a305e531ed54455f11fbde0f10541cd\"\n            },\n            {\n              \"sha-256\": \"bc04cd3e1236dd4a98afca4569f2deb3f120e5422a4023be2cb683f8486292af\"\n            }\n          ]\n        }\n      ]\n    },\n    {\n      \"id\": \"pkg:cargo/thiserror@2.0.20\",\n      \"old\": {\n        \"id\": \"pkg:cargo/thiserror@2.0.19\",\n        \"name\": \"thiserror\",\n        \"version\": \"2.0.19\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"derive(Error)\",\n        \"purl\": \"pkg:cargo/thiserror@2.0.19\",\n        \"licenses\": [\n          \"Apache-2.0\",\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT OR Apache-2.0\",\n        \"hashes\": {\n          \"sha-256\": \"09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9\"\n        },\n        \"source_ids\": [\n          \"registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.19\"\n        ]\n      },\n      \"new\": {\n        \"id\": \"pkg:cargo/thiserror@2.0.20\",\n        \"name\": \"thiserror\",\n        \"version\": \"2.0.20\",\n        \"ecosystem\": \"cargo\",\n        \"supplier\": null,\n        \"description\": \"derive(Error)\",\n        \"purl\": \"pkg:cargo/thiserror@2.0.20\",\n        \"licenses\": [\n          \"Apache-2.0\",\n          \"MIT\"\n        ],\n        \"license_expression\": \"MIT OR Apache-2.0\",\n        \"hashes\": {\n          \"sha-256\": \"ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f\"\n        },\n        \"source_ids\": [\n          \"registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20\"\n        ]\n      },\n      \"changes\": [\n        {\n          \"Version\": [\n            \"2.0.19\",\n            \"2.0.20\"\n          ]\n        },\n        {\n          \"Purl\": [\n            \"pkg:cargo/thiserror@2.0.19\",\n            \"pkg:cargo/thiserror@2.0.20\"\n          ]\n        },\n        {\n          \"Hashes\": [\n            {\n              \"sha-256\": \"09a43598840e33d5b0331f38c5e30d13bb11c11210a4b58f0d9b18a5a5eefcd9\"\n            },\n            {\n              \"sha-256\": \"ec86235f5fcc2a73650310756d2ac5b138a5780bbbdfae3eeccec992c435ba4f\"\n            }\n          ]\n        }\n      ]\n    }\n  ],\n  \"edge_diffs\": [],\n  \"metadata_changed\": {\n    \"timestamp\": [\n      \"2026-08-07T22:20:15.652978387Z\",\n      \"2026-08-17T14:10:49.796558154Z\"\n    ]\n  },\n  \"old_total\": 103,\n  \"new_total\": 103,\n  \"unchanged\": 95\n}",
+      "format": "sbom-diff",
+      "id": "src_106216ade137ac8ee25b",
+      "media_type": "application/json",
+      "path": "/tmp/evidence-dossier-sbom-diff.json",
+      "sha256": "106216ade137ac8ee25b75dad2e62cce4b4de7e747b3371f24e507d80a21f44d"
+    },
+    {
+      "content": "{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection\",\"required_pull_request_reviews\":{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection/required_pull_request_reviews\",\"dismiss_stale_reviews\":true,\"require_code_owner_reviews\":false,\"require_last_push_approval\":false,\"required_approving_review_count\":1},\"required_signatures\":{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection/required_signatures\",\"enabled\":false},\"enforce_admins\":{\"url\":\"https://api.github.com/repos/cyberwitchery/sbom-diff/branches/main/protection/enforce_admins\",\"enabled\":false},\"required_linear_history\":{\"enabled\":false},\"allow_force_pushes\":{\"enabled\":false},\"allow_deletions\":{\"enabled\":false},\"block_creations\":{\"enabled\":false},\"required_conversation_resolution\":{\"enabled\":false},\"lock_branch\":{\"enabled\":false},\"allow_fork_syncing\":{\"enabled\":false}}",
+      "format": "github-branch-protection",
+      "id": "src_7e468a2204eb03855836",
+      "media_type": "application/json",
+      "path": "/tmp/evidence-dossier-branch-protection.json",
+      "sha256": "7e468a2204eb03855836c671b3217c46a15953342ab93e7d8de0f36fbf56f472"
+    },
+    {
+      "content": "{\n  \"tool\": {\"name\":\"sbom-diff\",\"version\":\"0.8.0\"},\n  \"policy\": {\"id\":\"supply-chain/default\",\"rules\":[\"no-added-components\"]},\n  \"input\": {\n    \"sbom_diff_sha256\":\"106216ade137ac8ee25b75dad2e62cce4b4de7e747b3371f24e507d80a21f44d\",\n    \"base_revision\":\"58f7a9bce73b85325d6351a1c49e93cc9cc27211\",\n    \"target_revision\":\"94a1942b16f620a8c2ce292d292dd47c542e6d7e\"\n  },\n  \"passed\": true,\n  \"violations\": []\n}\n",
+      "format": "supply-chain-gate",
+      "id": "src_a092f407ff5c2353e45a",
+      "media_type": "application/json",
+      "path": "/tmp/evidence-dossier-gate.json",
+      "sha256": "a092f407ff5c2353e45a3f82c8e6a1ea5631dd4ff299ac0416aa53ae74a400c2"
+    },
+    {
+      "content": "{\n  \"added\": [\n    {\n      \"id\": \"pkg:cargo/core-foundation-sys@0.8.7\",\n      \"name\": \"core-foundation-sys\",\n      \"version\": \"0.8.7\",\n      \"ecosystem\": \"cargo\",\n      \"supplier\": null,\n      \"description\": \"Bindings to Core Foundation for macOS\",\n      \"purl\": \"pkg:cargo/core-foundation-sys@0.8.7\",\n      \"licenses\": [\n        \"Apache-2.0\",\n        \"MIT\"\n      ],\n      \"license_expression\": \"MIT OR Apache-2.0\",\n      \"hashes\": {\n        \"sha-256\": \"773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b\"\n      },\n      \"source_ids\": [\n        \"registry+https://github.com/rust-lang/crates.io-index#core-foundation-sys@0.8.7\"\n      ]\n    }\n  ],\n  \"removed\": [],\n  \"changed\": [],\n  \"edge_diffs\": [\n    {\n      \"parent\": \"pkg:cargo/cpufeatures@0.3.0\",\n      \"added\": {\n        \"pkg:cargo/libc@0.2.189\": \"runtime\"\n      },\n      \"removed\": {}\n    },\n    {\n      \"parent\": \"pkg:cargo/iana-time-zone@0.1.65\",\n      \"added\": {\n        \"pkg:cargo/core-foundation-sys@0.8.7\": \"runtime\"\n      },\n      \"removed\": {}\n    },\n    {\n      \"parent\": \"pkg:cargo/sbom-model-cyclonedx@0.8.0?download_url=file:%2F%2F..%2Fsbom-model-cyclonedx\",\n      \"added\": {\n        \"pkg:cargo/xml-rs@1.0.0\": \"runtime\"\n      },\n      \"removed\": {}\n    }\n  ],\n  \"metadata_changed\": {\n    \"timestamp\": [\n      \"2026-08-17T14:10:49.796558154Z\",\n      \"2026-09-07T07:03:48.995868000Z\"\n    ],\n    \"tools\": [\n      [\n        \"CycloneDX cargo-cyclonedx 0.5.9\"\n      ],\n      [\n        \"CycloneDX cargo-cyclonedx 0.5.7\"\n      ]\n    ]\n  },\n  \"old_total\": 103,\n  \"new_total\": 104,\n  \"unchanged\": 103\n}",
+      "format": "sbom-diff",
+      "id": "src_dbe77740e4e0be914e05",
+      "media_type": "application/json",
+      "path": "/tmp/evidence-dossier-current-sbom-diff.json",
+      "sha256": "dbe77740e4e0be914e05ece1108cb089b3cbe85501ca9c77526e0d47f5a630e2"
+    }
+  ]
+}

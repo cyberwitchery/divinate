@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+.DS_Store
+.idea
+.vscode
+lcov.info
+
+# repository-local evidence state created by `divinate init` in this directory.
+# the checked-in dogfood state under dossiers/ is deliberate and not ignored.
+/.evidence

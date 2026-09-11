@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "isms-update.schema.json",
+  "title": "technical controls update",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["current", "changes", "new_gaps", "coverage_regressions", "reuse"],
+  "properties": {
+    "current": {"type": "array", "items": {"$ref": "derived-assertion.schema.json"}},
+    "changes": {"type": "array", "items": {"type": "object"}},
+    "new_gaps": {"type": "array", "items": {"type": "string"}},
+    "coverage_regressions": {"type": "array", "items": {"type": "string"}},
+    "reuse": {"$ref": "#/$defs/reuse"}
+  },
+  "$defs": {
+    "reuse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_already_present", "evidence_newly_acquired", "assertions_reused", "assertions_reevaluated", "new_derivations", "new_view_logic", "manual_interpretation"],
+      "properties": {
+        "evidence_already_present": {"type": "array", "items": {"type": "string"}},
+        "evidence_newly_acquired": {"type": "array", "items": {"type": "string"}},
+        "assertions_reused": {"type": "array", "items": {"type": "string"}},
+        "assertions_reevaluated": {"type": "array", "items": {"type": "string"}},
+        "new_derivations": {"type": "array", "items": {"type": "string"}},
+        "new_view_logic": {"type": "array", "items": {"type": "string"}},
+        "manual_interpretation": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  }
+}

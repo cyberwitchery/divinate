@@ -1,0 +1,9 @@
+{
+  "invalidations": [
+    {
+      "contract": "github-branch-protection/v1",
+      "discovered_at": "2026-09-09T00:00:00Z",
+      "reason": "fixture advisory for the workflow experiment: current interpretation no longer treats a point response as authoritative for the full requested day"
+    }
+  ]
+}

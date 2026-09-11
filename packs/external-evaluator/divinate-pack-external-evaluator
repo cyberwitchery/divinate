@@ -1,0 +1,37 @@
+#!/usr/bin/env python3
+import json
+import sys
+
+request = json.load(sys.stdin)
+if request.get("protocol_version") != 1:
+    print(json.dumps({"ok": False, "error": "unsupported protocol version"}))
+    raise SystemExit(0)
+operation = request.get("operation")
+if operation == "describe":
+    result = {
+        "id": "example.backup-evaluator", "version": "0.1.0", "protocol_version": 1,
+        "collectors": [], "evaluators": ["backup-encryption"],
+        "evaluator_inputs": {"backup-encryption": ["internal:backup-encryption"]},
+        "evaluator_propositions": {"backup-encryption": []}, "source_contracts": [],
+        "configuration_schema": {}
+    }
+elif operation == "evaluate":
+    source = next((item for item in request["input"]["corpus"]["observations"] if item["claim_key"] == "internal:backup-encryption"), None)
+    support = [] if source is None else [{"observation_id": source["id"], "source_id": source["provenance"]["source_id"], "reason": "the retained configuration reports encrypted backups"}]
+    outcome = "supported" if source is not None and source.get("status") == "pass" else "insufficient_evidence"
+    target = request["input"]["target"]
+    subject = {"repository": target["repository"]}
+    result = [{
+        "assertion_type": "internal_backup_encryption",
+        "claim": "repository backups are configured to use encryption",
+        "subject": subject, "outcome": outcome,
+        "evaluated_at": request["input"]["evaluated_at"],
+        "validity": {"basis": "point_in_time", "at": request["input"]["evaluated_at"]},
+        "support": support, "contradictions": [], "considered": [],
+        "missing": [] if source is not None else [{"requirement": "backup encryption configuration", "subject": target["repository"], "reason": "no matching observation exists"}],
+        "identity_joins": [], "reasoning": [], "limitations": ["configuration does not establish successful restore operation"], "coverage": []
+    }]
+else:
+    print(json.dumps({"ok": False, "error": "unsupported operation"}))
+    raise SystemExit(0)
+print(json.dumps({"ok": True, "result": result}, separators=(",", ":")))

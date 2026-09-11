@@ -1,0 +1,6 @@
+{
+  "release": {"tag_name":"v1.4","target_commitish":"main","published_at":"2026-09-04T10:00:00Z"},
+  "base_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "target_revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "pull_requests": [101, 102]
+}

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "contract-registry.schema.json",
+  "title": "collector contract registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["invalidations"],
+  "properties": {
+    "invalidations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["contract", "discovered_at", "reason"],
+        "properties": {
+          "contract": {"type": "string"},
+          "discovered_at": {"type": "string", "format": "date-time"},
+          "reason": {"type": "string"}
+        }
+      }
+    }
+  }
+}

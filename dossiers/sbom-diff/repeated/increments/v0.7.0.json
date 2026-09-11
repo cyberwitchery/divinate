@@ -1,0 +1,111 @@
+{
+  "collections": [],
+  "observations": [
+    {
+      "claim_key": "sbom-diff:dependency-change",
+      "data": {
+        "components": {
+          "added": [],
+          "changed": [],
+          "removed": []
+        },
+        "counts": {
+          "added": 3,
+          "changed": 35,
+          "dependency_edges_changed": 7,
+          "new_total": 103,
+          "old_total": 100,
+          "removed": 0,
+          "unchanged": 65
+        },
+        "metadata_changed": true
+      },
+      "evidence_class": "observed_state",
+      "id": "ev_76a50a13f45c9574c889",
+      "kind": "change_set",
+      "observed_at": "2026-08-07T22:25:00Z",
+      "producer": {
+        "name": "sbom-diff",
+        "version": "0.8.0",
+        "collector": "evidence-spike/sbom-diff"
+      },
+      "provenance": {
+        "pointer": "",
+        "source_id": "src_2bf2f43c7aadcabbe7ad"
+      },
+      "subject": {
+        "kind": "release",
+        "id": "github:cyberwitchery/sbom-diff:v0.7.0",
+        "base_revision": "9b41b1fe484d5b762e30259f697be5b91e9e0ddf",
+        "release": "v0.7.0",
+        "repository": "github:cyberwitchery/sbom-diff",
+        "revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211"
+      }
+    },
+    {
+      "claim_key": "supply-chain-gate:supply-chain/default",
+      "data": {
+        "base_revision": "9b41b1fe484d5b762e30259f697be5b91e9e0ddf",
+        "evaluated_sbom_diff_sha256": "2bf2f43c7aadcabbe7ad840073ccf252d34444e43f44bdc5d8b2926885b2acf5",
+        "policy_id": "supply-chain/default",
+        "target_revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211",
+        "violations": [
+          {
+            "component": "pkg:cargo/xml@1.4.0",
+            "kind": "added_component"
+          },
+          {
+            "component": "pkg:cargo/syn@3.0.3",
+            "kind": "added_component"
+          },
+          {
+            "component": "pkg:cargo/xml-rs@1.0.0",
+            "kind": "added_component"
+          }
+        ]
+      },
+      "evidence_class": "observed_operation",
+      "id": "ev_87e7263e493a3b0d84a0",
+      "kind": "policy_check",
+      "observed_at": "2026-08-07T22:26:00Z",
+      "producer": {
+        "name": "sbom-diff",
+        "version": "0.8.0",
+        "collector": "evidence-spike/supply-chain-gate"
+      },
+      "provenance": {
+        "pointer": "",
+        "source_id": "src_d3e84695907017da9819"
+      },
+      "severity": "high",
+      "status": "fail",
+      "subject": {
+        "kind": "release",
+        "id": "github:cyberwitchery/sbom-diff:v0.7.0",
+        "base_revision": "9b41b1fe484d5b762e30259f697be5b91e9e0ddf",
+        "release": "v0.7.0",
+        "repository": "github:cyberwitchery/sbom-diff",
+        "revision": "58f7a9bce73b85325d6351a1c49e93cc9cc27211"
+      }
+    }
+  ],
+  "schema_version": "0.4.0",
+  "sources": [
+    {
+      "content": "{\n  \"added\": 3,\n  \"changed\": 35,\n  \"edge_changes\": 7,\n  \"metadata_changed\": true,\n  \"metadata_changes\": {\n    \"timestamp\": [\n      \"2026-07-05T19:11:46.243881111Z\",\n      \"2026-08-07T22:20:15.652978387Z\"\n    ]\n  },\n  \"new_total\": 103,\n  \"old_total\": 100,\n  \"removed\": 0,\n  \"unchanged\": 65\n}\n",
+      "format": "sbom-diff",
+      "id": "src_2bf2f43c7aadcabbe7ad",
+      "media_type": "application/json",
+      "path": "/tmp/evidence-dossier-sbom-diff-v06-v07.json",
+      "sha256": "2bf2f43c7aadcabbe7ad840073ccf252d34444e43f44bdc5d8b2926885b2acf5"
+    },
+    {
+      "content": "{\n  \"tool\": {\"name\":\"sbom-diff\",\"version\":\"0.8.0\"},\n  \"policy\": {\"id\":\"supply-chain/default\",\"rules\":[\"no-added-components\"]},\n  \"input\": {\n    \"sbom_diff_sha256\":\"2bf2f43c7aadcabbe7ad840073ccf252d34444e43f44bdc5d8b2926885b2acf5\",\n    \"base_revision\":\"9b41b1fe484d5b762e30259f697be5b91e9e0ddf\",\n    \"target_revision\":\"58f7a9bce73b85325d6351a1c49e93cc9cc27211\"\n  },\n  \"passed\": false,\n  \"violations\":[\n    {\"kind\":\"added_component\",\"component\":\"pkg:cargo/xml@1.4.0\"},\n    {\"kind\":\"added_component\",\"component\":\"pkg:cargo/syn@3.0.3\"},\n    {\"kind\":\"added_component\",\"component\":\"pkg:cargo/xml-rs@1.0.0\"}\n  ]\n}\n",
+      "format": "supply-chain-gate",
+      "id": "src_d3e84695907017da9819",
+      "media_type": "application/json",
+      "path": "/tmp/evidence-dossier-gate-v07.json",
+      "sha256": "d3e84695907017da9819e502eef0cb446d6c3920cf3f10d03ec11fb2dd6e8f0c"
+    }
+  ]
+}

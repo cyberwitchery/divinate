@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "execution-transcript.schema.json",
+  "title": "security evidence command execution transcript",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "contents"],
+  "properties": {
+    "id": {"type":"string","pattern":"^exec_[0-9a-f]{20}$"},
+    "schema_version": {"const":"0.1.0"},
+    "contents": {
+      "type":"object","additionalProperties":false,
+      "required":["tool","argv","environment","inputs","started_at","completed_at","exit","stdout","stderr","outputs"],
+      "properties": {
+        "tool": {
+          "type":"object","additionalProperties":false,"required":["name","executable"],
+          "properties":{"name":{"type":"string"},"reported_version":{"type":"string"},"executable":{"$ref":"#/$defs/blob"}}
+        },
+        "argv":{"type":"array","items":{"type":"string"}},
+        "working_directory":{"type":"string"},
+        "environment":{"type":"object","additionalProperties":{"type":"string"}},
+        "inputs":{"type":"array","items":{"$ref":"#/$defs/named_blob"}},
+        "started_at":{"type":"string","format":"date-time"},
+        "completed_at":{"type":"string","format":"date-time"},
+        "exit":{"type":"object","additionalProperties":false,"required":["success"],"properties":{"code":{"type":"integer"},"success":{"type":"boolean"}}},
+        "stdout":{"$ref":"#/$defs/retained"},
+        "stderr":{"$ref":"#/$defs/retained"},
+        "outputs":{"type":"array","items":{"$ref":"#/$defs/named_blob"}}
+      }
+    }
+  },
+  "$defs": {
+    "blob":{"type":"object","additionalProperties":false,"required":["sha256","size"],"properties":{"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"size":{"type":"integer","minimum":0}}},
+    "named_blob":{"type":"object","additionalProperties":false,"required":["name","blob"],"properties":{"name":{"type":"string"},"blob":{"$ref":"#/$defs/blob"}}},
+    "retained":{"type":"object","additionalProperties":false,"required":["encoding","content","sha256","size","sanitized"],"properties":{"encoding":{"const":"hex"},"content":{"type":"string","pattern":"^(?:[0-9a-f]{2})*$"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"size":{"type":"integer","minimum":0},"sanitized":{"const":false}}}
+  }
+}

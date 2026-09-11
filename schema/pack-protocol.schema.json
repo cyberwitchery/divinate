@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "pack-protocol.schema.json",
+  "title": "divinate pack request envelope",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "operation", "configuration", "input"],
+  "properties": {
+    "protocol_version": {"const":1},
+    "operation": {"enum":["describe","collect","normalize","evaluate"]},
+    "configuration": {},
+    "input": {}
+  }
+}
