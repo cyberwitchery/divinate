@@ -71,7 +71,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # validate schemas against the example corpus.
-      - run: pip install --quiet jsonschema referencing
+      - run: python3 -m pip install --quiet --upgrade "jsonschema>=4.18"
       - run: cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
       - run: python3 scripts/validate-schemas.py
 
