@@ -1,18 +1,58 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "project-config.schema.json",
-  "title": "repository-local security evidence configuration",
+  "title": "declarative divinate project configuration",
   "type": "object",
   "additionalProperties": false,
-  "required": ["repository", "branch"],
+  "required": ["repository"],
   "properties": {
-    "repository": {"type":"string","minLength":1},
-    "branch": {"type":"string","minLength":1},
+    "repository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["identity", "branch"],
+      "properties": {
+        "identity": {"type": "string", "minLength": 1},
+        "branch": {"type": "string", "minLength": 1}
+      }
+    },
     "packs": {
-      "type":"object",
+      "type": "object",
       "additionalProperties": {
-        "type":"object","additionalProperties":false,"required":["executable"],
-        "properties":{"executable":{"type":"string","minLength":1},"configuration":{},"timeout_seconds":{"type":"integer","minimum":1,"maximum":3600}}
+        "type": "object", "additionalProperties": false,
+        "required": ["executable"],
+        "properties": {
+          "executable": {"type": "string", "minLength": 1},
+          "config": {"type": "object"},
+          "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+        }
+      }
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "required": ["provider"],
+        "properties": {
+          "provider": {
+            "oneOf": [
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["builtin"],
+                "properties": {"builtin": {"type": "string", "minLength": 1}}
+              },
+              {
+                "type": "object", "additionalProperties": false,
+                "required": ["pack", "collector"],
+                "properties": {
+                  "pack": {"type": "string", "minLength": 1},
+                  "collector": {"type": "string", "minLength": 1}
+                }
+              }
+            ]
+          },
+          "required": {"type": "boolean"},
+          "context": {"enum": ["repository", "release"]},
+          "config": {"type": "object"}
+        }
       }
     }
   }

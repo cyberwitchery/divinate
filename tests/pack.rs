@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -9,7 +9,7 @@ use divinate::model::{
     CollectionOutcome, CollectionRun, CollectionScope, Corpus, Enumeration, Producer, Proposition,
     Subject, TimeRange,
 };
-use divinate::{pack, read_json, workflow};
+use divinate::{pack, project, read_json, workflow};
 
 fn example(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
@@ -63,11 +63,12 @@ fn open_sbom_integration_collects_through_the_pack_boundary() {
     let target = state.path().join("target.json");
     fs::write(&base, b"base").unwrap();
     fs::write(&target, b"target").unwrap();
-    workflow::configure(
+    configure_project(
         state.path(),
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            sources: BTreeMap::default(),
             packs: BTreeMap::from([(
                 "example.sbom-release-diff".into(),
                 pack_config(
@@ -89,6 +90,8 @@ fn open_sbom_integration_collects_through_the_pack_boundary() {
         "collect",
         "pack",
         "--state",
+        state.path().to_str().unwrap(),
+        "--repository-path",
         state.path().to_str().unwrap(),
         "example.sbom-release-diff",
         "release-diff",
@@ -116,6 +119,304 @@ fn open_sbom_integration_collects_through_the_pack_boundary() {
 }
 
 #[test]
+fn configured_pack_collector_runs_and_evaluates_in_normal_collect() {
+    let state = tempfile::tempdir().unwrap();
+    let tool = state.path().join("sbom-diff");
+    executable(
+        &tool,
+        b"#!/bin/sh\nprintf '%s\\n' '{\"added\":[],\"removed\":[],\"changed\":[],\"edge_diffs\":[],\"metadata_changed\":null,\"old_total\":1,\"new_total\":1,\"unchanged\":1}'\n",
+    );
+    let base = state.path().join("base.json");
+    let target = state.path().join("target.json");
+    let optional = state.path().join("optional-pack");
+    executable(&optional, b"#!/bin/sh\nexit 9\n");
+    fs::write(&base, b"base").unwrap();
+    fs::write(&target, b"target").unwrap();
+    configure_project(
+        state.path(),
+        &workflow::ProjectConfig {
+            repository: "github:cyberwitchery/example".into(),
+            branch: "main".into(),
+            sources: BTreeMap::from([
+                (
+                    "release-diff".into(),
+                    workflow::SourceConfig {
+                        provider: workflow::SourceProvider::Pack {
+                            pack: "example.sbom-release-diff".into(),
+                            collector: "release-diff".into(),
+                        },
+                        configuration: serde_json::Value::Null,
+                        context: workflow::SourceContext::Repository,
+                        enabled: true,
+                        required: true,
+                    },
+                ),
+                (
+                    "optional".into(),
+                    workflow::SourceConfig {
+                        provider: workflow::SourceProvider::Pack {
+                            pack: "example.optional".into(),
+                            collector: "extra".into(),
+                        },
+                        configuration: serde_json::Value::Null,
+                        context: workflow::SourceContext::Repository,
+                        enabled: true,
+                        required: false,
+                    },
+                ),
+            ]),
+            packs: BTreeMap::from([
+                (
+                    "example.sbom-release-diff".into(),
+                    pack_config(
+                        example("packs/sbom-collector/divinate-pack-sbom-collector"),
+                        serde_json::json!({
+                            "repository": "github:cyberwitchery/example",
+                            "release": "v1.1", "base_release": "v1.0",
+                            "revision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "base_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "executable": tool, "base_sbom": base, "target_sbom": target,
+                            "observed_at": "2026-09-08T12:00:00Z"
+                        }),
+                    ),
+                ),
+                (
+                    "example.optional".into(),
+                    pack_config(optional, serde_json::Value::Null),
+                ),
+            ]),
+        },
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["collect", "--state"])
+        .arg(state.path())
+        .arg("--repository-path")
+        .arg(state.path())
+        .args([
+            "--from",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-09T00:00:00Z",
+            "--at",
+            "2026-09-09T00:00:00Z",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("release-diff"));
+    assert!(stdout.contains("optional"));
+    assert!(stdout.contains("failed (optional)"));
+    assert!(state.path().join("assertions/current.json").is_file());
+    let corpus = divinate::load_corpus(&workflow::corpus_path(state.path())).unwrap();
+    assert_eq!(corpus.observations.len(), 1);
+    assert_eq!(workflow::load_executions(state.path()).unwrap().len(), 1);
+}
+
+#[test]
+fn required_pack_failure_is_named_and_writes_no_canonical_evidence() {
+    let state = tempfile::tempdir().unwrap();
+    let crashing = state.path().join("crashing-pack");
+    executable(&crashing, b"#!/bin/sh\nexit 7\n");
+    configure_project(
+        state.path(),
+        &workflow::ProjectConfig {
+            repository: "github:cyberwitchery/example".into(),
+            branch: "main".into(),
+            sources: BTreeMap::from([(
+                "crash".into(),
+                workflow::SourceConfig {
+                    provider: workflow::SourceProvider::Pack {
+                        pack: "example.crash".into(),
+                        collector: "anything".into(),
+                    },
+                    configuration: serde_json::Value::Null,
+                    context: workflow::SourceContext::Repository,
+                    enabled: true,
+                    required: true,
+                },
+            )]),
+            packs: BTreeMap::from([(
+                "example.crash".into(),
+                pack_config(crashing, serde_json::Value::Null),
+            )]),
+        },
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["collect", "--state"])
+        .arg(state.path())
+        .arg("--repository-path")
+        .arg(state.path())
+        .args(["--from", "2026-09-01T00:00:00Z"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("required source crash failed"));
+    assert!(!workflow::corpus_path(state.path()).exists());
+    assert!(!state.path().join("assertions/current.json").exists());
+}
+
+#[test]
+fn status_reports_saved_incomplete_collection_without_reinterpreting_it() {
+    let state = tempfile::tempdir().unwrap();
+    configure_project(
+        state.path(),
+        &workflow::ProjectConfig {
+            repository: "github:cyberwitchery/example".into(),
+            branch: "main".into(),
+            sources: BTreeMap::default(),
+            packs: BTreeMap::default(),
+        },
+    )
+    .unwrap();
+    let mut run = collection_run("partial", Proposition::RepositoryMutations);
+    run.outcome = CollectionOutcome::Partial;
+    run.observed_scope = None;
+    run.authority.clear();
+    let corpus = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![run],
+        observations: vec![],
+        sources: vec![],
+    };
+    divinate::write_json(&corpus, &workflow::corpus_path(state.path())).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["status", "--state"])
+        .arg(state.path())
+        .arg("--repository-path")
+        .arg(state.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let status = String::from_utf8(output.stdout).unwrap();
+    assert!(status.contains("degraded collections"));
+    assert!(status.contains("fixture / fixture  partial"));
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn release_context_is_supplied_consistently_to_multiple_configured_sources() {
+    let directory = tempfile::tempdir().unwrap();
+    let repository = directory.path().join("repository");
+    fs::create_dir(&repository).unwrap();
+    git(&repository, &["init", "-q"]);
+    git(&repository, &["config", "user.name", "Divinate Test"]);
+    git(
+        &repository,
+        &["config", "user.email", "divinate@example.invalid"],
+    );
+    git(
+        &repository,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:cyberwitchery/example.git",
+        ],
+    );
+    fs::write(repository.join("tracked"), "one\n").unwrap();
+    git(&repository, &["add", "tracked"]);
+    git(&repository, &["commit", "-qm", "one"]);
+    git(&repository, &["tag", "v1.0"]);
+    fs::write(repository.join("tracked"), "two\n").unwrap();
+    git(&repository, &["commit", "-qam", "two"]);
+    git(&repository, &["tag", "v1.1"]);
+
+    let state = directory.path().join("state");
+    let context_pack = directory.path().join("context-pack");
+    executable(
+        &context_pack,
+        br#"#!/usr/bin/env python3
+import json,sys
+r=json.load(sys.stdin)
+op=r["operation"]
+if op=="describe":
+ x={"id":"example.context","version":"1","protocol_version":1,"collectors":["release"],"evaluators":[],"evaluator_inputs":{},"evaluator_propositions":{},"source_contracts":[],"configuration_schema":{}}
+elif op=="collect":
+ c=r["input"]["context"]; rel=c["release"]; label=c["configuration"]["label"]
+ payload=json.dumps({"label":label,"release":rel["release"],"revision":rel["revision"],"previous_release":rel["previous_release"],"previous_revision":rel["previous_revision"]},separators=(",",":"))
+ x={"adapter":"context","subject":{"kind":"release","id":c["repository"]+":"+rel["release"],"repository":c["repository"],"release":rel["release"],"revision":rel["revision"],"base_release":rel["previous_release"],"base_revision":rel["previous_revision"]},"observed_at":c["observed_at"],"command":{"tool_name":"printf","executable":"/usr/bin/printf","argv":["%s",payload],"inputs":{}}}
+elif op=="normalize":
+ p=json.loads(r["input"]["source"]["content"]); x={"claim_key":"context:"+p["label"],"data":p,"evidence_class":"observed_state","kind":"configuration_snapshot","severity":None,"status":None}
+else:
+ print(json.dumps({"ok":False,"error":"unsupported"})); raise SystemExit
+print(json.dumps({"ok":True,"result":x},separators=(",",":")))
+"#,
+    );
+    configure_project(
+        &repository,
+        &workflow::ProjectConfig {
+            repository: "github:cyberwitchery/example".into(),
+            branch: "main".into(),
+            packs: BTreeMap::from([(
+                "example.context".into(),
+                pack_config(context_pack, serde_json::json!({})),
+            )]),
+            sources: [("first", "one"), ("second", "two")]
+                .into_iter()
+                .map(|(id, label)| {
+                    (
+                        id.into(),
+                        workflow::SourceConfig {
+                            provider: workflow::SourceProvider::Pack {
+                                pack: "example.context".into(),
+                                collector: "release".into(),
+                            },
+                            configuration: serde_json::json!({"label": label}),
+                            context: workflow::SourceContext::Release,
+                            enabled: true,
+                            required: true,
+                        },
+                    )
+                })
+                .collect(),
+        },
+    )
+    .unwrap();
+    cli(&[
+        "collect",
+        "--state",
+        state.to_str().unwrap(),
+        "--repository-path",
+        repository.to_str().unwrap(),
+        "--release",
+        "v1.1",
+        "--base-release",
+        "v1.0",
+        "--from",
+        "2026-01-01T00:00:00Z",
+        "--until",
+        "2030-01-01T00:00:00Z",
+        "--at",
+        "2030-01-01T00:00:00Z",
+    ]);
+    let corpus = divinate::load_corpus(&workflow::corpus_path(&state)).unwrap();
+    assert_eq!(corpus.observations.len(), 2);
+    let revisions = corpus
+        .observations
+        .iter()
+        .map(|observation| observation.subject.qualifier("revision").unwrap())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(revisions.len(), 1);
+    assert_eq!(
+        corpus
+            .observations
+            .iter()
+            .map(|observation| observation.data["label"].as_str().unwrap())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["one", "two"])
+    );
+    cli(&["verify", "--state", state.to_str().unwrap()]);
+}
+
+#[test]
 fn pack_collection_and_external_assertion_keep_core_provenance() {
     let state = tempfile::tempdir().unwrap();
     let evaluator_path = state.path().join("evaluator-pack");
@@ -134,11 +435,12 @@ fn pack_collection_and_external_assertion_keep_core_provenance() {
         }),
     );
     let evaluator = pack_config(evaluator_path.clone(), serde_json::Value::Null);
-    workflow::configure(
+    configure_project(
         state.path(),
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            sources: BTreeMap::default(),
             packs: BTreeMap::from([
                 ("example.backup-control".into(), collector),
                 ("example.backup-evaluator".into(), evaluator),
@@ -150,6 +452,8 @@ fn pack_collection_and_external_assertion_keep_core_provenance() {
         "collect",
         "pack",
         "--state",
+        state.path().to_str().unwrap(),
+        "--repository-path",
         state.path().to_str().unwrap(),
         "example.backup-control",
         "backup-encryption",
@@ -462,6 +766,8 @@ fn evaluate_at(state: &Path, label: &str, at: &str) {
         "evaluate",
         "--state",
         state.to_str().unwrap(),
+        "--repository-path",
+        state.to_str().unwrap(),
         "--label",
         label,
         "--release",
@@ -590,4 +896,38 @@ fn executable(path: &Path, bytes: &[u8]) {
     let mut permissions = fs::metadata(path).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).unwrap();
+}
+
+fn git(repository: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn configure_project(root: &Path, config: &workflow::ProjectConfig) -> divinate::error::Result<()> {
+    if !root.join(".git").exists() {
+        git(root, &["init", "-q"]);
+        let repository = config
+            .repository
+            .strip_prefix("github:")
+            .unwrap_or(&config.repository);
+        git(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                &format!("git@github.com:{repository}.git"),
+            ],
+        );
+    }
+    project::store(root, &project::from_legacy(config))
 }

@@ -11,7 +11,7 @@ use divinate::assertions::{self, DerivedAssertion, EvaluationTarget};
 use divinate::dossier;
 use divinate::error::{Error, Result};
 use divinate::execution::{self, ExecutionRequest, NamedPath};
-use divinate::model::{CollectionOutcome, Observation, ObservationKind};
+use divinate::model::{CollectionOutcome, Corpus, Observation, ObservationKind};
 use divinate::{collect, load_corpus, parse_timestamp, read_json, source_bytes, write_json};
 
 #[derive(Parser)]
@@ -23,32 +23,63 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// initialize local evidence state
+    /// configure this repository
     Init {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
         #[arg(long)]
-        repository: String,
-        #[arg(long, default_value = "main")]
-        branch: String,
+        branch: Option<String>,
+        #[arg(long, default_value = ".")]
+        repository_path: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
-    /// collect evidence
+    /// bring configured evidence and the current evaluation up to date
     Collect {
         #[command(subcommand)]
-        command: CollectCommand,
+        command: Option<CollectCommand>,
+        #[command(flatten)]
+        args: ProductCollectArgs,
     },
-    /// list configured packs
+    /// summarize the latest saved state
+    Status {
+        #[arg(long, default_value = ".evidence")]
+        state: PathBuf,
+        #[arg(long, default_value = ".")]
+        repository_path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// compare the current evaluation with the previous one
+    Review {
+        #[arg(long, default_value = ".evidence")]
+        state: PathBuf,
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value = "current")]
+        current: String,
+        #[arg(long, default_value = "review")]
+        output: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// render a view from saved assertions
+    Export {
+        #[command(subcommand)]
+        kind: ExportCommand,
+    },
+    /// advanced: list configured packs
     Packs {
-        #[arg(long, default_value = ".evidence")]
-        state: PathBuf,
+        #[arg(long, default_value = ".")]
+        repository_path: PathBuf,
     },
-    /// inspect one configured external pack
+    /// advanced: inspect one configured external pack
     Pack {
-        #[arg(long, default_value = ".evidence")]
-        state: PathBuf,
+        #[arg(long, default_value = ".")]
+        repository_path: PathBuf,
         id: String,
     },
-    /// run a local tool and retain its provenance
+    /// advanced: run a local tool and retain its provenance
     Run {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
@@ -70,10 +101,12 @@ enum Command {
         #[arg(last = true)]
         argv: Vec<String>,
     },
-    /// derive and save assertions
+    /// advanced: derive and save assertions
     Evaluate {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        #[arg(long, default_value = ".")]
+        repository_path: PathBuf,
         #[arg(long, default_value = "current")]
         label: String,
         #[arg(long)]
@@ -81,28 +114,12 @@ enum Command {
         #[command(flatten)]
         target: TargetArgs,
     },
-    /// compare two saved evaluations
-    Review {
-        #[arg(long, default_value = ".evidence")]
-        state: PathBuf,
-        #[arg(long)]
-        since: String,
-        #[arg(long, default_value = "current")]
-        current: String,
-        #[arg(long, default_value = "review")]
-        output: String,
-    },
-    /// render a view from saved assertions
-    Export {
-        #[command(subcommand)]
-        kind: ExportCommand,
-    },
-    /// verify all retained provenance offline
+    /// inspect: verify all retained provenance offline
     Verify {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
     },
-    /// inspect an assertion's provenance
+    /// inspect: show an assertion's provenance
     Provenance {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
@@ -110,7 +127,7 @@ enum Command {
         evaluation: String,
         assertion_id: String,
     },
-    /// extract a retained command stream
+    /// inspect: extract a retained command stream
     Extract {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
@@ -135,8 +152,8 @@ enum Command {
     #[command(hide = true)]
     Tools { corpus: PathBuf },
     /// extract an observation's verified source
-    #[command(hide = true)]
-    Source {
+    #[command(name = "source-bytes", hide = true)]
+    SourceBytes {
         corpus: PathBuf,
         evidence_id: String,
     },
@@ -234,17 +251,21 @@ enum ExportCommand {
         evaluation: String,
         #[arg(long, default_value = "dd-response")]
         output: String,
+        #[arg(long)]
+        json: bool,
     },
 }
 
 #[derive(Subcommand)]
 enum CollectCommand {
-    /// collect a release dependency diff and gate
+    /// compatibility: collect one explicit release sbom comparison
     Release(Box<ReleaseArgs>),
     /// collect with a configured pack
     Pack {
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        #[arg(long, default_value = ".")]
+        repository_path: PathBuf,
         id: String,
         collector: String,
         #[arg(long)]
@@ -290,10 +311,110 @@ struct ReleaseArgs {
     force: bool,
 }
 
+#[derive(Args)]
+struct ProductCollectArgs {
+    #[arg(long, default_value = ".evidence")]
+    state: PathBuf,
+    #[arg(long, default_value = ".")]
+    repository_path: PathBuf,
+    #[arg(long)]
+    release: Option<String>,
+    #[arg(long)]
+    base_release: Option<String>,
+    #[arg(long)]
+    from: Option<String>,
+    #[arg(long)]
+    until: Option<String>,
+    #[arg(long)]
+    at: Option<String>,
+    #[arg(long)]
+    force: bool,
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Clone)]
 struct NamedPathArg {
     name: String,
     path: PathBuf,
+}
+
+struct PreparedPackCollection {
+    pack: String,
+    collector: String,
+    observation: String,
+    corpus: Corpus,
+    invocations: Vec<divinate::pack::PackCapture>,
+    execution: divinate::execution::ExecutionCapture,
+}
+
+struct PreparedSource {
+    corpus: Corpus,
+    executions: Vec<divinate::execution::ExecutionCapture>,
+    invocations: Vec<divinate::pack::PackCapture>,
+    detail: String,
+}
+
+#[derive(Clone)]
+struct ReleaseContext {
+    release: String,
+    revision: String,
+    previous_release: String,
+    previous_revision: String,
+}
+
+#[derive(serde::Serialize)]
+struct SourceReport {
+    source: String,
+    status: String,
+    detail: String,
+}
+
+#[derive(serde::Serialize)]
+struct ProductCollectionReport {
+    repository: String,
+    branch: String,
+    release: String,
+    sources: Vec<SourceReport>,
+    new_observations: usize,
+    outcomes: BTreeMap<String, usize>,
+    dossier: String,
+}
+
+#[derive(serde::Serialize)]
+struct StatusReport {
+    repository: String,
+    branch: String,
+    last_collected: Option<String>,
+    last_evaluated: Option<String>,
+    outcomes: BTreeMap<String, usize>,
+    evidence_sources: BTreeMap<String, usize>,
+    configured_sources: Vec<ConfiguredSourceStatus>,
+    degraded_collections: Vec<DegradedCollection>,
+    unresolved_gaps: usize,
+    since_previous: Option<StatusChanges>,
+}
+
+#[derive(serde::Serialize)]
+struct ConfiguredSourceStatus {
+    source: String,
+    required: Option<bool>,
+    state: String,
+    detail: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct DegradedCollection {
+    collector: String,
+    outcome: String,
+    limitations: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct StatusChanges {
+    claims_changed: usize,
+    new_gaps: usize,
+    coverage_regressions: usize,
 }
 
 #[derive(Args)]
@@ -391,35 +512,45 @@ fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Init {
             state,
-            repository,
             branch,
-        } => divinate::workflow::configure(
-            &state,
-            &divinate::workflow::ProjectConfig {
-                repository,
-                branch,
-                packs: BTreeMap::default(),
-            },
-        ),
-        Command::Collect { command } => match command {
-            CollectCommand::Release(args) => collect_release(*args),
-            CollectCommand::Pack {
+            repository_path,
+            json,
+        } => init_repository(&state, &repository_path, branch, json),
+        Command::Collect { command, args } => match command {
+            Some(CollectCommand::Release(args)) => collect_release(*args),
+            Some(CollectCommand::Pack {
                 state,
+                repository_path,
                 id,
                 collector,
                 context,
-            } => collect_pack(&state, &id, &collector, context.as_deref()),
-            CollectCommand::Manifest {
+            }) => collect_pack(
+                &state,
+                &repository_path,
+                &id,
+                &collector,
+                context.as_deref(),
+            ),
+            Some(CollectCommand::Manifest {
                 state,
                 manifest,
                 acquisitions,
-            } => {
+            }) => {
                 let increment = collect(&manifest).map_err(collection_error)?;
                 record_increment(&state, &increment, &acquisitions).map_err(collection_error)
             }
+            None => collect_configured(&args),
         },
-        Command::Packs { state } => list_packs(&state),
-        Command::Pack { state, id } => inspect_pack(&state, &id),
+        Command::Status {
+            state,
+            repository_path,
+            json,
+        } => state_status(&state, &repository_path, json),
+        Command::Packs { repository_path } => list_packs(&repository_path),
+        Command::Pack {
+            repository_path,
+            id,
+        } => inspect_pack(&repository_path, &id),
         Command::Run {
             state,
             tool,
@@ -445,22 +576,31 @@ fn run(cli: Cli) -> Result<()> {
         ),
         Command::Evaluate {
             state,
+            repository_path,
             label,
             contracts,
             target,
-        } => evaluate_state(&state, &label, contracts.as_deref(), target),
+        } => evaluate_state(
+            &state,
+            &repository_path,
+            &label,
+            contracts.as_deref(),
+            target,
+        ),
         Command::Review {
             state,
             since,
             current,
             output,
-        } => state_review(&state, &since, &current, &output),
+            json,
+        } => state_review(&state, since.as_deref(), &current, &output, json),
         Command::Export { kind } => match kind {
             ExportCommand::Dd {
                 state,
                 evaluation,
                 output,
-            } => state_dd(&state, &evaluation, &output),
+                json,
+            } => state_dd(&state, &evaluation, &output, json),
         },
         Command::Verify { state } => verify_state(&state),
         Command::Provenance {
@@ -481,7 +621,7 @@ fn run(cli: Cli) -> Result<()> {
             kind,
         } => query(&corpus, revision.as_deref(), tool.as_deref(), kind),
         Command::Tools { corpus } => list_tools(&corpus),
-        Command::Source {
+        Command::SourceBytes {
             corpus,
             evidence_id,
         } => recover_source(&corpus, &evidence_id),
@@ -563,6 +703,545 @@ fn list_tools(corpus_path: &std::path::Path) -> Result<()> {
         .map(|(name, version)| serde_json::json!({"name": name, "version": version}))
         .collect::<Vec<_>>();
     print_json(&tools)
+}
+
+fn init_repository(
+    state: &std::path::Path,
+    repository_path: &std::path::Path,
+    branch: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let repository = divinate::release::repository_identity(repository_path)?;
+    let branch = branch.map_or_else(|| divinate::release::current_branch(repository_path), Ok)?;
+    divinate::workflow::init(state)?;
+    divinate::workflow::ensure_repository_identity(state, &repository)?;
+    let project_path = repository_path.join(divinate::project::PROJECT_FILE);
+    let created = if project_path.exists() {
+        divinate::project::load(repository_path)?;
+        false
+    } else if state.join(divinate::workflow::CONFIG_FILE).exists() {
+        let legacy = divinate::workflow::load_legacy_config(state)?;
+        if legacy.repository != repository {
+            return Err(Error::Provenance(format!(
+                "legacy configuration identifies repository {}, not {repository}",
+                legacy.repository
+            )));
+        }
+        divinate::project::store(repository_path, &divinate::project::from_legacy(&legacy))?;
+        true
+    } else {
+        divinate::project::initialize(repository_path, &repository, &branch)?
+    };
+    let branch = divinate::project::load(repository_path)?.config.branch;
+    if json {
+        print_json(&serde_json::json!({
+            "repository": repository,
+            "branch": branch,
+            "state": state,
+            "configuration_created": created,
+        }))
+    } else {
+        let mut out = io::stdout().lock();
+        writeln!(out, "Initialized").map_err(stdout_error)?;
+        writeln!(out, "  Repository  {repository}").map_err(stdout_error)?;
+        writeln!(out, "  Branch      {branch}").map_err(stdout_error)?;
+        writeln!(out, "  Config      {}", project_path.display()).map_err(stdout_error)?;
+        writeln!(out, "  State       {}", state.display()).map_err(stdout_error)
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
+    let project = divinate::project::load(&args.repository_path)?;
+    let config = project.config;
+    divinate::workflow::ensure_repository_identity(&args.state, &config.repository)?;
+    let corpus_path = divinate::workflow::corpus_path(&args.state);
+    let base = if corpus_path.exists() {
+        load_corpus(&corpus_path)?
+    } else {
+        empty_corpus()
+    };
+    let before = base.observations.len();
+    let at = args.at.as_ref().map_or_else(
+        || Ok(time::OffsetDateTime::now_utc()),
+        |value| parse_timestamp(value),
+    )?;
+    let evaluated_at = format_timestamp(at)?;
+    let until = args.until.clone().unwrap_or_else(|| evaluated_at.clone());
+    let enabled = config
+        .sources
+        .iter()
+        .filter(|(_, source)| source.enabled)
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        return Err(Error::Invalid(
+            "divinate.yaml defines no evidence sources; add one under sources".into(),
+        ));
+    }
+    let needs_release = enabled
+        .iter()
+        .any(|(_, source)| source.context == divinate::workflow::SourceContext::Release);
+    let release_context = needs_release
+        .then(|| resolve_release_context(&config, &base, args))
+        .transpose()?;
+    let from = infer_evaluation_start(
+        args,
+        release_context.as_ref(),
+        current_evaluated_at(&args.state)?,
+    )?;
+    if parse_timestamp(&from)? >= parse_timestamp(&until)? {
+        return Err(Error::Invalid(format!(
+            "automatic evaluation interval is empty ({from} to {until}); choose --from and --until"
+        )));
+    }
+    let mut increment = empty_corpus();
+    let mut executions = Vec::new();
+    let mut invocations = Vec::new();
+    let mut reports = Vec::new();
+    let mut unavailable_optional_packs = BTreeSet::new();
+
+    for (id, source) in enabled {
+        let context = source_context(
+            &config,
+            source,
+            release_context.as_ref(),
+            &args.repository_path,
+            &from,
+            &until,
+            &evaluated_at,
+        );
+        match prepare_source(args, &config, source, release_context.as_ref(), &context) {
+            Ok(prepared) => {
+                let incomplete = prepared
+                    .corpus
+                    .collections
+                    .iter()
+                    .any(|run| run.outcome != CollectionOutcome::Complete);
+                increment = divinate::workflow::merge(&increment, &prepared.corpus)?;
+                executions.extend(prepared.executions);
+                invocations.extend(prepared.invocations);
+                reports.push(SourceReport {
+                    source: id.clone(),
+                    status: if incomplete { "incomplete" } else { "complete" }.into(),
+                    detail: prepared.detail,
+                });
+            }
+            Err(error) if !source.required => {
+                if let divinate::workflow::SourceProvider::Pack { pack, .. } = &source.provider {
+                    unavailable_optional_packs.insert(pack.clone());
+                }
+                reports.push(SourceReport {
+                    source: id.clone(),
+                    status: "failed (optional)".into(),
+                    detail: error.to_string(),
+                });
+            }
+            Err(error) => {
+                return Err(Error::Collection(format!(
+                    "required source {id} failed: {error}"
+                )));
+            }
+        }
+    }
+
+    let preview = divinate::workflow::merge(&base, &increment)?;
+    let release = release_context.map_or_else(
+        || divinate::workflow::latest_release(&preview, at),
+        |context| Ok(context.release),
+    )?;
+    divinate::workflow::store_project_configuration(&args.state, &project.sha256, &project.bytes)?;
+    let merged = commit_collections(&args.state, &increment, &executions, &invocations)?;
+    divinate::workflow::store_collection_cycle(
+        &args.state,
+        divinate::workflow::CollectionCycleContents {
+            repository: config.repository.clone(),
+            branch: config.branch.clone(),
+            project_config_sha256: project.sha256.clone(),
+            sources: reports
+                .iter()
+                .map(|report| {
+                    (
+                        report.source.clone(),
+                        divinate::workflow::SourceCollectionRecord {
+                            status: report.status.clone(),
+                            detail: report.detail.clone(),
+                        },
+                    )
+                })
+                .collect(),
+            observation_ids: increment
+                .observations
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+            execution_transcript_ids: executions
+                .iter()
+                .map(|item| item.transcript.id.clone())
+                .collect(),
+            pack_invocation_ids: invocations
+                .iter()
+                .map(|item| item.invocation.id.clone())
+                .collect(),
+            completed_at: evaluated_at.clone(),
+        },
+    )?;
+    evaluate_state_with_skips(
+        &args.state,
+        &config,
+        Some(&project.sha256),
+        "next",
+        None,
+        TargetArgs {
+            repository: Some(config.repository.clone()),
+            branch: Some(config.branch.clone()),
+            release: Some(release.clone()),
+            from,
+            until,
+            at: Some(evaluated_at),
+        },
+        &unavailable_optional_packs,
+    )
+    .map_err(|error| {
+        Error::Collection(format!(
+            "evidence was recorded, but current evaluation failed: {error}"
+        ))
+    })?;
+    promote_current_evaluation(&args.state, "next")?;
+    let assertions = load_evaluation(&args.state, "current")?;
+    let report = ProductCollectionReport {
+        repository: config.repository,
+        branch: config.branch,
+        release,
+        sources: reports,
+        new_observations: merged.observations.len().saturating_sub(before),
+        outcomes: outcome_counts(&assertions),
+        dossier: args
+            .state
+            .join("dossiers/current.md")
+            .to_string_lossy()
+            .into_owned(),
+    };
+    if args.json {
+        print_json(&report)
+    } else {
+        render_collection_report(&report)
+    }
+}
+
+fn resolve_release_context(
+    config: &divinate::workflow::ProjectConfig,
+    corpus: &Corpus,
+    args: &ProductCollectArgs,
+) -> Result<ReleaseContext> {
+    let actual = divinate::release::repository_identity(&args.repository_path)?;
+    if actual != config.repository {
+        return Err(Error::Provenance(format!(
+            "repository path resolves to {actual}, not configured repository {}",
+            config.repository
+        )));
+    }
+    let release = args.release.clone().map_or_else(
+        || divinate::release::release_at_head(&args.repository_path),
+        Ok,
+    )?;
+    let known_releases = corpus
+        .observations
+        .iter()
+        .filter_map(|item| item.subject.qualifier("release").map(str::to_owned))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let base_release = args.base_release.clone().map_or_else(
+        || divinate::release::previous_release(&args.repository_path, &release, &known_releases),
+        Ok,
+    )?;
+    let previous_revision =
+        divinate::release::resolve_release(&args.repository_path, &base_release)?;
+    let revision = divinate::release::resolve_release(&args.repository_path, &release)?;
+    validate_recorded_revision(corpus, &base_release, &previous_revision)?;
+    validate_recorded_revision(corpus, &release, &revision)?;
+    if previous_revision == revision {
+        return Err(Error::Provenance(
+            "base and target releases resolve to the same revision".into(),
+        ));
+    }
+    Ok(ReleaseContext {
+        release,
+        revision,
+        previous_release: base_release,
+        previous_revision,
+    })
+}
+
+fn validate_recorded_revision(corpus: &Corpus, release: &str, revision: &str) -> Result<()> {
+    if let Some(expected) = recorded_revision(corpus, release)? {
+        if expected != revision {
+            return Err(Error::Provenance(format!(
+                "release {release} resolves to {revision}, not expected revision {expected}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn infer_evaluation_start(
+    args: &ProductCollectArgs,
+    release: Option<&ReleaseContext>,
+    current: Option<String>,
+) -> Result<String> {
+    if let Some(from) = &args.from {
+        return Ok(from.clone());
+    }
+    if let Some(current) = current {
+        return Ok(current);
+    }
+    release.map_or_else(
+        || {
+            Err(Error::Invalid(
+                "cannot determine evaluation start; choose one with --from".into(),
+            ))
+        },
+        |context| divinate::release::release_time(&args.repository_path, &context.previous_release),
+    )
+}
+
+fn source_context(
+    project: &divinate::workflow::ProjectConfig,
+    source: &divinate::workflow::SourceConfig,
+    release: Option<&ReleaseContext>,
+    repository_path: &std::path::Path,
+    from: &str,
+    until: &str,
+    observed_at: &str,
+) -> serde_json::Value {
+    let release = (source.context == divinate::workflow::SourceContext::Release)
+        .then_some(release)
+        .flatten()
+        .map(|release| {
+            serde_json::json!({
+                "release": release.release,
+                "revision": release.revision,
+                "previous_release": release.previous_release,
+                "previous_revision": release.previous_revision,
+            })
+        });
+    serde_json::json!({
+        "repository": project.repository,
+        "branch": project.branch,
+        "repository_path": repository_path,
+        "interval": {"from": from, "until": until},
+        "observed_at": observed_at,
+        "release": release,
+        "configuration": source.configuration,
+    })
+}
+
+fn prepare_source(
+    args: &ProductCollectArgs,
+    project: &divinate::workflow::ProjectConfig,
+    configured: &divinate::workflow::SourceConfig,
+    release: Option<&ReleaseContext>,
+    context: &serde_json::Value,
+) -> Result<PreparedSource> {
+    match &configured.provider {
+        divinate::workflow::SourceProvider::Builtin { source } if source == "release-sbom" => {
+            prepare_release_sbom_source(args, project, configured, release)
+        }
+        divinate::workflow::SourceProvider::Builtin { source } => Err(Error::Invalid(format!(
+            "unknown built-in source {source:?}"
+        ))),
+        divinate::workflow::SourceProvider::Pack { pack, collector } => {
+            let config = project
+                .packs
+                .get(pack)
+                .ok_or_else(|| Error::Invalid(format!("pack {pack:?} is not configured")))?;
+            let prepared = prepare_pack_collection(config, pack, collector, context)?;
+            Ok(PreparedSource {
+                corpus: prepared.corpus,
+                executions: vec![prepared.execution],
+                invocations: prepared.invocations,
+                detail: "evidence recorded".into(),
+            })
+        }
+    }
+}
+
+fn prepare_release_sbom_source(
+    args: &ProductCollectArgs,
+    project: &divinate::workflow::ProjectConfig,
+    source: &divinate::workflow::SourceConfig,
+    release: Option<&ReleaseContext>,
+) -> Result<PreparedSource> {
+    let release = release
+        .ok_or_else(|| Error::Invalid("release-sbom requires release collection context".into()))?;
+    let existing = divinate::workflow::load_executions(&args.state)?;
+    let blobs = divinate::workflow::load_blobs(&args.state)?;
+    let capture = divinate::release::collect_configured(
+        &divinate::release::ConfiguredReleaseRequest {
+            repository: project.repository.clone(),
+            repository_path: args.repository_path.clone(),
+            base_release: release.previous_release.clone(),
+            release: release.release.clone(),
+            base_revision: release.previous_revision.clone(),
+            revision: release.revision.clone(),
+            configuration: source.configuration.clone(),
+            force: args.force,
+        },
+        &existing,
+        &blobs,
+    )?;
+    let detail = if capture.result.reused_executions.is_empty() {
+        "release dependency evidence recorded".into()
+    } else {
+        "verified release dependency evidence reused".into()
+    };
+    Ok(PreparedSource {
+        corpus: capture.corpus,
+        executions: capture.executions,
+        invocations: vec![],
+        detail,
+    })
+}
+
+fn recorded_revision(corpus: &Corpus, release: &str) -> Result<Option<String>> {
+    let revisions = corpus
+        .observations
+        .iter()
+        .filter(|item| item.subject.qualifier("release") == Some(release))
+        .filter_map(|item| item.subject.qualifier("revision"))
+        .collect::<BTreeSet<_>>();
+    match revisions.len() {
+        0 => Ok(None),
+        1 => Ok(revisions.into_iter().next().map(str::to_owned)),
+        _ => Err(Error::Invalid(format!(
+            "recorded state identifies multiple revisions for release {release}"
+        ))),
+    }
+}
+
+fn empty_corpus() -> Corpus {
+    Corpus {
+        collections: vec![],
+        observations: vec![],
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        sources: vec![],
+    }
+}
+
+fn format_timestamp(value: time::OffsetDateTime) -> Result<String> {
+    value
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))
+}
+
+fn current_evaluated_at(state: &std::path::Path) -> Result<Option<String>> {
+    let path = state.join("assertions/current.json");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let assertions: Vec<DerivedAssertion> = read_json(&path)?;
+    Ok(assertions.first().map(|item| item.evaluated_at.clone()))
+}
+
+fn load_evaluation(state: &std::path::Path, label: &str) -> Result<Vec<DerivedAssertion>> {
+    read_json(&state.join("assertions").join(format!("{label}.json")))
+}
+
+fn promote_current_evaluation(state: &std::path::Path, next: &str) -> Result<()> {
+    let paths = [
+        ("assertions", ".json"),
+        ("assertions", ".contracts.json"),
+        ("assertions", ".configuration.json"),
+        ("dossiers", ".json"),
+        ("dossiers", ".md"),
+    ];
+    for (directory, suffix) in paths {
+        let next_path = state.join(directory).join(format!("{next}{suffix}"));
+        if !next_path.is_file() {
+            return Err(Error::Invalid(format!(
+                "automatic evaluation did not produce {}",
+                next_path.display()
+            )));
+        }
+    }
+    for (directory, suffix) in paths {
+        let current = state.join(directory).join(format!("current{suffix}"));
+        if current.is_file() {
+            let previous = state.join(directory).join(format!("previous{suffix}"));
+            std::fs::copy(&current, &previous).map_err(|source| Error::Io {
+                path: previous,
+                source,
+            })?;
+        }
+    }
+    for (directory, suffix) in paths {
+        let next_path = state.join(directory).join(format!("{next}{suffix}"));
+        let current = state.join(directory).join(format!("current{suffix}"));
+        std::fs::copy(&next_path, &current).map_err(|source| Error::Io {
+            path: current,
+            source,
+        })?;
+        std::fs::remove_file(&next_path).map_err(|source| Error::Io {
+            path: next_path,
+            source,
+        })?;
+    }
+    Ok(())
+}
+
+fn outcome_counts(assertions: &[DerivedAssertion]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::from([
+        ("contradicted".into(), 0),
+        ("insufficient evidence".into(), 0),
+        ("not automatable".into(), 0),
+        ("stale".into(), 0),
+        ("supported".into(), 0),
+    ]);
+    for assertion in assertions {
+        *counts
+            .entry(outcome_label(assertion.outcome).into())
+            .or_default() += 1;
+    }
+    counts
+}
+
+const fn outcome_label(outcome: assertions::Outcome) -> &'static str {
+    match outcome {
+        assertions::Outcome::Supported => "supported",
+        assertions::Outcome::Contradicted => "contradicted",
+        assertions::Outcome::InsufficientEvidence => "insufficient evidence",
+        assertions::Outcome::Stale => "stale",
+        assertions::Outcome::NotAutomatable => "not automatable",
+    }
+}
+
+fn render_collection_report(report: &ProductCollectionReport) -> Result<()> {
+    let mut out = io::stdout().lock();
+    writeln!(out, "Collected").map_err(stdout_error)?;
+    for source in &report.sources {
+        writeln!(
+            out,
+            "  {:<36} {} ({})",
+            source.source, source.status, source.detail
+        )
+        .map_err(stdout_error)?;
+    }
+    writeln!(out, "\nEvaluation").map_err(stdout_error)?;
+    for name in [
+        "supported",
+        "insufficient evidence",
+        "contradicted",
+        "stale",
+        "not automatable",
+    ] {
+        writeln!(
+            out,
+            "  {name:<24} {}",
+            report.outcomes.get(name).copied().unwrap_or_default()
+        )
+        .map_err(stdout_error)?;
+    }
+    writeln!(out, "\ndossier: {}", report.dossier).map_err(stdout_error)
 }
 
 fn list_collections(corpus_path: &std::path::Path, incomplete: bool) -> Result<()> {
@@ -668,13 +1347,119 @@ fn record_increment(
     }))
 }
 
+fn commit_collections(
+    state: &std::path::Path,
+    increment: &Corpus,
+    executions: &[divinate::execution::ExecutionCapture],
+    invocations: &[divinate::pack::PackCapture],
+) -> Result<Corpus> {
+    preflight_collections(state, increment, executions, invocations)?;
+    divinate::workflow::store_pack_invocations(state, invocations)?;
+    divinate::workflow::accumulate_with_executions(state, increment, &[], executions)
+}
+
+fn preflight_collections(
+    state: &std::path::Path,
+    increment: &Corpus,
+    captures: &[divinate::execution::ExecutionCapture],
+    pack_captures: &[divinate::pack::PackCapture],
+) -> Result<()> {
+    let corpus_path = divinate::workflow::corpus_path(state);
+    let base = if corpus_path.exists() {
+        load_corpus(&corpus_path)?
+    } else {
+        Corpus {
+            collections: vec![],
+            observations: vec![],
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            sources: vec![],
+        }
+    };
+    let merged = divinate::workflow::merge(&base, increment)?;
+    let acquisitions = divinate::workflow::load_transcripts(state)?;
+    let registry = divinate::workflow::load_registry(state)?;
+    divinate::provenance::verify_collection_links(&merged, &acquisitions, &registry)?;
+
+    let mut blobs = divinate::workflow::load_blobs(state)?;
+    let mut executions = divinate::workflow::load_executions(state)?;
+    for capture in captures {
+        execution::verify(&capture.transcript, &capture.blobs)?;
+        merge_blob_bytes(&mut blobs, &capture.blobs)?;
+        merge_execution(&mut executions, &capture.transcript)?;
+    }
+    for capture in pack_captures {
+        let digest = divinate::hex_digest(&capture.executable_bytes);
+        if let Some(existing) = blobs.get(&digest) {
+            if existing != &capture.executable_bytes {
+                return Err(Error::Invalid(format!("blob collision: {digest}")));
+            }
+        } else {
+            blobs.insert(digest, capture.executable_bytes.clone());
+        }
+    }
+    divinate::provenance::verify_execution_links(&merged, &executions, &blobs)?;
+
+    let mut invocations = divinate::workflow::load_pack_invocations(state)?;
+    for capture in pack_captures {
+        divinate::pack::verify(&capture.invocation, &blobs)?;
+        if let Some(existing) = invocations
+            .iter()
+            .find(|item| item.id == capture.invocation.id)
+        {
+            if existing != &capture.invocation {
+                return Err(Error::Invalid(format!(
+                    "pack invocation id collision: {}",
+                    capture.invocation.id
+                )));
+            }
+        } else {
+            invocations.push(capture.invocation.clone());
+        }
+    }
+    divinate::pack::verify_observation_links(&merged, &invocations, &executions, &blobs)
+}
+
+fn merge_blob_bytes(
+    target: &mut BTreeMap<String, Vec<u8>>,
+    additions: &BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    for (digest, bytes) in additions {
+        if let Some(existing) = target.get(digest) {
+            if existing != bytes {
+                return Err(Error::Invalid(format!("blob collision: {digest}")));
+            }
+        } else {
+            target.insert(digest.clone(), bytes.clone());
+        }
+    }
+    Ok(())
+}
+
+fn merge_execution(
+    executions: &mut Vec<divinate::execution::ExecutionTranscript>,
+    addition: &divinate::execution::ExecutionTranscript,
+) -> Result<()> {
+    if let Some(existing) = executions.iter().find(|item| item.id == addition.id) {
+        if existing != addition {
+            return Err(Error::Invalid(format!(
+                "execution id collision: {}",
+                addition.id
+            )));
+        }
+    } else {
+        executions.push(addition.clone());
+    }
+    Ok(())
+}
+
 fn collect_release(args: ReleaseArgs) -> Result<()> {
-    let config = divinate::workflow::load_config(&args.state)?;
+    let repository = divinate::release::repository_identity(&args.repository_path)?;
+    divinate::workflow::ensure_repository_identity(&args.state, &repository)?;
     let existing = divinate::workflow::load_executions(&args.state).map_err(provenance_error)?;
     let blobs = divinate::workflow::load_blobs(&args.state).map_err(provenance_error)?;
     let capture = divinate::release::collect(
         &divinate::release::ReleaseRequest {
-            repository: config.repository,
+            repository,
             repository_path: args.repository_path,
             base_release: args.base_release,
             release: args.release,
@@ -701,15 +1486,12 @@ fn collect_release(args: ReleaseArgs) -> Result<()> {
     print_json(&capture.result)
 }
 
-fn configured_pack(state: &std::path::Path, id: &str) -> Result<divinate::pack::PackConfig> {
-    divinate::workflow::load_config(state)?
+fn inspect_pack(repository_path: &std::path::Path, id: &str) -> Result<()> {
+    let config = divinate::project::load(repository_path)?
+        .config
         .packs
         .remove(id)
-        .ok_or_else(|| Error::Invalid(format!("pack {id:?} is not configured")))
-}
-
-fn inspect_pack(state: &std::path::Path, id: &str) -> Result<()> {
-    let config = configured_pack(state, id)?;
+        .ok_or_else(|| Error::Invalid(format!("pack {id:?} is not configured")))?;
     let (metadata, capture) = divinate::pack::describe(&config)?;
     if metadata.id != id {
         return Err(Error::Invalid(format!(
@@ -723,8 +1505,9 @@ fn inspect_pack(state: &std::path::Path, id: &str) -> Result<()> {
     }))
 }
 
-fn list_packs(state: &std::path::Path) -> Result<()> {
-    let config = divinate::workflow::load_config(state)?;
+fn list_packs(repository_path: &std::path::Path) -> Result<()> {
+    let project = divinate::project::load(repository_path)?;
+    let config = project.config;
     let mut packs = Vec::new();
     for (id, pack_config) in config.packs {
         let (metadata, capture) = divinate::pack::describe(&pack_config)?;
@@ -744,20 +1527,47 @@ fn list_packs(state: &std::path::Path) -> Result<()> {
 
 fn collect_pack(
     state: &std::path::Path,
+    repository_path: &std::path::Path,
     id: &str,
     collector: &str,
     context: Option<&std::path::Path>,
 ) -> Result<()> {
-    let config = configured_pack(state, id)?;
-    let (metadata, described) = divinate::pack::describe(&config)?;
+    let context = context.map_or_else(|| Ok(serde_json::Value::Null), read_json)?;
+    let project = divinate::project::load(repository_path)?;
+    divinate::workflow::ensure_repository_identity(state, &project.config.repository)?;
+    let config = project
+        .config
+        .packs
+        .get(id)
+        .ok_or_else(|| Error::Invalid(format!("pack {id:?} is not configured")))?;
+    let prepared = prepare_pack_collection(config, id, collector, &context)?;
+    commit_collections(
+        state,
+        &prepared.corpus,
+        std::slice::from_ref(&prepared.execution),
+        &prepared.invocations,
+    )?;
+    print_json(&serde_json::json!({
+        "pack": prepared.pack,
+        "collector": prepared.collector,
+        "observation": prepared.observation,
+    }))
+}
+
+fn prepare_pack_collection(
+    config: &divinate::pack::PackConfig,
+    id: &str,
+    collector: &str,
+    context: &serde_json::Value,
+) -> Result<PreparedPackCollection> {
+    let (metadata, described) = divinate::pack::describe(config)?;
     if metadata.id != id {
         return Err(Error::Invalid(format!(
             "configured pack {id:?} identifies itself as {:?}",
             metadata.id
         )));
     }
-    let context = context.map_or_else(|| Ok(serde_json::Value::Null), read_json)?;
-    let (plan, planned) = divinate::pack::plan(&config, &metadata, collector, &context)?;
+    let (plan, planned) = divinate::pack::plan(config, &metadata, collector, context)?;
     let execution =
         execution::capture(&plan.command.execution_request()).map_err(collection_error)?;
     let planned =
@@ -775,7 +1585,7 @@ fn collect_pack(
         sha256: source_digest.clone(),
     };
     let (normalized, normalization) = divinate::pack::normalize(
-        &config,
+        config,
         &metadata,
         &plan.adapter,
         &source_bytes,
@@ -797,19 +1607,20 @@ fn collect_pack(
         normalization.invocation.id.clone(),
     ];
     let observation_id = observation.id.clone();
-    let corpus = divinate::model::Corpus {
+    let corpus = Corpus {
         collections: vec![],
         observations: vec![observation],
         schema_version: divinate::SCHEMA_VERSION.into(),
         sources: vec![source],
     };
-    divinate::workflow::store_pack_invocations(state, &[described, planned, normalization])?;
-    divinate::workflow::accumulate_with_executions(state, &corpus, &[], &[execution])?;
-    print_json(&serde_json::json!({
-        "pack": metadata.id,
-        "collector": collector,
-        "observation": observation_id,
-    }))
+    Ok(PreparedPackCollection {
+        pack: metadata.id,
+        collector: collector.into(),
+        observation: observation_id,
+        corpus,
+        invocations: vec![described, planned, normalization],
+        execution,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -867,9 +1678,34 @@ fn run_tool(
 #[allow(clippy::too_many_lines)]
 fn evaluate_state(
     state: &std::path::Path,
+    repository_path: &std::path::Path,
     label: &str,
     contracts: Option<&std::path::Path>,
     target: TargetArgs,
+) -> Result<()> {
+    let project = divinate::project::load(repository_path)?;
+    divinate::workflow::ensure_repository_identity(state, &project.config.repository)?;
+    divinate::workflow::store_project_configuration(state, &project.sha256, &project.bytes)?;
+    evaluate_state_with_skips(
+        state,
+        &project.config,
+        Some(&project.sha256),
+        label,
+        contracts,
+        target,
+        &BTreeSet::new(),
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn evaluate_state_with_skips(
+    state: &std::path::Path,
+    project: &divinate::workflow::ProjectConfig,
+    project_config_sha256: Option<&str>,
+    label: &str,
+    contracts: Option<&std::path::Path>,
+    target: TargetArgs,
+    unavailable_optional_packs: &BTreeSet<String>,
 ) -> Result<()> {
     if label.is_empty()
         || !label
@@ -898,7 +1734,7 @@ fn evaluate_state(
         .map_err(provenance_error)?;
     let historical =
         divinate::workflow::as_of_with_provenance(&corpus, &transcripts, &executions, at)?;
-    let target = evaluation_in_state(state, &historical.corpus, target, at)?;
+    let target = evaluation_in_project(project, &historical.corpus, target, at)?;
     divinate::provenance::verify_execution_links(
         &historical.corpus,
         &historical.executions,
@@ -916,11 +1752,13 @@ fn evaluate_state(
         .first()
         .map(|assertion| assertion.evaluated_at.clone())
         .ok_or_else(|| Error::Invalid("core evaluation returned no assertions".into()))?;
-    let project = divinate::workflow::load_config(state)?;
     let mut pack_captures = Vec::new();
-    for (configured_id, config) in project.packs {
-        let (metadata, described) = divinate::pack::describe(&config)?;
-        if metadata.id != configured_id {
+    for (configured_id, config) in &project.packs {
+        if unavailable_optional_packs.contains(configured_id) {
+            continue;
+        }
+        let (metadata, described) = divinate::pack::describe(config)?;
+        if metadata.id != *configured_id {
             return Err(Error::Invalid(format!(
                 "configured pack {configured_id:?} identifies itself as {:?}",
                 metadata.id
@@ -931,7 +1769,7 @@ fn evaluate_state(
         }
         for evaluator in &metadata.evaluators {
             let (mut derived, capture) = divinate::pack::evaluate(
-                &config,
+                config,
                 &metadata,
                 evaluator,
                 &current,
@@ -974,6 +1812,16 @@ fn evaluate_state(
             .join("assertions")
             .join(format!("{label}.contracts.json")),
     )?;
+    if let Some(sha256) = project_config_sha256 {
+        write_json(
+            &divinate::workflow::EvaluationConfiguration {
+                project_config_sha256: sha256.into(),
+            },
+            &state
+                .join("assertions")
+                .join(format!("{label}.configuration.json")),
+        )?;
+    }
     write_json(
         &dossier,
         &state.join("dossiers").join(format!("{label}.json")),
@@ -985,7 +1833,298 @@ fn evaluate_state(
     })
 }
 
-fn state_review(state: &std::path::Path, previous: &str, current: &str, label: &str) -> Result<()> {
+#[allow(clippy::too_many_lines)]
+fn state_status(
+    state: &std::path::Path,
+    repository_path: &std::path::Path,
+    json: bool,
+) -> Result<()> {
+    let project = divinate::project::load(repository_path)?;
+    let current_config_sha256 = project.sha256;
+    let config = project.config;
+    let corpus_path = divinate::workflow::corpus_path(state);
+    let corpus = if corpus_path.is_file() {
+        load_corpus(&corpus_path)?
+    } else {
+        empty_corpus()
+    };
+    let current_path = state.join("assertions/current.json");
+    let current = if current_path.is_file() {
+        load_evaluation(state, "current")?
+    } else {
+        vec![]
+    };
+    let previous_path = state.join("assertions/previous.json");
+    let previous = if previous_path.is_file() {
+        Some(load_evaluation(state, "previous")?)
+    } else {
+        None
+    };
+    let mut evidence_sources = BTreeMap::new();
+    for observation in &corpus.observations {
+        *evidence_sources
+            .entry(format!(
+                "{} / {}",
+                observation.producer.name, observation.producer.collector
+            ))
+            .or_default() += 1;
+    }
+    let cycles = divinate::workflow::load_collection_cycles(state)?;
+    let latest_cycle = cycles.iter().max_by(|left, right| {
+        left.contents
+            .completed_at
+            .cmp(&right.contents.completed_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    let historical_source_ids = cycles
+        .iter()
+        .flat_map(|cycle| cycle.contents.sources.keys())
+        .collect::<BTreeSet<_>>();
+    let mut configured_sources = config
+        .sources
+        .iter()
+        .map(|(id, source)| {
+            let latest = latest_cycle
+                .filter(|cycle| cycle.contents.project_config_sha256 == current_config_sha256)
+                .and_then(|cycle| cycle.contents.sources.get(id));
+            let (state, detail) = if let Some(result) = latest {
+                let state = match result.status.as_str() {
+                    "complete" => "current",
+                    value => value,
+                };
+                (state.into(), Some(result.detail.clone()))
+            } else if historical_source_ids.contains(id) {
+                ("stale".into(), None)
+            } else {
+                ("never collected".into(), None)
+            };
+            ConfiguredSourceStatus {
+                source: id.clone(),
+                required: Some(source.required),
+                state,
+                detail,
+            }
+        })
+        .collect::<Vec<_>>();
+    for id in historical_source_ids {
+        if !config.sources.contains_key(id) {
+            configured_sources.push(ConfiguredSourceStatus {
+                source: id.clone(),
+                required: None,
+                state: "removed".into(),
+                detail: None,
+            });
+        }
+    }
+    configured_sources.sort_by(|left, right| left.source.cmp(&right.source));
+    let degraded_collections = corpus
+        .collections
+        .iter()
+        .filter(|run| run.outcome != CollectionOutcome::Complete)
+        .map(|run| DegradedCollection {
+            collector: format!("{} / {}", run.collector.name, run.collector.collector),
+            outcome: collection_outcome_label(run.outcome).into(),
+            limitations: run
+                .limitations
+                .iter()
+                .map(|limitation| limitation.detail.clone())
+                .collect(),
+        })
+        .collect();
+    let unresolved_gaps = current
+        .iter()
+        .flat_map(|assertion| assertion.missing.iter())
+        .map(|missing| missing.requirement.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let since_previous = previous.as_ref().map(|previous| {
+        let update = divinate::views::isms_update(previous, &current);
+        StatusChanges {
+            claims_changed: update.changes.len(),
+            new_gaps: update.new_gaps.len(),
+            coverage_regressions: update.coverage_regressions.len(),
+        }
+    });
+    let collected_times = corpus
+        .observations
+        .iter()
+        .map(|observation| observation.observed_at.as_str())
+        .chain(
+            corpus
+                .collections
+                .iter()
+                .map(|collection| collection.completed_at.as_str()),
+        )
+        .chain(
+            cycles
+                .iter()
+                .map(|cycle| cycle.contents.completed_at.as_str()),
+        )
+        .collect::<Vec<_>>();
+    let report = StatusReport {
+        repository: config.repository,
+        branch: config.branch,
+        last_collected: latest_timestamp(&collected_times)?,
+        last_evaluated: current.first().map(|item| item.evaluated_at.clone()),
+        outcomes: outcome_counts(&current),
+        evidence_sources,
+        configured_sources,
+        degraded_collections,
+        unresolved_gaps,
+        since_previous,
+    };
+    if json {
+        print_json(&report)
+    } else {
+        render_status(&report)
+    }
+}
+
+fn latest_timestamp(values: &[&str]) -> Result<Option<String>> {
+    let mut latest = None;
+    for value in values {
+        let parsed = parse_timestamp(value)?;
+        if latest
+            .as_ref()
+            .is_none_or(|(current, _): &(time::OffsetDateTime, String)| parsed > *current)
+        {
+            latest = Some((parsed, (*value).to_owned()));
+        }
+    }
+    Ok(latest.map(|(_, value)| value))
+}
+
+const fn collection_outcome_label(outcome: CollectionOutcome) -> &'static str {
+    match outcome {
+        CollectionOutcome::Complete => "complete",
+        CollectionOutcome::Partial => "partial",
+        CollectionOutcome::PermissionDenied => "permission denied",
+        CollectionOutcome::RetentionLimited => "retention limited",
+        CollectionOutcome::Interrupted => "interrupted",
+        CollectionOutcome::Failed => "failed",
+        CollectionOutcome::NotAttempted => "not attempted",
+    }
+}
+
+fn render_status(report: &StatusReport) -> Result<()> {
+    let mut out = io::stdout().lock();
+    writeln!(out, "Repository      {}", report.repository).map_err(stdout_error)?;
+    writeln!(out, "Branch          {}", report.branch).map_err(stdout_error)?;
+    writeln!(
+        out,
+        "Last collected  {}",
+        report.last_collected.as_deref().unwrap_or("not collected")
+    )
+    .map_err(stdout_error)?;
+    writeln!(
+        out,
+        "Last evaluated  {}",
+        report.last_evaluated.as_deref().unwrap_or("not evaluated")
+    )
+    .map_err(stdout_error)?;
+    writeln!(out, "\nSources").map_err(stdout_error)?;
+    if report.configured_sources.is_empty() {
+        writeln!(out, "  none configured").map_err(stdout_error)?;
+    } else {
+        for source in &report.configured_sources {
+            let requirement =
+                source.required.map_or(
+                    "",
+                    |required| {
+                        if required {
+                            "required"
+                        } else {
+                            "optional"
+                        }
+                    },
+                );
+            writeln!(
+                out,
+                "  {:<28} {:<18} {}",
+                source.source, source.state, requirement
+            )
+            .map_err(stdout_error)?;
+            if source.state != "current" {
+                if let Some(detail) = &source.detail {
+                    writeln!(out, "    {detail}").map_err(stdout_error)?;
+                }
+            }
+        }
+    }
+    writeln!(out, "\nClaims").map_err(stdout_error)?;
+    for name in [
+        "supported",
+        "insufficient evidence",
+        "contradicted",
+        "stale",
+        "not automatable",
+    ] {
+        writeln!(
+            out,
+            "  {name:<24} {}",
+            report.outcomes.get(name).copied().unwrap_or_default()
+        )
+        .map_err(stdout_error)?;
+    }
+    writeln!(out, "\nEvidence").map_err(stdout_error)?;
+    if report.evidence_sources.is_empty() {
+        writeln!(out, "  not collected").map_err(stdout_error)?;
+    } else {
+        for (source, count) in &report.evidence_sources {
+            writeln!(out, "  {source:<36} {count}").map_err(stdout_error)?;
+        }
+    }
+    writeln!(
+        out,
+        "  unresolved evidence gaps             {}",
+        report.unresolved_gaps
+    )
+    .map_err(stdout_error)?;
+    if report.degraded_collections.is_empty() {
+        writeln!(out, "  degraded collections                 0").map_err(stdout_error)?;
+    } else {
+        writeln!(out, "  degraded collections").map_err(stdout_error)?;
+        for collection in &report.degraded_collections {
+            writeln!(out, "    {}  {}", collection.collector, collection.outcome)
+                .map_err(stdout_error)?;
+            for limitation in &collection.limitations {
+                writeln!(out, "      {limitation}").map_err(stdout_error)?;
+            }
+        }
+    }
+    if let Some(changes) = &report.since_previous {
+        writeln!(out, "\nSince previous evaluation").map_err(stdout_error)?;
+        writeln!(out, "  claims changed          {}", changes.claims_changed)
+            .map_err(stdout_error)?;
+        writeln!(out, "  new evidence gaps       {}", changes.new_gaps).map_err(stdout_error)?;
+        writeln!(
+            out,
+            "  coverage regressions    {}",
+            changes.coverage_regressions
+        )
+        .map_err(stdout_error)?;
+    }
+    Ok(())
+}
+
+fn state_review(
+    state: &std::path::Path,
+    previous: Option<&str>,
+    current: &str,
+    label: &str,
+    json: bool,
+) -> Result<()> {
+    let previous = match previous {
+        Some(previous) => previous,
+        None if current == "current" && state.join("assertions/previous.json").is_file() => {
+            "previous"
+        }
+        None => {
+            return Err(Error::Invalid(format!(
+                "cannot determine previous evaluation for {current}; choose one with --since"
+            )));
+        }
+    };
     require_evaluation(state, previous)?;
     require_evaluation(state, current)?;
     let previous: Vec<DerivedAssertion> =
@@ -998,10 +2137,32 @@ fn state_review(state: &std::path::Path, previous: &str, current: &str, label: &
         label,
         &update,
         &divinate::views::render_isms(&update),
-    )
+    )?;
+    if json {
+        print_json(&update)
+    } else {
+        let mut out = io::stdout().lock();
+        writeln!(out, "Review").map_err(stdout_error)?;
+        writeln!(out, "  claims changed          {}", update.changes.len())
+            .map_err(stdout_error)?;
+        writeln!(out, "  new evidence gaps       {}", update.new_gaps.len())
+            .map_err(stdout_error)?;
+        writeln!(
+            out,
+            "  coverage regressions    {}",
+            update.coverage_regressions.len()
+        )
+        .map_err(stdout_error)?;
+        writeln!(
+            out,
+            "\nreview: {}",
+            state.join("views").join(format!("{label}.md")).display()
+        )
+        .map_err(stdout_error)
+    }
 }
 
-fn state_dd(state: &std::path::Path, evaluation: &str, label: &str) -> Result<()> {
+fn state_dd(state: &std::path::Path, evaluation: &str, label: &str, json: bool) -> Result<()> {
     require_evaluation(state, evaluation)?;
     let assertions: Vec<DerivedAssertion> =
         read_json(&state.join("assertions").join(format!("{evaluation}.json")))?;
@@ -1011,7 +2172,20 @@ fn state_dd(state: &std::path::Path, evaluation: &str, label: &str) -> Result<()
         label,
         &response,
         &divinate::views::render_dd(&response),
-    )
+    )?;
+    if json {
+        print_json(&response)
+    } else {
+        let mut out = io::stdout().lock();
+        writeln!(out, "Exported").map_err(stdout_error)?;
+        writeln!(out, "  claims  {}", response.claims.len()).map_err(stdout_error)?;
+        writeln!(
+            out,
+            "\nresponse: {}",
+            state.join("views").join(format!("{label}.md")).display()
+        )
+        .map_err(stdout_error)
+    }
 }
 
 fn write_view<T: serde::Serialize>(
@@ -1133,32 +2307,15 @@ fn evaluation(args: TargetArgs) -> Result<(EvaluationTarget, time::OffsetDateTim
     ))
 }
 
-fn evaluation_in_state(
-    state: &std::path::Path,
+fn evaluation_in_project(
+    config: &divinate::workflow::ProjectConfig,
     corpus: &divinate::model::Corpus,
     args: TargetArgs,
     at: time::OffsetDateTime,
 ) -> Result<EvaluationTarget> {
-    let config = if args.repository.is_none() || args.branch.is_none() {
-        Some(divinate::workflow::load_config(state)?)
-    } else {
-        None
-    };
     Ok(EvaluationTarget {
-        repository: args.repository.unwrap_or_else(|| {
-            config
-                .as_ref()
-                .expect("configuration loaded for absent repository")
-                .repository
-                .clone()
-        }),
-        branch: args.branch.unwrap_or_else(|| {
-            config
-                .as_ref()
-                .expect("configuration loaded for absent branch")
-                .branch
-                .clone()
-        }),
+        repository: args.repository.unwrap_or_else(|| config.repository.clone()),
+        branch: args.branch.unwrap_or_else(|| config.branch.clone()),
         release: args
             .release
             .map_or_else(|| divinate::workflow::latest_release(corpus, at), Ok)?,
@@ -1188,6 +2345,13 @@ fn verify_state(state: &std::path::Path) -> Result<()> {
     for invocation in &pack_invocations {
         divinate::pack::verify(invocation, &blobs).map_err(provenance_error)?;
     }
+    let configured_cycles = divinate::workflow::verify_configuration_provenance(
+        state,
+        &corpus,
+        &executions,
+        &pack_invocations,
+    )
+    .map_err(provenance_error)?;
     print_json(&serde_json::json!({
         "status": "verified",
         "acquisition_transcripts": acquisitions.len(),
@@ -1195,6 +2359,7 @@ fn verify_state(state: &std::path::Path) -> Result<()> {
         "execution_transcripts": executions.len(),
         "observation_execution_links": execution_links.len(),
         "pack_invocations": pack_invocations.len(),
+        "configured_collection_cycles": configured_cycles,
         "content_blobs": blobs.len(),
     }))
 }
@@ -1208,6 +2373,17 @@ fn show_provenance(state: &std::path::Path, evaluation: &str, assertion_id: &str
         .iter()
         .find(|assertion| assertion.id == assertion_id)
         .ok_or_else(|| Error::Invalid(format!("unknown assertion id: {assertion_id}")))?;
+    let configuration_path = state
+        .join("assertions")
+        .join(format!("{evaluation}.configuration.json"));
+    let evaluation_configuration = if configuration_path.is_file() {
+        Some(read_json::<divinate::workflow::EvaluationConfiguration>(
+            &configuration_path,
+        )?)
+    } else {
+        None
+    };
+    let cycles = divinate::workflow::load_collection_cycles(state)?;
     let evidence_ids = assertion
         .support
         .iter()
@@ -1297,6 +2473,17 @@ fn show_provenance(state: &std::path::Path, evaluation: &str, assertion_id: &str
                     "response_sha256": item.contents.response_sha256,
                 }))
                 .collect::<Vec<_>>();
+            let project_configurations = cycles
+                .iter()
+                .filter(|cycle| {
+                    cycle
+                        .contents
+                        .observation_ids
+                        .iter()
+                        .any(|id| id == &observation.id)
+                })
+                .map(|cycle| &cycle.contents.project_config_sha256)
+                .collect::<BTreeSet<_>>();
             serde_json::json!({
                 "observation": observation.id,
                 "uses": uses,
@@ -1304,6 +2491,7 @@ fn show_provenance(state: &std::path::Path, evaluation: &str, assertion_id: &str
                 "collection": collection,
                 "executions": local,
                 "pack_invocations": packs,
+                "project_configurations": project_configurations,
             })
         })
         .collect::<Vec<_>>();
@@ -1313,6 +2501,7 @@ fn show_provenance(state: &std::path::Path, evaluation: &str, assertion_id: &str
             "claim": assertion.claim,
             "outcome": assertion.outcome,
             "derivation": assertion.derivation,
+            "project_config_sha256": evaluation_configuration.map(|item| item.project_config_sha256),
         },
         "observations": observations,
     }))

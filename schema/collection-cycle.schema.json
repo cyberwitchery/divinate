@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "collection-cycle.schema.json",
+  "title": "configured collection cycle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "schema_version", "contents"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^cycle_[0-9a-f]{20}$"},
+    "schema_version": {"const": "0.1.0"},
+    "contents": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "branch", "project_config_sha256", "sources", "observation_ids", "execution_transcript_ids", "pack_invocation_ids", "completed_at"],
+      "properties": {
+        "repository": {"type": "string"},
+        "branch": {"type": "string"},
+        "project_config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object", "additionalProperties": false,
+            "required": ["status", "detail"],
+            "properties": {"status": {"type": "string"}, "detail": {"type": "string"}}
+          }
+        },
+        "observation_ids": {"type": "array", "items": {"type": "string"}},
+        "execution_transcript_ids": {"type": "array", "items": {"type": "string"}},
+        "pack_invocation_ids": {"type": "array", "items": {"type": "string"}},
+        "completed_at": {"type": "string", "format": "date-time"}
+      }
+    }
+  }
+}

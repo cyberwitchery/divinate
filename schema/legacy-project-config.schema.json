@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "legacy-project-config.schema.json",
+  "title": "legacy repository-local configuration",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["repository", "branch"],
+  "properties": {
+    "repository": {"type": "string", "minLength": 1},
+    "branch": {"type": "string", "minLength": 1},
+    "packs": {"type": "object"},
+    "sources": {"type": "object"}
+  }
+}

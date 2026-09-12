@@ -1,161 +1,188 @@
 # command reference
 
-all commands use `.evidence` by default. pass `--state <path>` to use another
-state directory. timestamps use rfc 3339.
+commands use `.evidence` by default and read project intent from
+`divinate.yaml` in the repository root. pass `--state <path>` to select another
+state directory and `--repository-path <checkout>` where supported. timestamps
+use rfc 3339.
 
-## `divinate init`
+## normal commands
+
+### `divinate init`
 
 ```text
-divinate init --repository <identity> [--branch <branch>] [--state <path>]
+divinate init [--branch <branch>] [--repository-path <checkout>]
+  [--state <path>] [--json]
 ```
 
-creates repository-local state. `branch` defaults to `main`. the command produces
-no output on success and refuses to replace a different existing configuration.
+creates a minimal `divinate.yaml` and initializes local evidence state.
+repository identity comes from the normalized Git `origin`; branch defaults to
+the current symbolic branch. an existing YAML file is validated, not replaced.
 
-## `divinate collect release`
+if YAML is absent and legacy `.evidence/config.json` exists, init converts its
+live pack and source configuration to YAML. it leaves the legacy file in place
+so retained historical state remains verifiable.
+
+### `divinate collect`
 
 ```text
-divinate collect release \
-  --repository-path <checkout> \
-  --base-release <tag> --release <tag> \
-  --base-sbom <file> --target-sbom <file> \
-  --sbom-diff <executable> \
-  [--base-revision <commit>] [--revision <commit>] \
-  [--tool-version <version>] [--policy <id>] \
+divinate collect [--release <tag>] [--base-release <tag>]
+  [--from <timestamp>] [--until <timestamp>] [--at <timestamp>]
+  [--repository-path <checkout>] [--force] [--state <path>] [--json]
+```
+
+strictly validates `divinate.yaml`, creates `.evidence/` when necessary, and
+runs every declared source in deterministic source-id order. required source
+failures abort before the prepared increment is persisted. optional source
+failures remain visible and their pack evaluators are skipped for that cycle.
+valid evidence is merged into state, current assertions are evaluated, and the
+current dossier is written.
+
+when a source requests release context, the target release defaults to the only
+tag at `HEAD`. the base defaults to the unique nearest ancestor, preferring
+releases represented in retained state. explicit release options override this
+shared context for all relevant sources; they do not select one source.
+
+the first evaluation starts at the base release commit time. later evaluations
+start at the previous current evaluation time. `until` and `at` default to the
+collection time. divinate rejects empty or ambiguous intervals.
+
+normal output contains source results, claim counts, and the dossier path. it
+omits forensic identifiers. `--json` prints the product summary as JSON.
+
+### `divinate status`
+
+```text
+divinate status [--repository-path <checkout>] [--state <path>] [--json]
+```
+
+validates the project configuration and summarizes saved repository identity,
+collection and evaluation times, claim outcomes, evidence producers, unresolved
+gaps, and changes from `previous` to `current`. configured sources are reported
+as current, stale, incomplete, failed, or never collected. sources removed from
+YAML remain visible as historical. status does not collect or reevaluate.
+
+### `divinate review`
+
+```text
+divinate review [--since <label>] [--current <label>]
+  [--output <label>] [--state <path>] [--json]
+```
+
+without labels, compares the explicit `previous` and `current` snapshots managed
+by normal collection. if no predecessor exists, it requires `--since`. writes
+`.evidence/views/<label>.json` and `.md`.
+
+### `divinate export dd`
+
+```text
+divinate export dd [--evaluation <label>] [--output <label>]
+  [--state <path>] [--json]
+```
+
+renders a due-diligence response from saved assertions. evaluation defaults to
+`current`; output defaults to `dd-response`.
+
+## pack inspection
+
+```text
+divinate packs [--repository-path <checkout>]
+divinate pack [--repository-path <checkout>] <pack-id>
+```
+
+reads pack declarations from `divinate.yaml`, executes `describe`, and verifies
+that each executable reports the configured pack identity and protocol version.
+these commands do not mutate configuration.
+
+## advanced collection and evaluation
+
+### `divinate collect release`
+
+```text
+divinate collect release --repository-path <checkout>
+  --base-release <tag> --release <tag>
+  --base-sbom <file> --target-sbom <file>
+  --sbom-diff <executable>
+  [--base-revision <commit>] [--revision <commit>]
+  [--tool-version <version>] [--policy <id>]
   [--fail-on added-components] [--force] [--state <path>]
 ```
 
-records a release sbom diff and policy gate. `policy` defaults to
-`supply-chain/default`; the baseline evaluator accepts only
-`fail-on=added-components`. matching verified executions are reused unless
-`--force` is present. output is json with releases, revisions, execution ids,
-reused execution ids, and observation ids.
+records one explicit release SBOM comparison without automatic evaluation. this
+is the compatibility interface for the original low-level workflow; the
+scanner-specific option does not appear on normal `init` or `collect`.
 
-## `divinate collect manifest`
+### `divinate collect pack`
 
 ```text
-divinate collect manifest [--state <path>] <manifest.json> \
+divinate collect pack [--repository-path <checkout>] [--state <path>]
+  <pack-id> <collector> [--context <json-file>]
+```
+
+invokes one collector from a pack declared in YAML. core validates its plan,
+executes the command, normalizes the result, and stores the observation. omitted
+context is JSON `null`. this command does not evaluate automatically.
+
+### `divinate collect manifest`
+
+```text
+divinate collect manifest [--state <path>] <manifest.json>
   [--acquisition <transcript.json>]...
 ```
 
-imports sources through built-in adapters and appends them to state. source paths
-are relative to the manifest. acquisition transcript files must be supplied for
-collection runs that name them. observations derived from local output must name
-already retained execution transcripts. output reports accumulated object counts.
+imports sources through built-in adapters. named acquisition and execution
+links must already resolve. this command does not evaluate automatically.
 
-## `divinate collect pack`
+### `divinate evaluate`
 
 ```text
-divinate collect pack [--state <path>] <pack-id> <collector> \
-  [--context <json-file>]
+divinate evaluate --from <timestamp> --until <timestamp>
+  [--label <name>] [--contracts <registry.json>]
+  [--repository <identity>] [--branch <branch>] [--release <release>]
+  [--at <timestamp>] [--repository-path <checkout>] [--state <path>]
 ```
 
-asks a configured pack for a command plan, executes it through core, normalizes
-its stdout, and stores the observation. omitted context is json `null`. output
-contains the pack id, collector name, and observation id.
+verifies provenance, selects evidence available at `at`, derives core and pack
+assertions, and writes assertion and dossier files. repository and branch
+default to YAML. an alternate contracts registry supports historical
+reproduction.
 
-## `divinate packs`
-
-```text
-divinate packs [--state <path>]
-```
-
-describes every configured pack and prints a json array containing metadata and
-the executable sha-256.
-
-## `divinate pack`
+### `divinate run`
 
 ```text
-divinate pack [--state <path>] <pack-id>
-```
-
-describes one configured pack and prints its metadata and executable sha-256.
-
-## `divinate run`
-
-```text
-divinate run --tool <name> [--tool-version <version>] \
-  [--input <name>=<path>]... [--output <name>=<path>]... \
-  [--environment <name>=<value>]... \
-  [--working-directory <path>] [--stdout <path>] [--state <path>] \
+divinate run --tool <name> [--tool-version <version>]
+  [--input <name>=<path>]... [--output <name>=<path>]...
+  [--environment <name>=<value>]...
+  [--working-directory <path>] [--stdout <path>] [--state <path>]
   <executable> [-- <argument>...]
 ```
 
 runs a local command with an empty environment plus explicitly supplied values.
-named inputs are hashed before execution. named outputs must exist afterward and
-are retained. stdout and stderr are always retained; `--stdout` also copies stdout
-to the named path. output contains the execution id, exit status, success flag,
-and stdout digest.
+named inputs and outputs and exact streams are retained. credential-like
+arguments and environment names are refused.
 
-credential-like arguments and environment names are refused. see
-[security](security.md) before recording arbitrary tools.
-
-## `divinate evaluate`
-
-```text
-divinate evaluate --from <timestamp> --until <timestamp> \
-  [--label <name>] [--contracts <registry.json>] \
-  [--repository <identity>] [--branch <branch>] [--release <release>] \
-  [--at <timestamp>] [--state <path>]
-```
-
-verifies provenance, selects evidence available at `at`, derives core and pack
-assertions, and writes assertion and dossier files. `label` defaults to `current`
-and may contain only letters, numbers, hyphens, and underscores. repository and
-branch default to state configuration. release defaults to the latest unambiguous
-release in the historical corpus. `--contracts` uses a supplied contract registry
-instead of the registry in state. the command is silent on success.
-
-## `divinate review`
-
-```text
-divinate review --since <label> [--current <label>] \
-  [--output <label>] [--state <path>]
-```
-
-compares two saved assertion sets. `current` defaults to `current`; output defaults
-to `review`. writes `.evidence/views/<label>.json` and `.md`.
-
-## `divinate export dd`
-
-```text
-divinate export dd [--evaluation <label>] [--output <label>] [--state <path>]
-```
-
-renders a due-diligence response from saved assertions. evaluation defaults to
-`current`; output defaults to `dd-response`. writes json and markdown under
-`.evidence/views/`.
-
-## `divinate verify`
+## forensic commands
 
 ```text
 divinate verify [--state <path>]
-```
-
-verifies retained provenance without network access or tool execution. output is
-a json summary of verified objects and links.
-
-## `divinate provenance`
-
-```text
 divinate provenance [--evaluation <label>] [--state <path>] <assertion-id>
-```
-
-prints the saved assertion's evidence graph as json. evaluation defaults to
-`current`.
-
-## `divinate extract`
-
-```text
-divinate extract [--state <path>] <execution-id> \
+divinate extract [--state <path>] <execution-id>
   [--stream stdout|stderr] --output <path>
 ```
 
-verifies an execution transcript and writes the exact retained stream. stream
-defaults to stdout. the command does not decode, normalize, or redact the bytes.
+`verify` checks retained provenance offline. `provenance` prints one assertion's
+evidence graph as JSON. `extract` verifies an execution and writes its exact
+retained stream.
+
+## migration from imperative setup
+
+`source add`, `source configure`, `source enable`, `pack add`, and `pack
+configure` have been removed. declare packs and sources in `divinate.yaml`
+instead. `divinate init` performs the straightforward one-time conversion from
+legacy live `.evidence/config.json` when YAML does not yet exist. historical
+evidence formats remain verifiable.
 
 ## exit behavior
 
 successful commands exit zero. failures print `error: <message>` to stderr and
-exit one. a recorded tool's non-zero exit is part of its transcript; whether the
-high-level command accepts it depends on that workflow.
+exit one. a recorded tool's non-zero exit remains part of its transcript; the
+workflow decides whether that result is acceptable.

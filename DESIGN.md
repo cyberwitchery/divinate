@@ -20,15 +20,49 @@ collection runs record attempts to enumerate a population. observations interpre
 retained source bytes. assertions derive claims from observations and coverage.
 views select saved assertions without reading raw evidence.
 
+the product command surface composes this flow without changing its ownership:
+
+```text
+collect configured sources and packs
+  → validate and persist evidence
+  → evaluate current assertions
+  → publish current and previous derived snapshots
+```
+
+`status` reads those saved structures. `review` compares saved assertion sets.
+neither command adds evidence or assertion semantics. the explicit collection,
+execution, evaluation, and provenance commands remain available for inspection
+and historical reproduction.
+
+## project intent and observed state
+
+`divinate.yaml` is the authoritative declaration of repository, pack, and source
+intent. `.evidence/` is observed and derived state. normal collection can create
+missing local state from an existing YAML file, but it cannot reconstruct source
+intent from command history.
+
+repository identity is explicit in YAML and verified against Git. executable
+names resolve through `PATH`; there is no machine-local override layer. source
+presence means enabled, required or optional behavior is declarative, and
+source-specific values remain nested under that source.
+
+each collection stores the exact YAML under its content digest and links that
+snapshot to the collection cycle. evaluations name the same configuration
+digest. current configuration can therefore change without rewriting or
+reinterpreting historical evidence.
+
 ## ownership
 
 core owns:
 
 - portable schemas and local state
+- strict project configuration loading and configuration provenance
+- repository and release identity, including git checkout validation, tag and
+  revision resolution, predecessor selection, and evaluation intervals
 - acquisition and execution
 - evidence identity and immutable persistence
 - collection coverage
-- baseline normalizers and evaluators
+- built-in source normalizers and evaluators
 - provenance verification
 - views
 
@@ -41,6 +75,18 @@ packs may provide:
 
 pack output passes through core validation and persistence. packs do not write
 evidence state.
+
+repository and release identity are core context. evidence-production semantics
+belong to configured sources and packs. a source may receive core-resolved
+repository, branch, release, revision, predecessor, and interval values, but it
+does not independently redefine them.
+
+the release sbom integration is a built-in source registered through the same
+configuration and collection surface as external collectors. it remains compiled
+in because it records a diff and a policy gate as separate executions and proves
+their output bytes agree. pack protocol version 1 exposes one planned command per
+collector invocation, so moving that workflow behind one pack process would
+weaken its execution provenance.
 
 ## provenance
 
@@ -55,7 +101,9 @@ stored once by sha-256.
 
 offline verification checks transcript identity, blob digests, retained streams,
 scope, pagination, source contracts, and links from observations to their source
-bytes.
+bytes. it also checks immutable collection-cycle identities, exact project
+configuration digests, evaluation configuration references, and their evidence
+links.
 
 local commands receive an empty environment plus explicit values. credential-like
 argv and environment names are rejected. stdout and stderr are stored without
@@ -68,6 +116,8 @@ redaction.
 - authority is scoped to a proposition, subject, and interval.
 - acquisitions, executions, blobs, observations, and collection runs are
   immutable.
+- project configuration is mutable intent; retained configuration snapshots and
+  collection cycles are immutable history.
 - evidence becomes available when all supporting transcripts have been captured.
 - withdrawing current source-contract authority does not alter historical
   transcripts.

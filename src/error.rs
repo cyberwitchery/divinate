@@ -18,6 +18,11 @@ pub enum Error {
         path: PathBuf,
         source: serde_json::Error,
     },
+    #[error("{path}: invalid yaml: {source}")]
+    Yaml {
+        path: PathBuf,
+        source: serde_yaml_ng::Error,
+    },
     #[error("{path}: source is not utf-8: {source}")]
     Utf8 {
         path: PathBuf,

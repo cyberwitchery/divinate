@@ -33,7 +33,7 @@ def pairs() -> list[tuple[str, str, bool]]:
     """(schema name, document path, document is a list of instances)"""
     items = [
         ("evidence-corpus", f"{STATE}/corpus.json", False),
-        ("project-config", f"{STATE}/config.json", False),
+        ("legacy-project-config", f"{STATE}/config.json", False),
         ("contract-registry", f"{STATE}/contracts.json", False),
         ("isms-update", f"{STATE}/views/isms-update.json", False),
         ("dd-response", f"{STATE}/views/dd-response.json", False),
@@ -53,7 +53,15 @@ def pairs() -> list[tuple[str, str, bool]]:
     items += [
         ("derived-assertion", p, True)
         for p in glob.glob(f"{STATE}/assertions/*.json")
-        if not p.endswith(".contracts.json")
+        if not p.endswith((".contracts.json", ".configuration.json"))
+    ]
+    items += [
+        ("evaluation-configuration", p, False)
+        for p in glob.glob(f"{STATE}/assertions/*.configuration.json")
+    ]
+    items += [
+        ("collection-cycle", p, False)
+        for p in glob.glob(f"{STATE}/collection-cycles/*.json")
     ]
     return sorted(items, key=lambda item: (item[0], item[1]))
 

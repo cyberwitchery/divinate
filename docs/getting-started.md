@@ -1,112 +1,162 @@
 # getting started
 
-this guide records a release dependency comparison, evaluates it, and follows one
-result back to the retained command output.
+this guide declares a repository's evidence sources, runs collection, and opens
+the resulting human-readable views.
 
-## prerequisites
+## initialize a new repository
 
-you need:
-
-- divinate built from this repository
-- a local git checkout whose `origin` identifies the configured repository
-- two distinct release tags
-- a cyclonedx sbom for each release
-- an `sbom-diff` executable
-
-the sbom metadata component must identify the repository and release expected by
-divinate. the baseline policy currently requires `--fail-on added-components`.
-
-## initialize state
-
-run this in the repository whose evidence you want to retain:
+run this from a Git checkout with a GitHub `origin`:
 
 ```sh
-divinate init --repository github:example/acme --branch main
+divinate init
+$EDITOR divinate.yaml
 ```
 
-this creates `.evidence/` and writes its repository identity to
-`.evidence/config.json`. running the same command again is harmless. changing the
-identity requires an intentional edit to the configuration file.
+init infers the normalized repository identity and symbolic branch, creates
+local `.evidence/` state, and writes a minimal `divinate.yaml`. commit the YAML
+file. it is project intent, not collected evidence.
 
-repository identities are compared with the checkout's `origin`. common github
-ssh and https origin forms normalize to `github:owner/name`.
+common GitHub SSH and HTTPS origins normalize to `github:owner/name`. divinate
+verifies that the checkout still matches the identity in YAML before using it.
 
-## collect a release
+## declare sources
+
+the built-in release SBOM source needs two release tags, a CycloneDX SBOM for
+each release, and its configured comparison executable:
+
+```yaml
+repository:
+  identity: github:cyberwitchery/example
+  branch: main
+
+sources:
+  release-sbom:
+    provider:
+      builtin: release-sbom
+    required: true
+    config:
+      executable: sbom-diff
+      sbom_path: dist/{release}.cdx.json
+```
+
+the `{release}` placeholder is required. the source substitutes the resolved
+tag and validates the SBOM's embedded identity. it does not infer identity from
+the filename.
+
+external collectors declare an executable pack and select a collector:
+
+```yaml
+repository:
+  identity: github:cyberwitchery/example
+  branch: main
+
+packs:
+  example.github:
+    executable: divinate-pack-github
+
+sources:
+  github-repository:
+    provider:
+      pack: example.github
+      collector: repository
+    required: true
+```
+
+source IDs are repository-owned stable names. presence means enabled. set
+`required: false` for a source whose failure may leave a visible incomplete
+cycle. use `context: release` only when an external collector needs
+core-resolved release context.
+
+plain executable names resolve through `PATH`; explicit absolute or
+repository-relative paths are also accepted. divinate has no local override
+file in this release because PATH covers the current machine-local requirement.
+do not put secrets in YAML. credential-like configuration keys are rejected.
+
+## collect and evaluate
 
 ```sh
-divinate collect release \
-  --repository-path . \
-  --base-release v1.4.0 \
-  --release v1.5.0 \
-  --base-sbom dist/acme-v1.4.0.cdx.json \
-  --target-sbom dist/acme-v1.5.0.cdx.json \
-  --sbom-diff /opt/bin/sbom-diff \
-  --tool-version 0.8.0
+divinate collect
 ```
 
-collection checks the checkout identity, both tag resolutions, both sbom
-identities, the diff json, the gate status, and equality of the two emitted diffs.
+normal collection:
 
-the command prints json containing the resolved revisions, execution ids,
-observation ids, and any executions reused from state. use `--base-revision` and
-`--revision` when the expected commits should be explicit. use `--force` to run the
-tool again instead of reusing an identical verified execution.
+1. strictly validates `divinate.yaml` and repository identity;
+2. resolves repository and release context requested by the sources;
+3. validates and runs each declared source in deterministic order;
+4. retains normalized evidence, exact transcripts, and the configuration used;
+5. evaluates the current scope; and
+6. writes `.evidence/dossiers/current.md`.
 
-## evaluate the evidence
+the first release evaluation starts at the preceding release's commit time.
+later evaluations start at the former current evaluation time. the evaluation
+ends at collection time.
 
-```sh
-divinate evaluate \
-  --label release-v1_5 \
-  --release v1.5.0 \
-  --from 2026-08-01T00:00:00Z \
-  --until 2026-09-01T00:00:00Z
-```
-
-`from` is inclusive and `until` is exclusive. omit `--release` only when the
-latest release in state is unambiguous. use `--at` to reproduce what was knowable
-at a particular instant; otherwise evaluation uses the current time.
-
-the command writes:
+when a release value is not unique, collection stops before committing the
+prepared increment:
 
 ```text
-.evidence/assertions/release-v1_5.json
-.evidence/assertions/release-v1_5.contracts.json
-.evidence/dossiers/release-v1_5.json
-.evidence/dossiers/release-v1_5.md
+error: cannot determine previous release for v1.5.0; candidates are stable, v1.4.0; choose one with --base-release
 ```
 
-start with the markdown dossier. it summarizes the controls, then explains the
-reasoning, evidence, coverage, gaps, identity joins, and limitations for each
-assertion.
-
-## inspect provenance
-
-copy an assertion id from the dossier:
+resolve it explicitly:
 
 ```sh
-divinate provenance --evaluation release-v1_5 <assertion-id>
+divinate collect --release v1.5.0 --base-release v1.4.0
 ```
 
-the json response identifies every observation considered by the assertion and
-the source, collection, execution, or pack invocation behind it.
+## clone an already configured repository
 
-copy an execution id from that response to recover its exact output:
+if `divinate.yaml` is committed, init is not required:
 
 ```sh
-divinate extract <execution-id> --stream stdout --output retained-output.json
+git clone <repository>
+cd <repository>
+divinate collect
 ```
 
-`extract` verifies the stored execution and blobs before writing the stream.
+collect creates `.evidence/` and records the verified repository identity when
+state is absent. the checkout must also have the declared packs and tools on
+`PATH`, plus any external credentials handled outside YAML.
 
-## verify the state
+## inspect and review
+
+```sh
+divinate status
+```
+
+status reads saved structured state and YAML. it reports claim counts, evidence
+gaps, degraded collections, configured sources that are current, stale, failed,
+or never collected, and historical sources removed from current configuration.
+it does not rerun evaluators.
+
+after another collection cycle:
+
+```sh
+divinate collect
+divinate review
+```
+
+normal collection preserves the former `current` evaluation as `previous`.
+parameterless review compares that explicit pair. the first collection has no
+predecessor and review asks for `--since` rather than guessing.
+
+export a due-diligence response with:
+
+```sh
+divinate export dd
+```
+
+## verify and inspect provenance
 
 ```sh
 divinate verify
+divinate provenance <assertion-id>
+divinate extract <execution-id> --output retained-output.json
 ```
 
-verification is offline. it checks object identities, content digests, retained
-streams, source contracts, pack invocations, and links between evidence and its
-provenance. success prints a json count summary with `"status": "verified"`.
+verification is offline. each normal collection records a content-addressed
+snapshot of the exact YAML and links its collection cycle and evaluation to that
+digest. later YAML edits do not rewrite old evidence.
 
-commit or archive `.evidence/` only after reviewing its contents. retained source,
-stdout, and stderr are byte-exact and may contain sensitive data.
+review `.evidence/` before committing, sharing, or archiving it. retained source
+content, stdout, and stderr are byte-exact and may contain sensitive data.

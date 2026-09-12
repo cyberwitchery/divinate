@@ -687,6 +687,15 @@ fn reject_sensitive_configuration(value: &Value, path: &str) -> Result<()> {
     Ok(())
 }
 
+/// reject configuration that would retain credential-like values.
+///
+/// # Errors
+///
+/// returns an error when a nested key appears to contain credentials.
+pub fn validate_configuration(value: &Value) -> Result<()> {
+    reject_sensitive_configuration(value, "configuration")
+}
+
 fn reseal(mut capture: PackCapture, metadata: &PackMetadata) -> Result<PackCapture> {
     capture.invocation.contents.pack_id.clone_from(&metadata.id);
     capture

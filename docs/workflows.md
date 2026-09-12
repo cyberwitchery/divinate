@@ -1,22 +1,100 @@
 # workflows
 
+## recurring repository maintenance
+
+`divinate.yaml` contains choices that stay stable across collection cycles.
+normal use is:
+
+```sh
+divinate collect
+divinate status
+divinate review
+```
+
+`collect` prepares enabled source results before merging their evidence. a
+required source or provenance validation failure aborts that prepared increment.
+optional source failures are reported separately. after a valid
+increment is retained, evaluation publishes new `current` assertions and dossier
+files while preserving the prior evaluation as `previous`.
+
+retained evidence is independently meaningful. if evidence persistence succeeds
+but evaluation fails, divinate reports that distinction instead of claiming the
+whole cycle was transactional.
+
 ## release dependency evidence
 
-`collect release` is the complete built-in workflow. it binds git tags, cyclonedx
-sbom identities, `sbom-diff` output, and an added-component policy decision.
+normal release collection binds Git tags, CycloneDX SBOM identities, comparison
+output, and an added-component policy decision. declare the built-in source:
 
-the workflow records two executions. the first produces the dependency diff. the
-second runs the same comparison with `--fail-on added-components`. divinate
-requires their output bytes to match, so the gate cannot silently evaluate a
-different delta.
+```yaml
+sources:
+  release-sbom:
+    provider:
+      builtin: release-sbom
+    required: true
+    config:
+      executable: sbom-diff
+      sbom_path: dist/{release}.cdx.json
+```
 
-identical verified executions are reused. `--force` captures them again. the
-resulting assertions state only what the supplied sboms cover; they do not claim
-to enumerate runtime-loaded software or comparable generator environments.
+then run `divinate collect`. the target is the only release tag at `HEAD`. the
+base is the unique nearest ancestor, with releases already represented in state
+taking precedence over repository tags. recorded tag revisions become expected
+revisions on later runs, so a moved tag is rejected.
+
+the workflow records two executions. one produces the dependency diff; the other
+runs the same comparison with the configured gate. their output bytes must match.
+identical verified executions are reused unless `--force` is present.
+
+override shared release context for an exceptional cycle:
+
+```sh
+divinate collect --release v1.5.0 --base-release v1.4.0
+```
+
+`divinate collect release` remains the fully explicit, collection-only
+compatibility form.
+
+## configured packs
+
+packs are executable distribution units. sources select their collectors in
+YAML:
+
+```yaml
+packs:
+  example.backup-control:
+    executable: divinate-pack-backup-control
+sources:
+  backup-encryption:
+    provider:
+      pack: example.backup-control
+      collector: backup-encryption
+```
+
+sources run in deterministic source-id order. presence means enabled and they
+are required by default. divinate does not schedule them or infer dependencies
+between them.
+
+## explicit historical evaluation
+
+normal collection manages `current` and `previous`. use named evaluations when
+the time, release, or source-contract registry must be explicit:
+
+```sh
+divinate evaluate --label september --release v1.5.0 \
+  --from 2026-09-01T00:00:00Z --until 2026-10-01T00:00:00Z \
+  --at 2026-10-01T00:00:00Z
+
+divinate review --since august --current september \
+  --output september-review
+```
+
+archive `.evidence/` as a unit. reproduction of pack assertions also requires
+the executable whose digest identifies the original derivation.
 
 ## arbitrary local tools
 
-use `run` when no normalizer or typed collector exists:
+use `run` when no typed collector exists:
 
 ```sh
 divinate run \
@@ -27,87 +105,29 @@ divinate run \
   /opt/bin/example-scanner -- artifact.bin --json report.json
 ```
 
-this records provenance, not meaning. `run` alone does not create an observation
-or assertion. use a built-in adapter through a manifest, or a pack, to turn output
-into typed evidence.
+this records provenance, not meaning. use a manifest adapter or pack to turn the
+retained output into typed evidence.
 
 ## manifest import
 
-a manifest imports json sources through built-in adapters. the top level contains
-`sources` and an optional `collection_runs` array:
-
-```json
-{
-  "collection_runs": [],
-  "sources": [
-    {
-      "adapter": "sbom-diff",
-      "collection_run": null,
-      "execution_transcripts": ["exec_..."],
-      "path": "sbom-diff.json",
-      "observed_at": "2026-09-01T12:00:00Z",
-      "producer": {
-        "name": "sbom-diff",
-        "version": "0.8.0",
-        "collector": "local/sbom-diff"
-      },
-      "subject": {
-        "kind": "release",
-        "id": "github:example/acme:v1.5.0",
-        "repository": "github:example/acme",
-        "release": "v1.5.0",
-        "revision": "<commit>",
-        "base_revision": "<commit>"
-      }
-    }
-  ]
-}
-```
-
-source paths are relative to the manifest. `execution_transcripts` must identify
-retained executions whose stdout, stderr, or declared output matches the source
-bytes. a source tied to population enumeration also names its `collection_run`;
-that run names the acquisition transcripts establishing its coverage.
-
-manifests are a low-level interchange surface: they require exact subjects,
-provenance, and coverage. prefer `collect release` or a pack for repeatable use.
-
-## packs
-
-packs add collectors, normalizers, and evaluators without changing core. configure
-their executable paths in `.evidence/config.json`, inspect them with `packs` and
-`pack`, then call `collect pack`. see [packs](packs.md) for the protocol and trust
-model.
-
-## repeated evaluations
-
-use stable labels for review points:
+a manifest is the low-level interchange surface for built-in adapters. it names
+source files, subjects, observation times, producers, and any collection,
+execution, or acquisition links. paths are relative to the manifest.
 
 ```sh
-divinate evaluate --label august --release v1.4.0 \
-  --from 2026-08-01T00:00:00Z --until 2026-09-01T00:00:00Z
-
-divinate evaluate --label september --release v1.5.0 \
-  --from 2026-09-01T00:00:00Z --until 2026-10-01T00:00:00Z
-
-divinate review --since august --current september --output september-review
+divinate collect manifest evidence-manifest.json \
+  --acquisition github-commits.json
 ```
 
-the review is written as json and markdown under `.evidence/views/`. it compares
-saved assertion outcomes and evidence, not raw sources.
+manifests require exact identity, provenance, and coverage. prefer normal
+configured collection for recurring use.
 
-## due-diligence response
+## downstream views
 
 ```sh
-divinate export dd --evaluation september --output customer-response
+divinate review
+divinate export dd
 ```
 
-this writes a concise assertion-based response under `.evidence/views/`. it does
-not add compliance mappings or infer answers absent from the saved evaluation.
-
-## reproducible historical evaluation
-
-record `--at`, `--from`, `--until`, `--release`, and the evaluation label in the
-review process. archive `.evidence/` as a unit. if pack assertions must be
-re-derived later, retain and configure the exact pack executable version; saved
-pack assertions can be verified without executing it.
+views consume saved assertions. they do not read raw evidence, acquire new
+evidence, or introduce separate assertion semantics.

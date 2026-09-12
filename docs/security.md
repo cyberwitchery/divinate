@@ -16,6 +16,19 @@ these checks reduce obvious mistakes; they are not a general secret detector.
 protect `.evidence/` according to the sensitivity of the collected systems and
 outputs. review it before committing, sharing, or archiving it.
 
+## project configuration
+
+`divinate.yaml` is a committed declaration, not a secret store. credential-like
+keys in source and pack configuration are rejected. there is no local override
+file or credential manager in this version; plain executable names resolve
+through `PATH` so machine-specific installation paths need not be committed.
+
+normal collection retains an exact content-addressed YAML snapshot. do not put a
+secret in YAML on the assumption that only its digest will be retained. future
+authenticated integrations may name a logical credential binding in committed
+configuration, but secret resolution must remain outside retained configuration
+and transcript bytes.
+
 ## local commands
 
 `run`, `collect release`, and pack collection execute programs as the current

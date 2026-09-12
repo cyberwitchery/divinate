@@ -38,6 +38,7 @@ pub mod error;
 pub mod execution;
 pub mod model;
 pub mod pack;
+pub mod project;
 pub mod provenance;
 pub mod release;
 pub mod views;

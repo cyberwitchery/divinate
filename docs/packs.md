@@ -1,18 +1,88 @@
 # external packs
 
-a pack is an executable that reads one json request from stdin and writes one json
-response to stdout. protocol version 1 supports four operations:
+a pack is an executable that supplies collectors, normalizers, or evaluators
+without writing divinate state. core still executes commands, assigns identity,
+checks provenance and coverage, and persists the result.
 
-- `describe` returns pack metadata, collectors, evaluators, source contracts,
-  evaluator inputs, coverage propositions, and configuration shape.
-- `collect` returns a local command plan for core to execute and retain.
-- `normalize` converts retained command output into typed observation fields.
-- `evaluate` derives structured assertion fields from selected observations and
-  collection runs.
+## declarative collection configuration
+
+declare the pack and a source backed by one of its collectors in
+`divinate.yaml`:
+
+```yaml
+packs:
+  example.backup-control:
+    executable: divinate-pack-backup-control
+    config:
+      repository: github:cyberwitchery/example
+
+sources:
+  backup-encryption:
+    provider:
+      pack: example.backup-control
+      collector: backup-encryption
+    required: true
+```
+
+`divinate collect` invokes enabled sources sequentially in deterministic source-id
+order and then evaluates the current state. sources receive repository context by
+default. set `context: release` on the source when the collector needs
+core-resolved release and revision identities. sources are required by default;
+presence in the map means enabled.
+
+a required failure aborts the prepared collection increment. an optional failure
+is shown as `failed (optional)` and the unavailable pack's evaluators are skipped
+for that cycle. permission failures, protocol errors, and collector error details
+remain visible in the report.
+
+explicit pack operations remain available:
+
+```sh
+divinate packs
+divinate pack example.backup-control
+divinate collect pack example.backup-control backup-encryption
+```
+
+pack and source are separate concepts. the pack is the executable distribution
+unit. a source selects one collector from that pack, gives it recurring
+configuration and context, and controls whether it is enabled or required.
+
+## built-in sources
+
+built-in integrations use the same source configuration and collection loop.
+the release sbom integration remains built in because its current workflow
+retains two independently executed commands and requires their output bytes to
+match. protocol version 1 describes one collector command per invocation, so
+hiding the second command inside a pack would lose direct execution provenance.
+
+this is a distribution choice, not a second product workflow:
+
+```yaml
+sources:
+  release-sbom:
+    provider:
+      builtin: release-sbom
+    required: true
+    config:
+      executable: sbom-diff
+      sbom_path: dist/{release}.cdx.json
+```
+
+repository and release identity are core context. locating sboms, invoking the
+configured executable, applying the gate, and interpreting its output belong to
+the built-in source.
 
 ## protocol
 
-requests use this envelope:
+protocol version 1 has four operations:
+
+- `describe` returns metadata, collectors, evaluators, source contracts,
+  evaluator inputs, coverage propositions, and configuration shape.
+- `collect` returns a local command plan for core to execute and retain.
+- `normalize` converts retained command output into typed observation fields.
+- `evaluate` derives structured assertion fields from selected saved state.
+
+requests contain one json document:
 
 ```json
 {"protocol_version":1,"operation":"describe","configuration":{},"input":null}
@@ -24,110 +94,79 @@ successful responses contain one json document:
 {"ok":true,"result":{}}
 ```
 
-semantic failures use `{"ok":false,"error":"..."}` and exit status zero. non-zero
-exit status, invalid json, trailing stdout, a missing result, or an incompatible
+semantic failures use `{"ok":false,"error":"..."}` and exit zero. a non-zero
+exit, invalid json, trailing stdout, missing result, timeout, or incompatible
 protocol version fails the operation.
 
-`describe` returns the pack's capabilities:
+`describe` returns this shape:
 
 ```json
 {"ok":true,"result":{
-  "id":"example.backup-control","version":"0.1.0","protocol_version":1,
-  "collectors":["backup-encryption"],"evaluators":[],
-  "evaluator_inputs":{},"evaluator_propositions":{},
-  "source_contracts":[],"configuration_schema":{}
+  "id":"example.backup-control",
+  "version":"0.1.0",
+  "protocol_version":1,
+  "collectors":["backup-encryption"],
+  "evaluators":[],
+  "evaluator_inputs":{},
+  "evaluator_propositions":{},
+  "source_contracts":[],
+  "configuration_schema":{}
 }}
 ```
 
-`evaluator_inputs` limits an evaluator to the listed claim keys.
-`evaluator_propositions` limits its collection runs and defines the coverage core
-will enforce.
+`evaluator_inputs` limits an evaluator to declared claim keys.
+`evaluator_propositions` limits the collection runs it receives and defines the
+coverage requirements core enforces. relevant zero-result collection runs remain
+available to evaluators.
 
-the examples under [`packs/`](../packs) cover a collector, a
-configuration-driven collector, and a separately distributed evaluator.
+the examples under [`packs/`](../packs) include an sbom collector, a
+configuration collector, and a separately distributed evaluator.
 
-## configuration
+## execution and retained configuration
 
-configure packs in `.evidence/config.json`:
+pack processes receive the request document, an empty environment, and a
+temporary working directory. they do not receive the state path. operations time
+out after 30 seconds unless `timeout_seconds` changes the limit.
 
-```json
-{
-  "repository": "github:cyberwitchery/example",
-  "branch": "main",
-  "packs": {
-    "example.backup-control": {
-      "executable": "/opt/divinate-packs/divinate-pack-backup-control",
-      "configuration": {"repository":"github:cyberwitchery/example"},
-      "timeout_seconds": 30
-    }
-  }
-}
-```
-
-available commands:
-
-```sh
-divinate packs
-divinate pack <id>
-divinate collect pack <id> <collector>
-```
-
-`packs` describes every configured executable. `pack` inspects one.
-`collect pack` obtains its command plan, executes the command, normalizes the
-output, and persists the resulting evidence.
-
-pack processes receive the request document, an empty environment, and a temporary
-working directory. the request does not contain the state path. operations time out
-after 30 seconds unless `timeout_seconds` overrides the default.
-
-configuration is retained as part of the invocation. credential-like configuration
-keys are rejected. authenticated sources require a core-owned acquisition path that
-keeps credentials out of retained protocol data.
+configuration is read from committed YAML and retained in the invocation. each
+normal collection also names a content-addressed snapshot of the complete YAML.
+credential-like configuration keys are refused. authenticated sources require a
+core-owned acquisition path that keeps credentials out of retained protocol
+data.
 
 ## evaluation
 
-an evaluator receives:
+an evaluator receives only:
 
-- observations matching its declared claim keys
-- collection runs matching its declared propositions
-- source documents referenced by those observations
-- the evaluation target
+- observations matching its declared claim keys;
+- collection runs matching its declared propositions;
+- source documents referenced by those observations; and
+- the evaluation target.
 
-this includes relevant zero-result collection runs.
+the response supplies assertion type, claim, subject, outcome, evaluation time,
+validity, evidence uses, gaps, identity joins, reasoning, limitations, and
+coverage. core computes assertion and derivation identity. legacy `id` and
+`derivation` response fields are ignored.
 
-the result contains the assertion type, claim, subject, outcome, evaluation time,
-validity, evidence uses, missing evidence, identity joins, reasoning, limitations,
-and coverage. core computes the assertion id and derivation identity. legacy `id`
-and `derivation` fields are accepted and ignored.
-
-each returned coverage decision must name a declared proposition and match core's
-assessment. a supported coverage-backed assertion must have a non-empty interval
-and one complete decision for every declared proposition. evaluators without
-coverage propositions may support claims that do not require population
-enumeration.
-
-the pack defines which propositions its claim needs. core validates the declared
-requirements but cannot identify a requirement the pack omitted.
+each coverage decision must name a declared proposition and equal core's own
+assessment. a supported coverage-backed assertion requires a non-empty interval
+and complete coverage for every declared proposition. core validates declared
+requirements but cannot detect a proposition the pack failed to declare.
 
 ## provenance and security
 
-installing a pack grants executable code the invoking user's filesystem and network
-permissions. divinate does not sandbox it.
+installing a pack grants it the invoking user's filesystem and network
+permissions. divinate does not sandbox packs.
 
-each invocation retains the executable digest, pack id and version, protocol
-version, operation, request, response, and both content digests. collection
-invocations also retain the resulting execution-transcript id.
+each invocation retains executable digest, pack id and version, protocol version,
+operation, request, response, and content digests. collection invocations also
+retain the resulting execution id.
 
-packs cannot persist corpus files directly. core assigns observation and assertion
-identity, validates provenance and evidence references, checks coverage, rejects
-content collisions, and writes state.
+packs cannot persist corpus files directly. core validates identities, references,
+coverage, and collisions before writing state. saved invocations and assertions
+verify without the pack. reevaluation executes the currently configured binary;
+reproducing an older derivation requires that older executable.
 
-saved invocations and assertions verify without the pack. reevaluation runs the
-currently configured executable. configure an archived executable explicitly to
-reproduce an older derivation.
-
-breaking protocol changes use a new integer version. unsupported versions and
-operations fail.
-
-protocol version 1 supports local command plans. it has no generic authenticated
-http request plan.
+protocol version 1 plans local commands only. authenticated remote collection
+requires a core-owned acquisition path. unknown versions and operations fail;
+there is no capability fallback.

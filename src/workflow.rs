@@ -14,14 +14,62 @@ use crate::execution::{self, ExecutionCapture, ExecutionTranscript};
 use crate::model::{Corpus, SourceDocument};
 use crate::{read_json, write_json, SCHEMA_VERSION};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use time::OffsetDateTime;
 
 /// the accumulated corpus, relative to the state directory.
 pub const CORPUS_FILE: &str = "corpus.json";
 /// the current contract invalidations, relative to the state directory.
 pub const CONTRACTS_FILE: &str = "contracts.json";
-/// the repository identity and configured packs, relative to the state directory.
+/// the legacy live configuration filename, retained for migration only.
 pub const CONFIG_FILE: &str = "config.json";
+/// the repository identity bound to this evidence state.
+pub const REPOSITORY_FILE: &str = "repository.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// the repository identity bound to an evidence directory.
+pub struct RepositoryState {
+    pub repository: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// one source result recorded for a configured collection cycle.
+pub struct SourceCollectionRecord {
+    pub status: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// immutable links between one collection cycle and its project configuration.
+pub struct CollectionCycle {
+    pub id: String,
+    pub schema_version: String,
+    pub contents: CollectionCycleContents,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// the configuration and evidence identities used by one collection cycle.
+pub struct CollectionCycleContents {
+    pub repository: String,
+    pub branch: String,
+    pub project_config_sha256: String,
+    pub sources: BTreeMap<String, SourceCollectionRecord>,
+    pub observation_ids: Vec<String>,
+    pub execution_transcript_ids: Vec<String>,
+    pub pack_invocation_ids: Vec<String>,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// the project configuration used for one saved evaluation.
+pub struct EvaluationConfiguration {
+    pub project_config_sha256: String,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 /// a referentially closed view: a corpus and exactly the provenance justifying it.
@@ -32,13 +80,47 @@ pub struct HistoricalEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// repository identity, branch, and configured packs.
+/// repository identity, branch, packs, and recurring evidence sources.
 pub struct ProjectConfig {
     pub repository: String,
     #[serde(default = "default_branch")]
     pub branch: String,
     #[serde(default)]
     pub packs: BTreeMap<String, crate::pack::PackConfig>,
+    #[serde(default)]
+    pub sources: BTreeMap<String, SourceConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// one evidence source enabled for routine collection.
+pub struct SourceConfig {
+    pub provider: SourceProvider,
+    #[serde(default)]
+    pub configuration: Value,
+    #[serde(default)]
+    pub context: SourceContext,
+    #[serde(default = "enabled_source")]
+    pub enabled: bool,
+    #[serde(default = "required_source")]
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+/// the built-in source or pack collector behind an evidence source.
+pub enum SourceProvider {
+    Builtin { source: String },
+    Pack { pack: String, collector: String },
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// whether a source receives repository or release collection context.
+pub enum SourceContext {
+    #[default]
+    Repository,
+    Release,
 }
 
 /// create repository-local state directories and a default contract registry.
@@ -54,6 +136,8 @@ pub fn init(root: &Path) -> Result<()> {
         "dossiers",
         "executions",
         "pack-invocations",
+        "project-configs",
+        "collection-cycles",
         "views",
     ] {
         let path = root.join(directory);
@@ -62,6 +146,235 @@ pub fn init(root: &Path) -> Result<()> {
     let contracts = root.join(CONTRACTS_FILE);
     if !contracts.exists() {
         write_json(&ContractRegistry::default(), &contracts)?;
+    }
+    Ok(())
+}
+
+/// bind an evidence directory to one repository identity.
+///
+/// # Errors
+///
+/// returns an error when existing state names another repository.
+pub fn ensure_repository_identity(root: &Path, repository: &str) -> Result<()> {
+    init(root)?;
+    let path = root.join(REPOSITORY_FILE);
+    if path.exists() {
+        let state: RepositoryState = read_json(&path)?;
+        if state.repository != repository {
+            return Err(Error::Provenance(format!(
+                "evidence state identifies repository {}, not {repository}",
+                state.repository
+            )));
+        }
+        return Ok(());
+    }
+    let legacy = root.join(CONFIG_FILE);
+    if legacy.exists() {
+        let state: ProjectConfig = read_json(&legacy)?;
+        if state.repository != repository {
+            return Err(Error::Provenance(format!(
+                "evidence state identifies repository {}, not {repository}",
+                state.repository
+            )));
+        }
+    }
+    write_json(
+        &RepositoryState {
+            repository: repository.into(),
+        },
+        &path,
+    )
+}
+
+/// retain exact checked-in project configuration bytes by digest.
+///
+/// # Errors
+///
+/// returns an error for a digest mismatch, collision, or write failure.
+pub fn store_project_configuration(root: &Path, sha256: &str, bytes: &[u8]) -> Result<()> {
+    init(root)?;
+    if crate::hex_digest(bytes) != sha256 {
+        return Err(Error::Provenance(
+            "project configuration digest mismatch".into(),
+        ));
+    }
+    let path = root.join("project-configs").join(format!("{sha256}.yaml"));
+    if path.exists() {
+        let existing = fs::read(&path).map_err(|source| Error::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if existing != bytes {
+            return Err(Error::Invalid(format!(
+                "project configuration collision: {sha256}"
+            )));
+        }
+    } else {
+        fs::write(&path, bytes).map_err(|source| Error::Io { path, source })?;
+    }
+    Ok(())
+}
+
+/// construct and retain one immutable configured collection cycle.
+///
+/// # Errors
+///
+/// returns an error for invalid identity, collisions, or write failure.
+pub fn store_collection_cycle(
+    root: &Path,
+    contents: CollectionCycleContents,
+) -> Result<CollectionCycle> {
+    init(root)?;
+    let identity = serde_json::to_value(&contents).map_err(Error::Serialize)?;
+    let digest = crate::hex_digest(&crate::canonical_json(&identity)?);
+    let cycle = CollectionCycle {
+        id: format!("cycle_{}", &digest[..20]),
+        schema_version: crate::SCHEMA_VERSION.into(),
+        contents,
+    };
+    let path = root
+        .join("collection-cycles")
+        .join(format!("{}.json", cycle.id));
+    if path.exists() {
+        let existing: CollectionCycle = read_json(&path)?;
+        if existing != cycle {
+            return Err(Error::Invalid(format!(
+                "collection cycle id collision: {}",
+                cycle.id
+            )));
+        }
+    } else {
+        write_json(&cycle, &path)?;
+    }
+    Ok(cycle)
+}
+
+/// load retained configured collection cycles in deterministic order.
+///
+/// # Errors
+///
+/// returns an error when a cycle cannot be read.
+pub fn load_collection_cycles(root: &Path) -> Result<Vec<CollectionCycle>> {
+    load_json_directory(&root.join("collection-cycles"))
+}
+
+/// verify retained project configuration snapshots and their collection links.
+///
+/// # Errors
+///
+/// returns an error for altered configuration, cycle identity, or missing links.
+pub fn verify_configuration_provenance(
+    root: &Path,
+    corpus: &crate::model::Corpus,
+    executions: &[ExecutionTranscript],
+    invocations: &[crate::pack::PackInvocation],
+) -> Result<usize> {
+    let cycles = load_collection_cycles(root)?;
+    let observation_ids = corpus
+        .observations
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let execution_ids = executions
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let invocation_ids = invocations
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for cycle in &cycles {
+        if cycle.schema_version != crate::SCHEMA_VERSION {
+            return Err(Error::Provenance(format!(
+                "collection cycle {} uses unsupported schema {}",
+                cycle.id, cycle.schema_version
+            )));
+        }
+        let identity = serde_json::to_value(&cycle.contents).map_err(Error::Serialize)?;
+        let digest = crate::hex_digest(&crate::canonical_json(&identity)?);
+        if cycle.id != format!("cycle_{}", &digest[..20]) {
+            return Err(Error::Provenance(format!(
+                "collection cycle identity mismatch: {}",
+                cycle.id
+            )));
+        }
+        verify_project_configuration(root, &cycle.contents.project_config_sha256)?;
+        verify_references(
+            "observation",
+            &cycle.contents.observation_ids,
+            &observation_ids,
+        )?;
+        verify_references(
+            "execution transcript",
+            &cycle.contents.execution_transcript_ids,
+            &execution_ids,
+        )?;
+        verify_references(
+            "pack invocation",
+            &cycle.contents.pack_invocation_ids,
+            &invocation_ids,
+        )?;
+    }
+    verify_evaluation_configurations(root)?;
+    Ok(cycles.len())
+}
+
+fn verify_project_configuration(root: &Path, sha256: &str) -> Result<()> {
+    let path = root.join("project-configs").join(format!("{sha256}.yaml"));
+    let bytes = fs::read(&path).map_err(|source| Error::Io {
+        path: path.clone(),
+        source,
+    })?;
+    if crate::hex_digest(&bytes) != sha256 {
+        return Err(Error::Provenance(format!(
+            "project configuration digest mismatch: {sha256}"
+        )));
+    }
+    serde_yaml_ng::from_slice::<crate::project::ProjectFile>(&bytes)
+        .map_err(|source| Error::Yaml { path, source })?;
+    Ok(())
+}
+
+fn verify_references(
+    kind: &str,
+    references: &[String],
+    available: &std::collections::BTreeSet<&str>,
+) -> Result<()> {
+    if let Some(missing) = references
+        .iter()
+        .find(|reference| !available.contains(reference.as_str()))
+    {
+        return Err(Error::Provenance(format!(
+            "collection cycle references missing {kind} {missing}"
+        )));
+    }
+    Ok(())
+}
+
+fn verify_evaluation_configurations(root: &Path) -> Result<()> {
+    let directory = root.join("assertions");
+    if !directory.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(&directory).map_err(|source| Error::Io {
+        path: directory.clone(),
+        source,
+    })? {
+        let path = entry
+            .map_err(|source| Error::Io {
+                path: directory.clone(),
+                source,
+            })?
+            .path();
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".configuration.json"))
+        {
+            continue;
+        }
+        let reference: EvaluationConfiguration = read_json(&path)?;
+        verify_project_configuration(root, &reference.project_config_sha256)?;
     }
     Ok(())
 }
@@ -120,43 +433,16 @@ pub fn load_pack_invocations(root: &Path) -> Result<Vec<crate::pack::PackInvocat
     load_json_directory(&root.join("pack-invocations"))
 }
 
-/// write repository identity and pack configuration.
-///
-/// # Errors
-///
-/// returns an error when the repository identity is empty or the file cannot be written.
-pub fn configure(root: &Path, config: &ProjectConfig) -> Result<()> {
-    init(root)?;
-    if config.repository.trim().is_empty() {
-        return Err(Error::Invalid(
-            "repository identity must not be empty".into(),
-        ));
-    }
-    let path = root.join(CONFIG_FILE);
-    if path.exists() {
-        let existing: ProjectConfig = read_json(&path)?;
-        if existing != *config {
-            return Err(Error::Invalid(format!(
-                "configuration already identifies repository {:?}; edit {} intentionally to change it",
-                existing.repository,
-                path.display()
-            )));
-        }
-        return Ok(());
-    }
-    write_json(config, &path)
-}
-
-/// load repository workflow configuration.
+/// load the pre-YAML project configuration for migration.
 ///
 /// # Errors
 ///
 /// returns an error when configuration is absent or invalid.
-pub fn load_config(root: &Path) -> Result<ProjectConfig> {
+pub fn load_legacy_config(root: &Path) -> Result<ProjectConfig> {
     let path = root.join(CONFIG_FILE);
     if !path.exists() {
         return Err(Error::Invalid(format!(
-            "missing configuration {}; run `divinate init --repository <identity>`",
+            "missing legacy configuration {}",
             path.display()
         )));
     }
@@ -698,4 +984,12 @@ pub fn corpus_path(root: &Path) -> PathBuf {
 
 fn default_branch() -> String {
     "main".into()
+}
+
+const fn enabled_source() -> bool {
+    true
+}
+
+const fn required_source() -> bool {
+    true
 }

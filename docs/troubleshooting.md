@@ -2,33 +2,50 @@
 
 ## missing configuration
 
-if a command reports a missing `config.json`, initialize state:
+if a command reports a missing `divinate.yaml`, either restore the repository's
+committed configuration or bootstrap a new one:
 
 ```sh
-divinate init --repository github:owner/repository --branch main
+divinate init
 ```
 
-pass the same `--state` path to every command when state is not `.evidence`.
+edit the generated YAML before collecting. if YAML exists, `collect` initializes
+missing `.evidence/` state automatically. pass the same `--state` path to every
+command when state is not `.evidence`.
 
 ## repository identity mismatch
 
-`collect release` compares the configured repository with the checkout's git
-origin. check both:
+normal release collection compares the configured repository with the checkout's
+git origin. check both:
 
 ```sh
 git -C /path/to/checkout remote get-url origin
-sed -n '1,80p' .evidence/config.json
+sed -n '1,80p' divinate.yaml
 ```
 
 fix the configuration intentionally or use the correct checkout. do not change
 the identity merely to bypass the check.
 
+## release inference fails
+
+`collect` selects a release only when exactly one tag points at `HEAD`. pass
+`--release <tag>` when that is not the intended rule.
+
+the previous release must be the unique nearest ancestor. when multiple names or
+branches are equally valid, pass `--base-release <tag>`. divinate reports the
+candidates it refused to choose between.
+
 ## release or sbom mismatch
 
 both release names must resolve to distinct commits. each cyclonedx sbom must
 identify the expected repository and release in its metadata component. when
-release movement must be detected, pass the expected commits with
+normal collection reuses revisions already recorded for either release as
+expected revisions. the explicit `collect release` command also accepts
 `--base-revision` and `--revision`.
+
+missing configured SBOMs are not resolved through filename guessing. correct
+`sources.release-sbom.config.sbom_path` in `divinate.yaml`, or use the advanced
+`collect release` form for a one-off explicit collection.
 
 ## gate output mismatch
 
@@ -81,6 +98,15 @@ without redaction.
 
 pass `--release` explicitly. automatic selection succeeds only when the latest
 release in evidence is unambiguous at the evaluation time.
+
+## review cannot choose a predecessor
+
+parameterless review requires the `previous` snapshot created by a second normal
+collection. for named or imported historical evaluations, use:
+
+```sh
+divinate review --since <older-label> --current <newer-label>
+```
 
 ## pack failure
 

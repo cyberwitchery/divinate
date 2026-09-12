@@ -356,20 +356,12 @@ fn repeated_source_bytes_can_arrive_through_a_different_local_path() {
 #[test]
 fn initialization_is_idempotent_but_does_not_retarget_a_repository() {
     let state = tempfile::tempdir().unwrap();
-    let config = workflow::ProjectConfig {
-        repository: "github:cyberwitchery/example".into(),
-        branch: "main".into(),
-        packs: BTreeMap::default(),
-    };
-    workflow::configure(state.path(), &config).unwrap();
-    workflow::configure(state.path(), &config).unwrap();
-    let changed = workflow::ProjectConfig {
-        repository: "github:cyberwitchery/other".into(),
-        branch: "main".into(),
-        packs: BTreeMap::default(),
-    };
-    assert!(workflow::configure(state.path(), &changed)
-        .unwrap_err()
-        .to_string()
-        .contains("already identifies repository"));
+    workflow::ensure_repository_identity(state.path(), "github:cyberwitchery/example").unwrap();
+    workflow::ensure_repository_identity(state.path(), "github:cyberwitchery/example").unwrap();
+    assert!(
+        workflow::ensure_repository_identity(state.path(), "github:cyberwitchery/other")
+            .unwrap_err()
+            .to_string()
+            .contains("evidence state identifies repository")
+    );
 }

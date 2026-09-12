@@ -10,7 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::adapters::adapt;
 use crate::error::{Error, Result};
@@ -56,6 +57,131 @@ pub struct ReleaseCapture {
     pub corpus: Corpus,
     pub executions: Vec<ExecutionCapture>,
     pub result: ReleaseResult,
+}
+
+#[derive(Debug, Clone)]
+/// core release identity and source configuration for the built-in sbom source.
+pub struct ConfiguredReleaseRequest {
+    pub repository: String,
+    pub repository_path: PathBuf,
+    pub base_release: String,
+    pub release: String,
+    pub base_revision: String,
+    pub revision: String,
+    pub configuration: Value,
+    pub force: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReleaseSourceConfig {
+    executable: PathBuf,
+    sbom_path: String,
+    #[serde(default = "default_policy")]
+    policy: String,
+    #[serde(default = "default_gate")]
+    fail_on: String,
+}
+
+/// collect the built-in release sbom source from generic source configuration.
+///
+/// # Errors
+///
+/// returns an error when configuration, source files, release identity, or
+/// retained execution provenance is invalid.
+pub fn collect_configured(
+    request: &ConfiguredReleaseRequest,
+    existing: &[ExecutionTranscript],
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Result<ReleaseCapture> {
+    let configuration: ReleaseSourceConfig = serde_json::from_value(request.configuration.clone())
+        .map_err(|error| Error::Invalid(format!("invalid release-sbom configuration: {error}")))?;
+    if !configuration.sbom_path.contains("{release}") {
+        return Err(Error::Invalid(
+            "release-sbom sbom_path must contain the {release} placeholder".into(),
+        ));
+    }
+    let executable = repository_relative(&request.repository_path, configuration.executable);
+    if !executable.is_file() {
+        return Err(Error::Invalid(format!(
+            "release-sbom executable does not exist: {}",
+            executable.display()
+        )));
+    }
+    let base_sbom = configured_source_path(
+        &request.repository_path,
+        &configuration.sbom_path,
+        &request.base_release,
+    )?;
+    let target_sbom = configured_source_path(
+        &request.repository_path,
+        &configuration.sbom_path,
+        &request.release,
+    )?;
+    collect(
+        &ReleaseRequest {
+            repository: request.repository.clone(),
+            repository_path: request.repository_path.clone(),
+            base_release: request.base_release.clone(),
+            release: request.release.clone(),
+            expected_base_revision: Some(request.base_revision.clone()),
+            expected_revision: Some(request.revision.clone()),
+            base_sbom,
+            target_sbom,
+            executable,
+            reported_version: None,
+            policy_id: configuration.policy,
+            fail_on: configuration.fail_on,
+            force: request.force,
+        },
+        existing,
+        blobs,
+    )
+}
+
+/// validate configuration for the built-in release sbom source.
+///
+/// # Errors
+///
+/// returns an error when required fields are absent or the path template cannot
+/// represent both releases.
+pub fn validate_source_configuration(configuration: &Value) -> Result<()> {
+    let configuration: ReleaseSourceConfig = serde_json::from_value(configuration.clone())
+        .map_err(|error| Error::Invalid(format!("invalid release-sbom configuration: {error}")))?;
+    if configuration.sbom_path.contains("{release}") {
+        Ok(())
+    } else {
+        Err(Error::Invalid(
+            "release-sbom sbom_path must contain the {release} placeholder".into(),
+        ))
+    }
+}
+
+fn repository_relative(repository: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        repository.join(path)
+    }
+}
+
+fn configured_source_path(repository: &Path, template: &str, release: &str) -> Result<PathBuf> {
+    let path = repository.join(template.replace("{release}", release));
+    if !path.is_file() {
+        return Err(Error::Invalid(format!(
+            "release-sbom input does not exist for {release}: {}",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+fn default_policy() -> String {
+    "supply-chain/default".into()
+}
+
+fn default_gate() -> String {
+    "added-components".into()
 }
 
 /// collect the baseline release dependency evidence without a user-authored manifest.
@@ -288,7 +414,12 @@ fn capture_or_reuse(
     execution::capture(request).map(|capture| (capture, false))
 }
 
-fn resolve_release(repository: &Path, release: &str) -> Result<String> {
+/// resolve a release tag to its commit id.
+///
+/// # Errors
+///
+/// returns an error when git cannot resolve the tag to a commit.
+pub fn resolve_release(repository: &Path, release: &str) -> Result<String> {
     let reference = format!("{release}^{{commit}}");
     let output = Command::new("git")
         .args(["-C"])
@@ -314,6 +445,21 @@ fn resolve_release(repository: &Path, release: &str) -> Result<String> {
 }
 
 fn validate_repository_identity(repository: &Path, expected: &str) -> Result<()> {
+    let actual = repository_identity(repository)?;
+    if actual != expected {
+        return provenance(format!(
+            "repository path resolves to {actual}, not configured repository {expected}"
+        ));
+    }
+    Ok(())
+}
+
+/// derive the canonical github identity from a checkout's origin.
+///
+/// # Errors
+///
+/// returns an error when the origin is absent, unsupported, or invalid.
+pub fn repository_identity(repository: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["-C"])
         .arg(repository)
@@ -328,18 +474,167 @@ fn validate_repository_identity(repository: &Path, expected: &str) -> Result<()>
     }
     let origin = String::from_utf8(output.stdout)
         .map_err(|_| Error::Provenance("git origin is not utf-8".into()))?;
-    let actual = github_identity(origin.trim()).ok_or_else(|| {
+    github_identity(origin.trim()).ok_or_else(|| {
         Error::Provenance(format!(
             "git origin {:?} is not a supported github url",
             origin.trim()
         ))
-    })?;
-    if actual != expected {
-        return provenance(format!(
-            "repository path resolves to {actual}, not configured repository {expected}"
-        ));
+    })
+}
+
+/// return the checkout's current branch.
+///
+/// # Errors
+///
+/// returns an error for detached head or an unreadable repository.
+pub fn current_branch(repository: &Path) -> Result<String> {
+    git_text(
+        repository,
+        &["symbolic-ref", "--quiet", "--short", "HEAD"],
+        "cannot determine current branch; choose one with --branch",
+    )
+}
+
+/// return the only tag pointing at head.
+///
+/// # Errors
+///
+/// returns an error when no tag or more than one tag points at head.
+pub fn release_at_head(repository: &Path) -> Result<String> {
+    let tags = git_lines(repository, &["tag", "--points-at", "HEAD"])?;
+    match tags.as_slice() {
+        [release] => Ok(release.clone()),
+        [] => provenance("cannot determine release at HEAD; choose one with --release"),
+        _ => provenance(format!(
+            "cannot determine release at HEAD; candidates are {}; choose one with --release",
+            tags.join(", ")
+        )),
     }
-    Ok(())
+}
+
+/// infer the nearest unambiguous ancestor release.
+///
+/// known releases from retained evidence take precedence. when none is an
+/// ancestor, repository tags are considered.
+///
+/// # Errors
+///
+/// returns an error when no unique nearest ancestor exists.
+pub fn previous_release(
+    repository: &Path,
+    release: &str,
+    known_releases: &[String],
+) -> Result<String> {
+    let mut candidates = ancestor_releases(repository, release, known_releases)?;
+    if candidates.is_empty() {
+        candidates = ancestor_releases(
+            repository,
+            release,
+            &git_lines(repository, &["tag", "--merged", release])?,
+        )?;
+    }
+    let revisions = candidates
+        .iter()
+        .map(|candidate| resolve_release(repository, candidate).map(|id| (candidate, id)))
+        .collect::<Result<Vec<_>>>()?;
+    let mut nearest = Vec::new();
+    for (candidate, revision) in &revisions {
+        let mut superseded = false;
+        for (other, other_revision) in &revisions {
+            if candidate != other
+                && revision != other_revision
+                && is_ancestor(repository, candidate, other)?
+            {
+                superseded = true;
+                break;
+            }
+        }
+        if !superseded {
+            nearest.push((*candidate).clone());
+        }
+    }
+    match nearest.as_slice() {
+        [base] => Ok(base.clone()),
+        [] => provenance(format!(
+            "cannot determine previous release for {release}; choose one with --base-release"
+        )),
+        _ => provenance(format!(
+            "cannot determine previous release for {release}; candidates are {}; choose one with --base-release",
+            nearest.join(", ")
+        )),
+    }
+}
+
+/// return the committer timestamp of a release commit.
+///
+/// # Errors
+///
+/// returns an error when git cannot read a valid timestamp.
+pub fn release_time(repository: &Path, release: &str) -> Result<String> {
+    let reference = format!("{release}^{{commit}}");
+    let value = git_text(
+        repository,
+        &["show", "-s", "--format=%cI", &reference],
+        &format!("cannot determine timestamp for release {release}"),
+    )?;
+    crate::parse_timestamp(&value)?;
+    Ok(value)
+}
+
+fn ancestor_releases(repository: &Path, release: &str, values: &[String]) -> Result<Vec<String>> {
+    let mut candidates = Vec::new();
+    for candidate in values {
+        if candidate != release && is_ancestor(repository, candidate, release)? {
+            candidates.push(candidate.clone());
+        }
+    }
+    candidates.sort();
+    candidates.dedup();
+    Ok(candidates)
+}
+
+fn is_ancestor(repository: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let status = Command::new("git")
+        .args(["-C"])
+        .arg(repository)
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .status()
+        .map_err(|error| Error::Provenance(format!("cannot inspect release ancestry: {error}")))?;
+    match status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => provenance(format!(
+            "cannot compare release ancestry for {ancestor} and {descendant}"
+        )),
+    }
+}
+
+fn git_lines(repository: &Path, args: &[&str]) -> Result<Vec<String>> {
+    let output = Command::new("git")
+        .args(["-C"])
+        .arg(repository)
+        .args(args)
+        .output()
+        .map_err(|error| Error::Provenance(format!("cannot inspect git repository: {error}")))?;
+    if !output.status.success() {
+        return provenance(format!("git {} failed", args.join(" ")));
+    }
+    let output = String::from_utf8(output.stdout)
+        .map_err(|_| Error::Provenance("git output is not utf-8".into()))?;
+    Ok(output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+fn git_text(repository: &Path, args: &[&str], error: &str) -> Result<String> {
+    let values = git_lines(repository, args)?;
+    match values.as_slice() {
+        [value] => Ok(value.clone()),
+        _ => provenance(error),
+    }
 }
 
 fn github_identity(origin: &str) -> Option<String> {
