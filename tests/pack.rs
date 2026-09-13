@@ -1200,9 +1200,21 @@ fn credential_like_configuration_is_not_sent_or_retained() {
 #[test]
 fn protocol_crash_and_malformed_response_do_not_create_canonical_evidence() {
     for (name, body, expected) in [
-        ("crash", b"#!/bin/sh\nexit 7\n".as_slice(), "exited with"),
-        ("malformed", b"#!/bin/sh\nprintf noise\n".as_slice(), "invalid pack"),
-        ("incompatible", b"#!/bin/sh\nprintf '%s' '{\"ok\":true,\"result\":{\"id\":\"bad\",\"version\":\"1\",\"protocol_version\":2,\"collectors\":[],\"evaluators\":[],\"evaluator_inputs\":{},\"evaluator_propositions\":{},\"source_contracts\":[],\"configuration_schema\":{}}}'\n".as_slice(), "uses protocol 2"),
+        (
+            "crash",
+            b"#!/bin/sh\ncat >/dev/null\nexit 7\n".as_slice(),
+            "exited with",
+        ),
+        (
+            "malformed",
+            b"#!/bin/sh\ncat >/dev/null\nprintf noise\n".as_slice(),
+            "invalid pack",
+        ),
+        (
+            "incompatible",
+            b"#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"ok\":true,\"result\":{\"id\":\"bad\",\"version\":\"1\",\"protocol_version\":2,\"collectors\":[],\"evaluators\":[],\"evaluator_inputs\":{},\"evaluator_propositions\":{},\"source_contracts\":[],\"configuration_schema\":{}}}'\n".as_slice(),
+            "uses protocol 2",
+        ),
     ] {
         let state = tempfile::tempdir().unwrap();
         let path = state.path().join(name);
