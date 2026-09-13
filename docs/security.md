@@ -24,17 +24,14 @@ file or credential manager in this version; plain executable names resolve
 through `PATH` so machine-specific installation paths need not be committed.
 
 normal collection retains an exact content-addressed YAML snapshot. do not put a
-secret in YAML on the assumption that only its digest will be retained. future
-authenticated integrations may name a logical credential binding in committed
-configuration, but secret resolution must remain outside retained configuration
-and transcript bytes.
+secret in YAML on the assumption that only its digest will be retained.
 
 ## local commands
 
-`run`, `collect release`, and pack collection execute programs as the current
-user. local commands receive an empty environment plus values explicitly supplied
-by the request. this reduces ambient configuration but does not make execution
-hermetic.
+`run`, built-in source collection, and pack collection execute programs as the
+current user. local commands receive an empty environment plus values explicitly
+supplied by the request. this reduces ambient configuration but does not make
+execution hermetic.
 
 divinate records executable bytes and their sha-256. that identifies what was
 run; it does not attest that the program was trustworthy. only execute tools you
@@ -60,9 +57,23 @@ and pagination prove completeness. their authority is not global. a verified
 transcript proves integrity and contract compliance, not remote truth or account
 completeness beyond the declared scope.
 
-authenticated generic http plans are not supported by pack protocol version 1.
-credentials must remain in a core-owned acquisition path that excludes them from
-retained transcript data.
+for GitHub, core runs `gh auth token` as operational credential plumbing and
+falls back to `GITHUB_TOKEN`. helper output and the environment value exist only
+in core memory. they are not execution evidence, configuration, pack input,
+logs, content-addressed blobs, or acquisition transcripts.
+
+GitHub packs can request only named branch-protection, check-run, or
+commit-status resources.
+core constructs `https://api.github.com` URLs, injects the authorization header,
+and retains only allowlisted non-secret response headers. redirects are disabled,
+so credentials are never forwarded to another host. packs receive an empty
+environment and never receive the credential.
+
+permission denial, missing resources, unauthenticated responses, rate limits,
+unsafe redirects, and incomplete pagination remain distinct transcript outcomes.
+none is interpreted as an empty protected-branch, check-run, or commit-status
+population. retained
+GitHub evidence verifies offline without a network connection or credential.
 
 ## integrity limits
 

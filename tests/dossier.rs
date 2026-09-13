@@ -9,7 +9,7 @@ fn target() -> EvaluationTarget {
     EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
         branch: "main".into(),
-        release: "v1.4".into(),
+        release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
     }
@@ -43,6 +43,18 @@ fn dossier_states_are_the_derived_assertion_states() {
         };
         assert_eq!(control.state, expected);
     }
+}
+
+#[test]
+fn repository_dossier_omits_release_context() {
+    let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
+    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let mut repository = target();
+    repository.release = None;
+    let assertions = assertions::evaluate_all(&corpus, &repository, at).unwrap();
+    let dossier = dossier::build(&corpus, &assertions, &[], &repository, at).unwrap();
+    assert_eq!(dossier.contents.release, None);
+    assert!(!dossier::render_markdown(&dossier).contains("release: `"));
 }
 
 #[test]
@@ -155,6 +167,10 @@ fn pack_assertions_reach_the_dossier() {
     external.assertion_type = AssertionType::External("backup_encryption".into());
     external.claim = "repository backups are configured to use encryption".into();
     assertions.push(external);
+    let mut github = assertions[0].clone();
+    github.id = "asrt_github".into();
+    github.assertion_type = AssertionType::External("github_current_revision_checks_passed".into());
+    assertions.push(github);
     let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();
     assert!(dossier
         .contents
@@ -162,4 +178,10 @@ fn pack_assertions_reach_the_dossier() {
         .iter()
         .any(|control| control.assertion_id == "asrt_external"
             && control.title == "backup encryption"));
+    assert!(dossier
+        .contents
+        .controls
+        .iter()
+        .any(|control| control.assertion_id == "asrt_github"
+            && control.title == "observed GitHub revision results acceptable"));
 }

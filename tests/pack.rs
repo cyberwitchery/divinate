@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use divinate::assertions::{AssertionType, DerivedAssertion, Outcome};
 use divinate::model::{
@@ -49,6 +50,411 @@ fn every_pack_shape_shares_one_protocol() {
     assert_eq!(open.collectors, ["release-diff"]);
     assert_eq!(collector.collectors, ["backup-encryption"]);
     assert_eq!(evaluator.evaluators, ["backup-encryption"]);
+}
+
+#[test]
+fn github_pack_plans_remote_reads_without_receiving_credentials() {
+    let config = pack_config(
+        example("packs/github/divinate-pack-github"),
+        serde_json::Value::Null,
+    );
+    let (metadata, _) = pack::describe(&config).unwrap();
+    assert_eq!(metadata.id, "cyberwitchery.github");
+    let context = serde_json::json!({
+        "repository": "github:cyberwitchery/divinate",
+        "branch": "main",
+        "revision": "abc123",
+        "interval": {
+            "from": "2026-09-11T00:00:00Z",
+            "until": "2026-09-12T00:00:00Z"
+        },
+        "observed_at": "2026-09-12T00:00:00Z",
+        "configuration": {}
+    });
+    let (plan, capture) = pack::plan(&config, &metadata, "check-runs", &context).unwrap();
+    assert!(matches!(
+        plan.action().unwrap(),
+        pack::CollectionAction::Remote {
+            acquisition: pack::RemoteAcquisitionPlan::Github {
+                resource: pack::GithubResource::CheckRuns,
+                ..
+            }
+        }
+    ));
+    let retained = serde_json::to_string(&capture.invocation).unwrap();
+    assert!(!retained.to_ascii_lowercase().contains("authorization"));
+    assert!(!retained.to_ascii_lowercase().contains("token"));
+
+    let (plan, capture) = pack::plan(&config, &metadata, "commit-statuses", &context).unwrap();
+    assert!(matches!(
+        plan.action().unwrap(),
+        pack::CollectionAction::Remote {
+            acquisition: pack::RemoteAcquisitionPlan::Github {
+                resource: pack::GithubResource::CommitStatuses,
+                ..
+            }
+        }
+    ));
+    let retained = serde_json::to_string(&capture.invocation).unwrap();
+    assert!(!retained.to_ascii_lowercase().contains("authorization"));
+    assert!(!retained.to_ascii_lowercase().contains("token"));
+}
+
+#[test]
+fn github_pack_normalizes_branch_and_check_responses() {
+    let config = pack_config(
+        example("packs/github/divinate-pack-github"),
+        serde_json::Value::Null,
+    );
+    let (metadata, _) = pack::describe(&config).unwrap();
+    let subject = Subject {
+        kind: "repository".into(),
+        id: "github:cyberwitchery/divinate".into(),
+        qualifiers: BTreeMap::from([
+            ("branch".into(), serde_json::json!("main")),
+            ("revision".into(), serde_json::json!("abc123")),
+        ]),
+    };
+    let branch = br#"{"protected":false}"#;
+    let (normalized, _) = pack::normalize(
+        &config,
+        &metadata,
+        "github-branch-protection/v1",
+        branch,
+        &divinate::hex_digest(branch),
+        &subject,
+    )
+    .unwrap();
+    assert_eq!(normalized.claim_key, "github:branch-protection");
+    assert_eq!(normalized.data["required_approving_review_count"], 0);
+
+    let checks = br#"{"total_count":1,"check_runs":[{"name":"test","status":"completed","conclusion":"success","head_sha":"abc123"}]}"#;
+    let (normalized, _) = pack::normalize(
+        &config,
+        &metadata,
+        "github-check-runs/v1",
+        checks,
+        &divinate::hex_digest(checks),
+        &subject,
+    )
+    .unwrap();
+    assert_eq!(normalized.claim_key, "github:check-runs");
+    assert_eq!(normalized.data["checks"][0]["conclusion"], "success");
+
+    let statuses = br#"{"state":"success","total_count":1,"statuses":[{"context":"ci/legacy","state":"success","description":"passed","target_url":"https://example.invalid"}]}"#;
+    let (normalized, _) = pack::normalize(
+        &config,
+        &metadata,
+        "github-commit-statuses/v1",
+        statuses,
+        &divinate::hex_digest(statuses),
+        &subject,
+    )
+    .unwrap();
+    assert_eq!(normalized.claim_key, "github:commit-statuses");
+    assert_eq!(normalized.data["statuses"][0]["context"], "ci/legacy");
+    assert!(normalized.data["statuses"][0].get("target_url").is_none());
+}
+
+#[test]
+fn github_ci_assertion_requires_both_status_mechanisms() {
+    let success_check = serde_json::json!({
+        "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+    });
+    let success_status = serde_json::json!({"context": "legacy", "state": "success"});
+    assert_eq!(
+        github_ci_outcome(
+            &[
+                success_check.clone(),
+                serde_json::json!({
+                    "name": "advisory", "status": "completed", "conclusion": "neutral", "head_sha": "abc123"
+                }),
+                serde_json::json!({
+                    "name": "optional", "status": "completed", "conclusion": "skipped", "head_sha": "abc123"
+                }),
+            ],
+            std::slice::from_ref(&success_status),
+            true,
+            true
+        ),
+        "supported"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            &[serde_json::json!({
+                "name": "test", "status": "completed", "conclusion": "failure", "head_sha": "abc123"
+            })],
+            std::slice::from_ref(&success_status),
+            true,
+            true,
+        ),
+        "contradicted"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            std::slice::from_ref(&success_check),
+            &[serde_json::json!({"context": "legacy", "state": "error"})],
+            true,
+            true,
+        ),
+        "contradicted"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            std::slice::from_ref(&success_check),
+            &[serde_json::json!({"context": "legacy", "state": "pending"})],
+            true,
+            true,
+        ),
+        "insufficient_evidence"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            &[serde_json::json!({
+                "name": "test", "status": "queued", "conclusion": null, "head_sha": "abc123"
+            })],
+            std::slice::from_ref(&success_status),
+            true,
+            true,
+        ),
+        "insufficient_evidence"
+    );
+    assert_eq!(
+        github_ci_outcome(&[], &[], true, true),
+        "insufficient_evidence"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            std::slice::from_ref(&success_check),
+            std::slice::from_ref(&success_status),
+            false,
+            true
+        ),
+        "insufficient_evidence"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            std::slice::from_ref(&success_check),
+            std::slice::from_ref(&success_status),
+            true,
+            false,
+        ),
+        "insufficient_evidence"
+    );
+}
+
+#[test]
+fn github_ci_unknown_results_are_insufficient() {
+    let success_check = serde_json::json!({
+        "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+    });
+    let success_status = serde_json::json!({"context": "legacy", "state": "success"});
+    assert_eq!(
+        github_ci_outcome(
+            &[serde_json::json!({
+                "name": "future", "status": "completed", "conclusion": "new_conclusion", "head_sha": "abc123"
+            })],
+            std::slice::from_ref(&success_status),
+            true,
+            true,
+        ),
+        "insufficient_evidence"
+    );
+    assert_eq!(
+        github_ci_outcome(
+            std::slice::from_ref(&success_check),
+            &[serde_json::json!({"context": "future", "state": "new_state"})],
+            true,
+            true,
+        ),
+        "insufficient_evidence"
+    );
+}
+
+#[test]
+fn github_ci_assertion_wording_matches_the_observed_result_predicate() {
+    let assertion = github_ci_assertion(
+        &[
+            serde_json::json!({
+                "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+            }),
+            serde_json::json!({
+                "name": "advisory", "status": "completed", "conclusion": "neutral", "head_sha": "abc123"
+            }),
+            serde_json::json!({
+                "name": "optional", "status": "completed", "conclusion": "skipped", "head_sha": "abc123"
+            }),
+        ],
+        &[serde_json::json!({"context": "legacy", "state": "success"})],
+        true,
+        true,
+    );
+    assert_eq!(
+        assertion["assertion_type"],
+        "github_current_revision_checks_passed"
+    );
+    assert_eq!(
+        assertion["claim"],
+        "GitHub check runs and commit statuses for the current revision were completely enumerated and had acceptable terminal outcomes"
+    );
+    assert_eq!(assertion["outcome"], "supported");
+    assert!(assertion["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("3 check runs and 1 classic commit status"));
+    assert!(assertion["limitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item
+            .as_str()
+            .unwrap()
+            .contains("not satisfaction of configured")));
+}
+
+#[test]
+fn github_ci_insufficient_reasoning_names_the_gap() {
+    let empty = github_ci_assertion(&[], &[], true, true);
+    assert!(empty["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("reported no CI results"));
+
+    let incomplete = github_ci_assertion(
+        &[serde_json::json!({
+            "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+        })],
+        &[serde_json::json!({"context": "legacy", "state": "success"})],
+        false,
+        true,
+    );
+    assert_eq!(incomplete["outcome"], "insufficient_evidence");
+    assert!(incomplete["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("check-run enumeration was incomplete"));
+
+    let pending = github_ci_assertion(
+        &[serde_json::json!({
+            "name": "test", "status": "in_progress", "conclusion": null, "head_sha": "abc123"
+        })],
+        &[serde_json::json!({"context": "legacy", "state": "success"})],
+        true,
+        true,
+    );
+    assert_eq!(pending["outcome"], "insufficient_evidence");
+    assert!(pending["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("pending, transitional, or unrecognized"));
+}
+
+#[test]
+fn github_ci_assertion_requires_a_same_revision_join() {
+    let mut request = github_ci_request(
+        &[serde_json::json!({
+            "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+        })],
+        &[serde_json::json!({"context": "legacy", "state": "success"})],
+        true,
+        true,
+    );
+    request["input"]["corpus"]["observations"][1]["subject"]["revision"] =
+        serde_json::json!("different");
+    let response = github_pack_result(&request);
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    assert!(response["result"][0]["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("did not resolve to the same revision"));
+}
+
+#[test]
+fn github_required_context_configuration_remains_a_separate_claim() {
+    let response = github_pack_result(&serde_json::json!({
+        "protocol_version": 1,
+        "operation": "evaluate",
+        "configuration": null,
+        "input": {
+            "evaluator": "required-status-checks",
+            "target": {
+                "repository": "github:cyberwitchery/divinate",
+                "branch": "main",
+                "release": null,
+                "from": "2026-09-11T00:00:00Z",
+                "until": "2026-09-12T00:00:00Z"
+            },
+            "evaluated_at": "2026-09-12T00:00:00Z",
+            "coverage": [{"outcome": "incomplete"}],
+            "corpus": {"collections": [], "observations": []}
+        }
+    }));
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    assert_eq!(
+        response["result"][0]["missing"][0]["requirement"],
+        "current github branch protection configuration"
+    );
+
+    let mut request = github_ci_request(
+        &[serde_json::json!({
+            "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+        })],
+        &[serde_json::json!({"context": "test", "state": "success"})],
+        true,
+        true,
+    );
+    request["input"]["corpus"]["observations"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({
+            "id": "protection",
+            "claim_key": "github:branch-protection",
+            "observed_at": "2026-09-12T00:00:00Z",
+            "subject": {"id": "github:cyberwitchery/divinate", "branch": "main"},
+            "data": {"required_status_checks": ["test", "missing"]},
+            "provenance": {"source_id": "src_protection"}
+        }));
+    let response = github_pack_result(&request);
+    assert_eq!(response["result"][0]["outcome"], "supported");
+    assert!(response["result"][0]["limitations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item
+            .as_str()
+            .unwrap()
+            .contains("not satisfaction of configured")));
+}
+
+#[test]
+fn github_ci_failure_contradicts_despite_incomplete_enumeration() {
+    let assertion = github_ci_assertion(
+        &[serde_json::json!({
+            "name": "test", "status": "completed", "conclusion": "failure", "head_sha": "abc123"
+        })],
+        &[serde_json::json!({"context": "legacy", "state": "success"})],
+        false,
+        true,
+    );
+    assert_eq!(assertion["outcome"], "contradicted");
+    assert!(assertion["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("1 check run and no commit statuses had failing"));
+
+    let assertion = github_ci_assertion(
+        &[serde_json::json!({
+            "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
+        })],
+        &[serde_json::json!({"context": "legacy", "state": "failure"})],
+        true,
+        false,
+    );
+    assert_eq!(assertion["outcome"], "contradicted");
+    assert!(assertion["reasoning"][0]["conclusion"]
+        .as_str()
+        .unwrap()
+        .contains("no check runs and 1 commit status had failing"));
 }
 
 #[test]
@@ -581,7 +987,7 @@ fn evaluator_receives_declared_zero_result_coverage_but_not_unrelated_runs() {
     let target = divinate::assertions::EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
         branch: "main".into(),
-        release: "v1".into(),
+        release: Some("v1".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-09T00:00:00Z".into(),
     };
@@ -601,6 +1007,71 @@ fn evaluator_receives_declared_zero_result_coverage_but_not_unrelated_runs() {
         .unwrap();
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0]["id"], "relevant-zero");
+}
+
+#[test]
+fn assertion_wording_does_not_change_core_identity() {
+    let state = tempfile::tempdir().unwrap();
+    let corpus = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![collection_run(
+            "relevant-zero",
+            Proposition::RepositoryMutations,
+        )],
+        observations: vec![],
+        sources: vec![],
+    };
+    let target = pack_target();
+    let requirement = divinate::coverage::CoverageRequirement {
+        proposition: Proposition::RepositoryMutations,
+        repository: target.repository.clone(),
+        branch: Some(target.branch.clone()),
+        interval: TimeRange {
+            from: target.from.clone(),
+            until: target.until.clone(),
+        },
+    };
+    let complete = divinate::coverage::assess(
+        &corpus,
+        requirement,
+        divinate::parse_timestamp("2026-09-09T00:01:00Z").unwrap(),
+    )
+    .unwrap();
+    let original = pack_assertion(&target, &serde_json::json!([complete.clone()]));
+    let path = state.path().join("original-wording-pack");
+    assertion_pack(&path, &original);
+    let config = pack_config(path, serde_json::Value::Null);
+    let (metadata, _) = pack::describe(&config).unwrap();
+    let first = pack::evaluate(
+        &config,
+        &metadata,
+        "check",
+        &corpus,
+        &target,
+        "2026-09-09T00:01:00Z",
+    )
+    .unwrap()
+    .0
+    .remove(0);
+    let mut reworded = original;
+    reworded["claim"] = serde_json::json!("the same semantic claim with revised wording");
+    let path = state.path().join("reworded-pack");
+    assertion_pack(&path, &reworded);
+    let config = pack_config(path, serde_json::Value::Null);
+    let (metadata, _) = pack::describe(&config).unwrap();
+    let second = pack::evaluate(
+        &config,
+        &metadata,
+        "check",
+        &corpus,
+        &target,
+        "2026-09-09T00:01:00Z",
+    )
+    .unwrap()
+    .0
+    .remove(0);
+    assert_eq!(first.id, second.id);
+    assert_ne!(first.claim, second.claim);
 }
 
 #[test]
@@ -631,6 +1102,7 @@ fn core_assigns_assertion_identity_and_rejects_false_or_missing_coverage() {
         divinate::parse_timestamp("2026-09-09T00:01:00Z").unwrap(),
     )
     .unwrap();
+
     let mut decision = complete.clone();
     decision.outcome = divinate::coverage::CoverageOutcome::Incomplete;
     let assertion = pack_assertion(&target, &serde_json::json!([decision]));
@@ -849,7 +1321,7 @@ fn pack_target() -> divinate::assertions::EvaluationTarget {
     divinate::assertions::EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
         branch: "main".into(),
-        release: "v1".into(),
+        release: Some("v1".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-09T00:00:00Z".into(),
     }
@@ -891,11 +1363,133 @@ fn assertion_pack(path: &Path, assertion: &serde_json::Value) {
     executable(path, script.as_bytes());
 }
 
+fn github_ci_outcome(
+    checks: &[serde_json::Value],
+    statuses: &[serde_json::Value],
+    checks_complete: bool,
+    statuses_complete: bool,
+) -> String {
+    github_ci_assertion(checks, statuses, checks_complete, statuses_complete)["outcome"]
+        .as_str()
+        .unwrap()
+        .into()
+}
+
+fn github_ci_assertion(
+    checks: &[serde_json::Value],
+    statuses: &[serde_json::Value],
+    checks_complete: bool,
+    statuses_complete: bool,
+) -> serde_json::Value {
+    let response = github_pack_result(&github_ci_request(
+        checks,
+        statuses,
+        checks_complete,
+        statuses_complete,
+    ));
+    response["result"][0].clone()
+}
+
+fn github_ci_request(
+    checks: &[serde_json::Value],
+    statuses: &[serde_json::Value],
+    checks_complete: bool,
+    statuses_complete: bool,
+) -> serde_json::Value {
+    fn run(id: &str, complete: bool) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "outcome": if complete { "complete" } else { "partial" },
+            "authority": if complete { serde_json::json!(["revision_checks"]) } else { serde_json::json!([]) },
+            "enumeration": {
+                "terminal_page_reached": complete,
+                "next_token_present": !complete
+            }
+        })
+    }
+    fn observation(
+        id: &str,
+        claim_key: &str,
+        run: &str,
+        data: &serde_json::Value,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "claim_key": claim_key,
+            "collection_run_id": run,
+            "observed_at": "2026-09-12T00:00:00Z",
+            "subject": {
+                "id": "github:cyberwitchery/divinate",
+                "branch": "main",
+                "revision": "abc123"
+            },
+            "data": data,
+            "provenance": {"source_id": format!("src_{id}")}
+        })
+    }
+    serde_json::json!({
+        "protocol_version": 1,
+        "operation": "evaluate",
+        "configuration": null,
+        "input": {
+            "evaluator": "current-revision-checks",
+            "target": {
+                "repository": "github:cyberwitchery/divinate",
+                "branch": "main",
+                "release": null,
+                "from": "2026-09-11T00:00:00Z",
+                "until": "2026-09-12T00:00:00Z"
+            },
+            "evaluated_at": "2026-09-12T00:00:00Z",
+            "coverage": [{"outcome": "complete"}],
+            "corpus": {
+                "collections": [
+                    run("run_checks", checks_complete),
+                    run("run_statuses", statuses_complete)
+                ],
+                "observations": [
+                    observation(
+                        "checks",
+                        "github:check-runs",
+                        "run_checks",
+                        &serde_json::json!({"revision": "abc123", "checks": checks})
+                    ),
+                    observation(
+                        "statuses",
+                        "github:commit-statuses",
+                        "run_statuses",
+                        &serde_json::json!({"revision": "abc123", "statuses": statuses})
+                    )
+                ]
+            }
+        }
+    })
+}
+
+fn github_pack_result(request: &serde_json::Value) -> serde_json::Value {
+    let mut child = Command::new(example("packs/github/divinate-pack-github"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
 fn executable(path: &Path, bytes: &[u8]) {
-    fs::write(path, bytes).unwrap();
-    let mut permissions = fs::metadata(path).unwrap().permissions();
+    let temporary = path.with_extension("new");
+    fs::write(&temporary, bytes).unwrap();
+    let mut permissions = fs::metadata(&temporary).unwrap().permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).unwrap();
+    fs::set_permissions(&temporary, permissions).unwrap();
+    fs::rename(temporary, path).unwrap();
 }
 
 fn git(repository: &Path, args: &[&str]) {
@@ -928,6 +1522,10 @@ fn configure_project(root: &Path, config: &workflow::ProjectConfig) -> divinate:
                 &format!("git@github.com:{repository}.git"),
             ],
         );
+        git(root, &["config", "user.name", "Divinate Test"]);
+        git(root, &["config", "user.email", "divinate@example.invalid"]);
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "--allow-empty", "-qm", "fixture"]);
     }
     project::store(root, &project::from_legacy(config))
 }

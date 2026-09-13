@@ -15,7 +15,7 @@
         "collector_contract":{"type":"string"},
         "collector_version":{"type":"string"},
         "subject":{"type":"object","required":["kind","id"],"properties":{"kind":{"type":"string"},"id":{"type":"string"},"branch":{"type":"string"}}},
-        "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","supply_chain_policy_decision","declared_dependencies"]},
+        "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","supply_chain_policy_decision","declared_dependencies"]},
         "requested_scope":{"$ref":"#/$defs/interval"},
         "captured_at":{"type":"string","format":"date-time"},
         "initial_request":{"$ref":"#/$defs/request"},
@@ -23,7 +23,11 @@
         "termination":{"oneOf":[
           {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"exhausted"}}},
           {"type":"object","additionalProperties":false,"required":["kind","next_url"],"properties":{"kind":{"const":"truncated"},"next_url":{"type":"string"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"unauthenticated"},"diagnostic":{"type":"string"}}},
           {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"permission_denied"},"diagnostic":{"type":"string"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"not_found"},"diagnostic":{"type":"string"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"rate_limited"},"diagnostic":{"type":"string"},"reset_at":{"type":"string"}}},
+          {"type":"object","additionalProperties":false,"required":["kind","location"],"properties":{"kind":{"const":"unsafe_redirect"},"location":{"type":"string"}}},
           {"type":"object","additionalProperties":false,"required":["kind","diagnostic"],"properties":{"kind":{"const":"failed"},"diagnostic":{"type":"string"}}}
         ]}
       }

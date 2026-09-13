@@ -260,6 +260,7 @@ pub enum Proposition {
     RepositoryMutations,
     CommitAncestry,
     BranchConfiguration,
+    RevisionChecks,
     SupplyChainPolicyDecision,
     DeclaredDependencies,
 }

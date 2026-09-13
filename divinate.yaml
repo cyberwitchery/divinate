@@ -1,0 +1,31 @@
+repository:
+  identity: github:cyberwitchery/divinate
+  branch: main
+packs:
+  cyberwitchery.cargo-lock:
+    executable: packs/cargo-lock/divinate-pack-cargo-lock
+  cyberwitchery.github:
+    executable: packs/github/divinate-pack-github
+sources:
+  cargo-lock:
+    provider:
+      pack: cyberwitchery.cargo-lock
+      collector: lockfile
+    required: true
+    config:
+      path: Cargo.lock
+  github-branch-protection:
+    provider:
+      pack: cyberwitchery.github
+      collector: branch-protection
+    required: true
+  github-check-runs:
+    provider:
+      pack: cyberwitchery.github
+      collector: check-runs
+    required: true
+  github-commit-statuses:
+    provider:
+      pack: cyberwitchery.github
+      collector: commit-statuses
+    required: true

@@ -15,10 +15,15 @@ echo "==> doc"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
 echo "==> package"
-cargo package --allow-dirty
+CARGO_TARGET_DIR=target/package-check cargo package --allow-dirty
 
 echo "==> verify the shipped corpus"
-cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
+DIVINATE_DOGFOOD_TARGET=target/dogfood
+CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
+
+echo "==> dogfood configured collection"
+CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- collect
+CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- verify
 
 echo "==> schemas"
 if python3 -c "import jsonschema" >/dev/null 2>&1; then

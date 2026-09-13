@@ -11,7 +11,7 @@
     "contents": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "evaluated_at", "interval", "release", "corpus_sha256", "evidence_sources", "acquisitions", "collections", "historical_context", "controls", "reproduction"],
+      "required": ["repository", "evaluated_at", "interval", "corpus_sha256", "evidence_sources", "acquisitions", "collections", "historical_context", "controls", "reproduction"],
       "properties": {
         "repository": {"type": "string"},
         "evaluated_at": {"type": "string", "format": "date-time"},

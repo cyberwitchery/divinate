@@ -58,6 +58,8 @@ pub struct CollectionCycleContents {
     pub branch: String,
     pub project_config_sha256: String,
     pub sources: BTreeMap<String, SourceCollectionRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub collection_run_ids: Vec<String>,
     pub observation_ids: Vec<String>,
     pub execution_transcript_ids: Vec<String>,
     pub pack_invocation_ids: Vec<String>,
@@ -275,6 +277,11 @@ pub fn verify_configuration_provenance(
         .iter()
         .map(|item| item.id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    let collection_run_ids = corpus
+        .collections
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
     let execution_ids = executions
         .iter()
         .map(|item| item.id.as_str())
@@ -299,6 +306,11 @@ pub fn verify_configuration_provenance(
             )));
         }
         verify_project_configuration(root, &cycle.contents.project_config_sha256)?;
+        verify_references(
+            "collection run",
+            &cycle.contents.collection_run_ids,
+            &collection_run_ids,
+        )?;
         verify_references(
             "observation",
             &cycle.contents.observation_ids,

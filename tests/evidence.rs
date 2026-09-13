@@ -25,10 +25,26 @@ fn target() -> EvaluationTarget {
     EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
         branch: "main".into(),
-        release: "v1.4".into(),
+        release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
     }
+}
+
+#[test]
+fn repository_evaluation_does_not_invent_release_scope() {
+    let mut repository = target();
+    repository.release = None;
+    let assertions = evaluate_all(&corpus(), &repository, at("2026-09-05T00:00:00Z")).unwrap();
+    assert!(assertions.iter().all(|assertion| {
+        !matches!(
+            assertion.assertion_type,
+            divinate::assertions::AssertionType::ReleaseReviewOperation
+                | divinate::assertions::AssertionType::ReleaseSupplyChainPolicy
+                | divinate::assertions::AssertionType::AdequateHumanSecurityReview
+                | divinate::assertions::AssertionType::DependencyChangeVisibility
+        )
+    }));
 }
 
 fn at(value: &str) -> time::OffsetDateTime {

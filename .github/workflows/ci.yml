@@ -75,6 +75,22 @@ jobs:
       - run: cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
       - run: python3 scripts/validate-schemas.py
 
+  dogfood:
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # exercise the committed clone-and-collect configuration and its provenance.
+      - run: python3 --version
+      - run: cargo run --quiet --bin divinate -- collect
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - run: cargo run --quiet --bin divinate -- verify
+
   deny:
     runs-on: ubuntu-latest
     steps:
@@ -96,7 +112,7 @@ jobs:
           fail_ci_if_error: false
 
   success:
-    needs: [fmt, clippy, test, doc, package, schemas, deny, coverage]
+    needs: [fmt, clippy, test, doc, package, schemas, dogfood, deny, coverage]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -108,6 +124,7 @@ jobs:
              [[ "${{ needs.doc.result }}" != "success" ]] ||
              [[ "${{ needs.package.result }}" != "success" ]] ||
              [[ "${{ needs.schemas.result }}" != "success" ]] ||
+             [[ "${{ needs.dogfood.result }}" != "success" ]] ||
              [[ "${{ needs.deny.result }}" != "success" ]] ||
              [[ "${{ needs.coverage.result }}" != "success" ]]; then
             echo "one or more jobs failed"

@@ -69,16 +69,22 @@ packs:
     executable: divinate-pack-github
 
 sources:
-  github:
+  github-branch-protection:
     provider:
       pack: cyberwitchery.github
-      collector: repository
+      collector: branch-protection
     required: true
 ```
 
 pack executables are installed separately. the configured pack name must equal
 the identity reported by the executable. secrets do not belong in
 `divinate.yaml`; credential-like configuration keys are refused.
+
+this repository uses divinate itself. [`divinate.yaml`](divinate.yaml) is a
+real, committed example backed by the in-tree Cargo.lock and GitHub sources.
+GitHub collection uses `gh auth token`, falling back to `GITHUB_TOKEN`, without
+passing or retaining the credential. its revision CI evidence covers both check
+runs and classic commit statuses. authenticate once with `gh auth login`.
 
 ## collect and review
 
@@ -133,7 +139,6 @@ development, and provenance inspection:
 ```sh
 divinate packs
 divinate pack cyberwitchery.github
-divinate collect release --help
 divinate collect pack --help
 divinate collect manifest --help
 divinate evaluate --help

@@ -52,8 +52,9 @@ override shared release context for an exceptional cycle:
 divinate collect --release v1.5.0 --base-release v1.4.0
 ```
 
-`divinate collect release` remains the fully explicit, collection-only
-compatibility form.
+the former scanner-specific `collect release` compatibility form has been
+removed. `collect --release` supplies explicit shared release context while the
+configured sources still determine what evidence is produced.
 
 ## configured packs
 
@@ -74,6 +75,29 @@ sources:
 sources run in deterministic source-id order. presence means enabled and they
 are required by default. divinate does not schedule them or infer dependencies
 between them.
+
+## authenticated github evidence
+
+the in-tree GitHub pack declares branch-protection, check-run, and commit-status
+acquisition intent. core verifies repository, branch, and revision context,
+obtains the local GitHub credential, performs the requests, and retains
+sanitized transcripts.
+"observed GitHub revision results acceptable" joins complete check-run and
+commit-status evidence on the exact revision. required-context configuration
+remains a separate claim.
+the pack receives only exact retained response bodies for normalization.
+
+authenticate once with `gh auth login`, or set `GITHUB_TOKEN`, then use the
+normal workflow:
+
+```sh
+divinate collect
+divinate status
+```
+
+permission denial is a recorded incomplete source result. it is never treated as
+an unprotected branch or an empty check-run population. `divinate verify` later
+checks the retained graph without GitHub access or a credential.
 
 ## explicit historical evaluation
 

@@ -40,12 +40,12 @@ candidates it refused to choose between.
 both release names must resolve to distinct commits. each cyclonedx sbom must
 identify the expected repository and release in its metadata component. when
 normal collection reuses revisions already recorded for either release as
-expected revisions. the explicit `collect release` command also accepts
-`--base-revision` and `--revision`.
+expected revisions. a moved tag therefore fails provenance validation.
 
 missing configured SBOMs are not resolved through filename guessing. correct
-`sources.release-sbom.config.sbom_path` in `divinate.yaml`, or use the advanced
-`collect release` form for a one-off explicit collection.
+`sources.release-sbom.config.sbom_path` in `divinate.yaml`; use
+`collect --release` and `--base-release` to override release context, not source
+paths.
 
 ## gate output mismatch
 
@@ -68,6 +68,15 @@ dossier's `coverage` and `evidence gaps` sections. common causes are:
 
 do not turn an incomplete run into a complete one or widen a source's declared
 authority to remove the gap.
+
+## github authentication or permission failure
+
+authenticate the current user once with `gh auth login`, or set `GITHUB_TOKEN`
+for the Divinate process. do not add the token to `divinate.yaml` or pack
+configuration. branch-protection access can require broader repository
+permission than public repository reads. `status` reports unauthenticated,
+permission-denied, rate-limited, and incomplete acquisitions as gaps rather than
+interpreting them as absent protection or checks.
 
 ## unknown assertion or execution id
 

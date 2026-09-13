@@ -248,33 +248,10 @@ fn repeated_release_reuses_content_and_changed_release_appends() {
 }
 
 #[test]
-fn high_level_cli_collects_without_a_manifest() {
-    let fixture = Fixture::new(false);
-    let state = tempfile::tempdir().unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
-        .args(["collect", "release", "--state"])
-        .arg(state.path())
-        .arg("--repository-path")
-        .arg(&fixture.repository)
-        .args(["--base-release", "v1.0.0", "--release", "v1.1.0"])
-        .arg("--base-sbom")
-        .arg(&fixture.base_sbom)
-        .arg("--target-sbom")
-        .arg(&fixture.target_sbom)
-        .arg("--sbom-diff")
-        .arg(&fixture.executable)
-        .args(["--tool-version", "test"])
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(!state.path().join("evidence-manifest.json").exists());
-    let corpus = divinate::load_corpus(&workflow::corpus_path(state.path())).unwrap();
-    assert_eq!(corpus.observations.len(), 2);
-    assert_eq!(workflow::load_executions(state.path()).unwrap().len(), 2);
+fn explicit_release_compatibility_command_is_removed() {
+    let output = cli_output(&["collect", "release", "--help"]);
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("unrecognized subcommand 'release'"));
 }
 
 #[test]
@@ -341,7 +318,7 @@ fn configured_collect_infers_release_inputs_evaluates_and_deduplicates() {
         &EvaluationTarget {
             repository: "github:cyberwitchery/example".into(),
             branch: configured_branch.clone(),
-            release: "v1.1.0".into(),
+            release: Some("v1.1.0".into()),
             from: "2030-01-01T00:00:00Z".into(),
             until: "2030-01-02T00:00:00Z".into(),
         },
@@ -785,7 +762,7 @@ fn target() -> EvaluationTarget {
     EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
         branch: "main".into(),
-        release: "v1.1.0".into(),
+        release: Some("v1.1.0".into()),
         from: "2026-01-01T00:00:00Z".into(),
         until: "2026-12-31T00:00:00Z".into(),
     }

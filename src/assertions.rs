@@ -36,7 +36,7 @@ const CONFIG_FRESHNESS_DAYS: i64 = 7;
 pub struct EvaluationTarget {
     pub repository: String,
     pub branch: String,
-    pub release: String,
+    pub release: Option<String>,
     pub from: String,
     pub until: String,
 }
@@ -224,15 +224,20 @@ pub fn evaluate_all(
     target: &EvaluationTarget,
     at: OffsetDateTime,
 ) -> Result<Vec<DerivedAssertion>> {
-    Ok(vec![
+    let mut assertions = vec![
         evaluate_configured_reviews(corpus, target, at)?,
-        evaluate_release_reviews(corpus, target, at)?,
-        evaluate_supply_chain(corpus, target, at)?,
-        evaluate_adequate_security_review(corpus, target, at)?,
         evaluate_every_main_change_reviewed(corpus, target, at)?,
         evaluate_configured_independent_review(corpus, target, at)?,
-        evaluate_dependency_change_visibility(corpus, target, at)?,
-    ])
+    ];
+    if target.release.is_some() {
+        assertions.extend([
+            evaluate_release_reviews(corpus, target, at)?,
+            evaluate_supply_chain(corpus, target, at)?,
+            evaluate_adequate_security_review(corpus, target, at)?,
+            evaluate_dependency_change_visibility(corpus, target, at)?,
+        ]);
+    }
+    Ok(assertions)
 }
 
 /// evaluate whether branch configuration requires at least one approving review.
@@ -324,12 +329,10 @@ pub fn evaluate_dependency_change_visibility(
     target: &EvaluationTarget,
     at: OffsetDateTime,
 ) -> Result<DerivedAssertion> {
+    let release = release_name(target)?;
     let mut assertion = base_assertion(
         AssertionType::DependencyChangeVisibility,
-        &format!(
-            "dependency changes for release {} are identified and preserved",
-            target.release
-        ),
+        &format!("dependency changes for release {release} are identified and preserved"),
         release_subject(target),
         at,
         DEPENDENCY_VISIBILITY_VERSION,
@@ -508,10 +511,11 @@ pub fn evaluate_release_reviews(
     target: &EvaluationTarget,
     at: OffsetDateTime,
 ) -> Result<DerivedAssertion> {
+    let release = release_name(target)?;
     let subject = release_subject(target);
     let mut assertion = base_assertion(
         AssertionType::ReleaseReviewOperation,
-        &format!("every change included in release {} received the configured number of reviews before merge", target.release),
+        &format!("every change included in release {release} received the configured number of reviews before merge"),
         subject,
         at,
         RELEASE_REVIEWS_VERSION,
@@ -566,7 +570,7 @@ pub fn evaluate_release_reviews(
         membership,
         review,
         &[
-            ("release", &target.release),
+            ("release", release),
             ("revision", &membership_data.target_revision),
         ],
     ));
@@ -607,11 +611,11 @@ pub fn evaluate_supply_chain(
     target: &EvaluationTarget,
     at: OffsetDateTime,
 ) -> Result<DerivedAssertion> {
+    let release = release_name(target)?;
     let mut assertion = base_assertion(
         AssertionType::ReleaseSupplyChainPolicy,
         &format!(
-            "release {} introduced no dependency changes forbidden by supply-chain/default",
-            target.release
+            "release {release} introduced no dependency changes forbidden by supply-chain/default"
         ),
         release_subject(target),
         at,
@@ -662,7 +666,7 @@ pub fn evaluate_supply_chain(
         diff,
         gate,
         &[
-            ("release", &target.release),
+            ("release", release),
             ("base_revision", diff_base.unwrap_or("")),
             ("revision", diff_revision.unwrap_or("")),
             ("sbom_diff_sha256", &source.sha256),
@@ -710,11 +714,11 @@ pub fn evaluate_adequate_security_review(
     target: &EvaluationTarget,
     at: OffsetDateTime,
 ) -> Result<DerivedAssertion> {
+    let release = release_name(target)?;
     let mut assertion = base_assertion(
         AssertionType::AdequateHumanSecurityReview,
         &format!(
-            "all security-relevant changes in release {} received adequate human security review",
-            target.release
+            "all security-relevant changes in release {release} received adequate human security review"
         ),
         release_subject(target),
         at,
@@ -1144,6 +1148,7 @@ const fn proposition_name(proposition: Proposition) -> &'static str {
         Proposition::RepositoryMutations => "repository_mutations",
         Proposition::CommitAncestry => "commit_ancestry",
         Proposition::BranchConfiguration => "branch_configuration",
+        Proposition::RevisionChecks => "revision_checks",
         Proposition::SupplyChainPolicyDecision => "supply_chain_policy_decision",
         Proposition::DeclaredDependencies => "declared_dependencies",
     }
@@ -1206,7 +1211,7 @@ where
 
 fn matches_release(observation: &Observation, target: &EvaluationTarget) -> bool {
     observation.subject.qualifier("repository") == Some(target.repository.as_str())
-        && observation.subject.qualifier("release") == Some(target.release.as_str())
+        && observation.subject.qualifier("release") == target.release.as_deref()
 }
 
 fn payload<T: for<'de> Deserialize<'de>>(observation: &Observation) -> Result<T> {
@@ -1281,7 +1286,7 @@ fn release_subject(target: &EvaluationTarget) -> AssertionSubject {
     AssertionSubject {
         repository: target.repository.clone(),
         branch: None,
-        release: Some(target.release.clone()),
+        release: target.release.clone(),
         from: None,
         until: None,
     }
@@ -1298,9 +1303,19 @@ fn use_evidence(observation: &Observation, reason: &str) -> EvidenceUse {
 fn missing(requirement: &str, target: &EvaluationTarget, reason: &str) -> MissingEvidence {
     MissingEvidence {
         requirement: requirement.into(),
-        subject: format!("{}:{}", target.repository, target.release),
+        subject: target.release.as_ref().map_or_else(
+            || target.repository.clone(),
+            |release| format!("{}:{release}", target.repository),
+        ),
         reason: reason.into(),
     }
+}
+
+fn release_name(target: &EvaluationTarget) -> Result<&str> {
+    target
+        .release
+        .as_deref()
+        .ok_or_else(|| Error::Invalid("release-scoped evaluation requires --release".into()))
 }
 
 fn step(code: &str, conclusion: &str, evidence: &[&Observation]) -> ReasonStep {

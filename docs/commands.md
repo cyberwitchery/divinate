@@ -42,9 +42,12 @@ tag at `HEAD`. the base defaults to the unique nearest ancestor, preferring
 releases represented in retained state. explicit release options override this
 shared context for all relevant sources; they do not select one source.
 
-the first evaluation starts at the base release commit time. later evaluations
-start at the previous current evaluation time. `until` and `at` default to the
-collection time. divinate rejects empty or ambiguous intervals.
+the first release evaluation starts at the base release commit time. a first
+repository-scoped evaluation starts at the unique root commit; histories with
+multiple roots require `--from`. later evaluations start at the previous
+current evaluation time. `until` defaults to collection start, while automatic
+evaluation occurs after source executions complete. divinate rejects empty or
+ambiguous intervals.
 
 normal output contains source results, claim counts, and the dossier path. it
 omits forensic identifiers. `--json` prints the product summary as JSON.
@@ -95,22 +98,6 @@ these commands do not mutate configuration.
 
 ## advanced collection and evaluation
 
-### `divinate collect release`
-
-```text
-divinate collect release --repository-path <checkout>
-  --base-release <tag> --release <tag>
-  --base-sbom <file> --target-sbom <file>
-  --sbom-diff <executable>
-  [--base-revision <commit>] [--revision <commit>]
-  [--tool-version <version>] [--policy <id>]
-  [--fail-on added-components] [--force] [--state <path>]
-```
-
-records one explicit release SBOM comparison without automatic evaluation. this
-is the compatibility interface for the original low-level workflow; the
-scanner-specific option does not appear on normal `init` or `collect`.
-
 ### `divinate collect pack`
 
 ```text
@@ -119,8 +106,10 @@ divinate collect pack [--repository-path <checkout>] [--state <path>]
 ```
 
 invokes one collector from a pack declared in YAML. core validates its plan,
-executes the command, normalizes the result, and stores the observation. omitted
-context is JSON `null`. this command does not evaluate automatically.
+executes its local command or supported provider-aware acquisition, normalizes
+the result, and stores the observation. omitted context is JSON `null`; remote
+collectors therefore normally run through configured `collect`, which supplies
+verified repository context. this command does not evaluate automatically.
 
 ### `divinate collect manifest`
 
@@ -143,8 +132,9 @@ divinate evaluate --from <timestamp> --until <timestamp>
 
 verifies provenance, selects evidence available at `at`, derives core and pack
 assertions, and writes assertion and dossier files. repository and branch
-default to YAML. an alternate contracts registry supports historical
-reproduction.
+default to YAML. omit `--release` for repository-scoped analysis; release-only
+assertions are then not evaluated. an alternate contracts registry supports
+historical reproduction.
 
 ### `divinate run`
 
@@ -180,6 +170,10 @@ configure` have been removed. declare packs and sources in `divinate.yaml`
 instead. `divinate init` performs the straightforward one-time conversion from
 legacy live `.evidence/config.json` when YAML does not yet exist. historical
 evidence formats remain verifiable.
+
+the former scanner-specific `collect release` compatibility command has also
+been removed. declare `release-sbom` in YAML and use `collect --release` for an
+explicit release context.
 
 ## exit behavior
 

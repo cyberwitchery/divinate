@@ -581,6 +581,39 @@ pub fn release_time(repository: &Path, release: &str) -> Result<String> {
     Ok(value)
 }
 
+/// return the revision currently checked out in the repository.
+///
+/// # Errors
+///
+/// returns an error when git cannot resolve `HEAD` to one commit.
+pub fn head_revision(repository: &Path) -> Result<String> {
+    resolve_release(repository, "HEAD")
+}
+
+/// return the committer timestamp of the repository's sole root commit.
+///
+/// # Errors
+///
+/// returns an error when history has no unique root or git cannot read its
+/// timestamp. callers must request an explicit start for histories with
+/// multiple roots.
+pub fn history_start_time(repository: &Path) -> Result<String> {
+    let roots = git_lines(repository, &["rev-list", "--max-parents=0", "HEAD"])?;
+    let [root] = roots.as_slice() else {
+        return provenance(format!(
+            "cannot determine repository history start; found {} root commits; choose --from",
+            roots.len()
+        ));
+    };
+    let value = git_text(
+        repository,
+        &["show", "-s", "--format=%cI", root],
+        "cannot determine repository history start",
+    )?;
+    crate::parse_timestamp(&value)?;
+    Ok(value)
+}
+
 fn ancestor_releases(repository: &Path, release: &str, values: &[String]) -> Result<Vec<String>> {
     let mut candidates = Vec::new();
     for candidate in values {

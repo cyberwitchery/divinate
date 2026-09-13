@@ -82,7 +82,11 @@ pub fn isms_update(previous: &[DerivedAssertion], current: &[DerivedAssertion]) 
         .collect::<Vec<_>>();
     let previous_gaps = gaps(&previous);
     let current_gaps = gaps(&current);
-    let new_gaps = current_gaps.difference(&previous_gaps).cloned().collect();
+    let new_gaps = current_gaps
+        .iter()
+        .filter(|(identity, _)| !previous_gaps.contains_key(*identity))
+        .map(|(_, description)| description.clone())
+        .collect();
     let coverage_regressions = changes
         .iter()
         .filter(|change| {
@@ -300,11 +304,24 @@ fn render_strings(out: &mut String, heading: &str, values: &[String]) {
     }
 }
 
-fn gaps(assertions: &[DerivedAssertion]) -> BTreeSet<String> {
+fn gaps(assertions: &[DerivedAssertion]) -> BTreeMap<String, String> {
     assertions
         .iter()
-        .flat_map(|assertion| assertion.missing.iter())
-        .map(|gap| format!("{}: {}", gap.requirement, gap.reason))
+        .flat_map(|assertion| {
+            assertion.missing.iter().map(|gap| {
+                (
+                    format!(
+                        "{}:{}:{}:{}:{}",
+                        assertion.assertion_type.as_str(),
+                        assertion.subject.repository,
+                        assertion.subject.branch.as_deref().unwrap_or_default(),
+                        assertion.subject.release.as_deref().unwrap_or_default(),
+                        gap.requirement
+                    ),
+                    format!("{}: {}", gap.requirement, gap.reason),
+                )
+            })
+        })
         .collect()
 }
 
@@ -333,6 +350,7 @@ const fn proposition_name(proposition: Proposition) -> &'static str {
         Proposition::RepositoryMutations => "repository mutations",
         Proposition::CommitAncestry => "commit ancestry",
         Proposition::BranchConfiguration => "branch configuration",
+        Proposition::RevisionChecks => "revision checks",
         Proposition::SupplyChainPolicyDecision => "supply-chain policy decision",
         Proposition::DeclaredDependencies => "declared dependencies",
     }

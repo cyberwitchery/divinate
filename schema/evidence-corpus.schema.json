@@ -29,7 +29,7 @@
       "properties":{"proposition":{"$ref":"#/$defs/proposition"},"branch":{"type":"string"},"interval":{"$ref":"#/$defs/interval"}}
     },
     "proposition": {
-      "enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","supply_chain_policy_decision","declared_dependencies"]
+      "enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","supply_chain_policy_decision","declared_dependencies"]
     },
     "collection_run": {
       "type":"object","additionalProperties":false,

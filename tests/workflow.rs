@@ -21,7 +21,7 @@ fn target() -> EvaluationTarget {
     EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
         branch: "main".into(),
-        release: "v1.4".into(),
+        release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
     }
@@ -269,6 +269,26 @@ fn structured_isms_change_detection_notices_control_and_coverage_regression() {
         .new_gaps
         .iter()
         .any(|gap| gap.contains("repository_mutations")));
+}
+
+#[test]
+fn recurring_gap_is_not_new_only_because_its_interval_advanced() {
+    let assertions = assertions::evaluate_all(
+        &corpus(),
+        &target(),
+        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
+    )
+    .unwrap();
+    let mut current = assertions.clone();
+    let gap = current
+        .iter_mut()
+        .flat_map(|assertion| assertion.missing.iter_mut())
+        .next()
+        .unwrap();
+    gap.subject.push_str(" later interval");
+    gap.reason.push_str(" later interval");
+    let update = views::isms_update(&assertions, &current);
+    assert!(update.new_gaps.is_empty());
 }
 
 #[test]

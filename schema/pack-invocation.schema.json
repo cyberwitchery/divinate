@@ -17,6 +17,7 @@
         "protocol_version":{"const":1},
         "operation":{"enum":["describe","collect","normalize","evaluate"]},
         "execution_transcript_id":{"type":"string","pattern":"^exec_[0-9a-f]{20}$"},
+        "acquisition_transcript_ids":{"type":"array","items":{"type":"string","pattern":"^acq_[0-9a-f]{20}$"},"uniqueItems":true},
         "executable":{"type":"object","additionalProperties":false,"required":["sha256","size"],"properties":{"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"size":{"type":"integer","minimum":0}}},
         "request_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
         "response_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},

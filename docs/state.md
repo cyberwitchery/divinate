@@ -83,7 +83,8 @@ change evidence semantics.
 - `project-configs/` contains exact content-addressed snapshots of YAML used by
   collection and evaluation.
 - `collection-cycles/` links one configuration digest and source results to the
-  observations, executions, and pack invocations produced by the cycle.
+  collection runs, observations, executions, and pack invocations produced by
+  the cycle.
 - `acquisitions/` contains remote acquisition transcripts.
 - `executions/` contains local execution transcripts.
 - `pack-invocations/` contains pack requests, responses, and executable identity.
@@ -98,7 +99,8 @@ change evidence semantics.
 
 normal collection hashes and stores the exact `divinate.yaml` bytes before
 recording its collection cycle. the cycle names that digest, source outcome,
-observation IDs, execution transcript IDs, and pack invocation IDs. evaluations
+collection-run IDs, observation IDs, execution transcript IDs, and pack
+invocation IDs. evaluations
 store their own configuration-digest reference. pack invocations retain their
 normalized source configuration, reported identity and version, executable
 digest, protocol version, and source contract metadata.

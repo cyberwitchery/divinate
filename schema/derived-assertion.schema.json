@@ -25,7 +25,7 @@
   },
   "$defs": {
     "interval":{"type":"object","additionalProperties":false,"required":["from","until"],"properties":{"from":{"type":"string","format":"date-time"},"until":{"type":"string","format":"date-time"}}},
-    "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","supply_chain_policy_decision","declared_dependencies"]},
+    "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","supply_chain_policy_decision","declared_dependencies"]},
     "evidence_use":{"type":"object","additionalProperties":false,"required":["observation_id","source_id","reason"],"properties":{"observation_id":{"type":"string"},"source_id":{"type":"string"},"reason":{"type":"string"}}},
     "missing":{"type":"object","additionalProperties":false,"required":["requirement","subject","reason"],"properties":{"requirement":{"type":"string"},"subject":{"type":"string"},"reason":{"type":"string"}}},
     "join":{"type":"object","additionalProperties":false,"required":["left_observation_id","right_observation_id","fields"],"properties":{"left_observation_id":{"type":"string"},"right_observation_id":{"type":"string"},"fields":{"type":"object","additionalProperties":{"type":"string"}}}},

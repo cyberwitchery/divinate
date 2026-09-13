@@ -59,7 +59,7 @@ core owns:
 - strict project configuration loading and configuration provenance
 - repository and release identity, including git checkout validation, tag and
   revision resolution, predecessor selection, and evaluation intervals
-- acquisition and execution
+- provider-aware authenticated acquisition and local execution
 - evidence identity and immutable persistence
 - collection coverage
 - built-in source normalizers and evaluators
@@ -80,6 +80,11 @@ repository and release identity are core context. evidence-production semantics
 belong to configured sources and packs. a source may receive core-resolved
 repository, branch, release, revision, predecessor, and interval values, but it
 does not independently redefine them.
+
+repository-scoped evaluation does not require or infer a release. core evaluates
+release assertions only when explicit or source-required release context exists.
+the first repository interval begins at the unique Git root commit; ambiguous
+multiple-root histories require an explicit start.
 
 the release sbom integration is a built-in source registered through the same
 configuration and collection surface as external collectors. it remains compiled
@@ -138,6 +143,13 @@ source contracts define the propositions and scopes a remote collector can
 establish. normalizers define the meaning of retained tool output. evaluators define
 claim semantics.
 
+GitHub is the first authenticated provider. a pack selects one of three named
+resources: branch protection, revision check runs, or revision commit statuses.
+core derives the API URL from verified repository context, obtains a local
+credential, performs HTTPS, captures pagination, and strips credential-bearing
+metadata before persistence. the pack receives exact retained response bytes,
+never the credential.
+
 ## packs
 
 ```text
@@ -152,10 +164,11 @@ pack collector
 protocol version 1 has four operations: `describe`, `collect`, `normalize`,
 and `evaluate`.
 
-`collect` returns a command plan. core executes it and binds the resulting
-execution transcript to the pack invocation. `normalize` receives retained source
-bytes and returns typed observation fields. core assigns observation identity and
-provenance.
+`collect` returns either a command plan or the narrow provider-aware GitHub
+acquisition plan. core executes it and binds the resulting execution or
+acquisition transcript to the pack invocation. `normalize` receives retained
+source bytes and returns typed observation fields. core assigns observation
+identity and provenance.
 
 `evaluate` receives the observations and collection runs declared by the pack's
 metadata. core assigns assertion and evaluator identity, validates evidence
@@ -168,8 +181,9 @@ coverage but cannot detect an omitted requirement.
 
 each invocation stores the pack id and version, executable digest, protocol version,
 operation, exact request, canonical response, and content digests. collection
-invocations also name the execution transcript. observation provenance names its
-pack invocations, and pack assertions name the evaluation invocation.
+invocations also name the execution or acquisition transcripts. observation
+provenance names its pack invocations, and pack assertions name the evaluation
+invocation.
 
 collection plans bind directly to execution transcripts. observations name the
 execution references needed to verify their retained source bytes.
@@ -182,8 +196,12 @@ saved pack assertions remain verifiable without executing the pack. reevaluation
 uses the currently configured executable. reproducing an old derivation requires
 configuring the corresponding old executable.
 
-protocol version 1 plans local commands. authenticated remote acquisition requires
-a core-owned acquisition path.
+protocol version 1 plans local commands and the three named GitHub acquisitions.
+it does not expose arbitrary authenticated HTTP or secret-bearing headers.
+
+the repository dogfoods this boundary with in-tree Cargo.lock and GitHub packs
+declared in root `divinate.yaml`. the GitHub pack owns endpoint interpretation;
+core alone owns its credential and network acquisition.
 
 ## distribution
 

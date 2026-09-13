@@ -54,7 +54,7 @@ const fn default_timeout_seconds() -> u64 {
     DEFAULT_TIMEOUT_SECONDS
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 /// what a pack says it provides.
 ///
@@ -79,7 +79,7 @@ pub struct PackMetadata {
     pub configuration_schema: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct Request {
     protocol_version: u8,
@@ -116,6 +116,9 @@ pub struct PackInvocationContents {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// for a collection, the execution core ran on the pack's behalf.
     pub execution_transcript_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// for a remote collection, the acquisitions core performed for the pack.
+    pub acquisition_transcript_ids: Vec<String>,
     pub executable: BlobRef,
     pub request_sha256: String,
     pub response_sha256: String,
@@ -138,7 +141,69 @@ pub struct CollectionPlan {
     pub adapter: String,
     pub subject: Subject,
     pub observed_at: String,
-    pub command: CommandPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<CommandPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acquisition: Option<RemoteAcquisitionPlan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+/// the core-owned work requested by one collector invocation.
+pub enum CollectionAction {
+    Local { command: CommandPlan },
+    Remote { acquisition: RemoteAcquisitionPlan },
+}
+
+impl CollectionPlan {
+    /// return the one core-owned action selected by this plan.
+    ///
+    /// # Errors
+    ///
+    /// returns an error unless exactly one local or remote action is present.
+    pub fn action(&self) -> Result<CollectionAction> {
+        match (&self.command, &self.acquisition) {
+            (Some(command), None) => Ok(CollectionAction::Local {
+                command: command.clone(),
+            }),
+            (None, Some(acquisition)) => Ok(CollectionAction::Remote {
+                acquisition: acquisition.clone(),
+            }),
+            _ => Err(Error::Invalid(
+                "pack collection plan must select exactly one command or acquisition".into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+/// one provider-aware remote acquisition that core can authenticate safely.
+pub enum RemoteAcquisitionPlan {
+    Github {
+        resource: GithubResource,
+        #[serde(default = "default_per_page")]
+        per_page: u16,
+        #[serde(default = "default_max_pages")]
+        max_pages: u16,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// the narrow github resources supported by the first remote collector.
+pub enum GithubResource {
+    BranchProtection,
+    CheckRuns,
+    CommitStatuses,
+}
+
+const fn default_per_page() -> u16 {
+    100
+}
+
+const fn default_max_pages() -> u16 {
+    10
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,8 +339,45 @@ pub fn bind_execution(
     }
     let plan: CollectionPlan = serde_json::from_value(capture.result.clone())
         .map_err(|error| Error::Invalid(format!("invalid retained collection plan: {error}")))?;
-    validate_captured_execution(&plan.command, transcript)?;
+    let CollectionAction::Local { command } = plan.action()? else {
+        return Err(Error::Invalid(
+            "remote collection plans cannot bind an execution".into(),
+        ));
+    };
+    validate_captured_execution(&command, transcript)?;
     capture.invocation.contents.execution_transcript_id = Some(transcript.id.clone());
+    capture.invocation = seal(capture.invocation.contents)?;
+    Ok(capture)
+}
+
+/// bind core-owned acquisition transcripts to the collection plan that requested them.
+///
+/// # Errors
+///
+/// returns an error when the invocation is not a remote collection or no
+/// acquisition was recorded.
+pub fn bind_acquisitions(
+    mut capture: PackCapture,
+    transcript_ids: &[String],
+) -> Result<PackCapture> {
+    if capture.invocation.contents.operation != "collect" {
+        return Err(Error::Invalid(
+            "only a collect invocation can bind acquisitions".into(),
+        ));
+    }
+    let plan: CollectionPlan = serde_json::from_value(capture.result.clone())
+        .map_err(|error| Error::Invalid(format!("invalid retained collection plan: {error}")))?;
+    if !matches!(plan.action()?, CollectionAction::Remote { .. }) {
+        return Err(Error::Invalid(
+            "local collection plans cannot bind acquisitions".into(),
+        ));
+    }
+    if transcript_ids.is_empty() {
+        return Err(Error::Invalid(
+            "remote collection produced no acquisition transcript".into(),
+        ));
+    }
+    capture.invocation.contents.acquisition_transcript_ids = transcript_ids.to_vec();
     capture.invocation = seal(capture.invocation.contents)?;
     Ok(capture)
 }
@@ -378,6 +480,7 @@ pub fn evaluate(
                 .iter()
                 .any(|id| observation_ids.contains(id.as_str()))
     });
+    let coverage = evaluator_coverage(corpus, target, propositions, evaluated_at)?;
     let capture = invoke(
         config,
         Some(metadata),
@@ -393,6 +496,7 @@ pub fn evaluate(
                 "until": target.until,
             },
             "evaluated_at": evaluated_at,
+            "coverage": coverage,
         }),
     )?;
     let returned: Vec<PackAssertion> = serde_json::from_value(capture.result.clone())
@@ -406,6 +510,33 @@ pub fn evaluate(
         assertion.derivation.pack_invocation_id = Some(capture.invocation.id.clone());
     }
     Ok((assertions, capture))
+}
+
+fn evaluator_coverage(
+    corpus: &crate::model::Corpus,
+    target: &EvaluationTarget,
+    propositions: &[Proposition],
+    evaluated_at: &str,
+) -> Result<Vec<coverage::CoverageDecision>> {
+    let evaluated_at = crate::parse_timestamp(evaluated_at)?;
+    propositions
+        .iter()
+        .map(|proposition| {
+            coverage::assess(
+                corpus,
+                coverage::CoverageRequirement {
+                    proposition: *proposition,
+                    repository: target.repository.clone(),
+                    branch: Some(target.branch.clone()),
+                    interval: crate::model::TimeRange {
+                        from: target.from.clone(),
+                        until: target.until.clone(),
+                    },
+                },
+                evaluated_at,
+            )
+        })
+        .collect()
 }
 
 fn derived_assertion(
@@ -454,10 +585,60 @@ pub fn observation(
     observed_at: String,
     execution_transcript_id: String,
 ) -> Result<crate::model::Observation> {
+    observation_with_provenance(
+        normalized,
+        metadata,
+        invocation,
+        source,
+        subject,
+        observed_at,
+        None,
+        vec![execution_transcript_id],
+    )
+}
+
+/// bind normalized remote pack output to its core-owned collection run.
+///
+/// # Errors
+///
+/// returns an error when its timestamp or deterministic identity is invalid.
+pub fn remote_observation(
+    normalized: NormalizedObservation,
+    metadata: &PackMetadata,
+    invocation: &PackInvocation,
+    source: &crate::model::SourceDocument,
+    subject: Subject,
+    observed_at: String,
+    collection_run_id: String,
+) -> Result<crate::model::Observation> {
+    observation_with_provenance(
+        normalized,
+        metadata,
+        invocation,
+        source,
+        subject,
+        observed_at,
+        Some(collection_run_id),
+        vec![],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn observation_with_provenance(
+    normalized: NormalizedObservation,
+    metadata: &PackMetadata,
+    invocation: &PackInvocation,
+    source: &crate::model::SourceDocument,
+    subject: Subject,
+    observed_at: String,
+    collection_run_id: Option<String>,
+    execution_transcript_ids: Vec<String>,
+) -> Result<crate::model::Observation> {
     crate::parse_timestamp(&observed_at)?;
     let identity = serde_json::json!({
         "claim_key": normalized.claim_key,
-        "execution_transcript": execution_transcript_id,
+        "collection_run": collection_run_id,
+        "execution_transcripts": execution_transcript_ids,
         "observed_at": observed_at,
         "pack_invocation": invocation.id,
         "source_sha256": source.sha256,
@@ -466,8 +647,8 @@ pub fn observation(
     let digest = hex_digest(&canonical_json(&identity)?);
     Ok(crate::model::Observation {
         claim_key: normalized.claim_key,
-        collection_run_id: None,
-        execution_transcript_ids: vec![execution_transcript_id],
+        collection_run_id,
+        execution_transcript_ids,
         pack_invocation_ids: vec![invocation.id.clone()],
         data: normalized.data,
         evidence_class: normalized.evidence_class,
@@ -579,6 +760,7 @@ fn invoke(
         protocol_version: PROTOCOL_VERSION,
         operation: operation.into(),
         execution_transcript_id: None,
+        acquisition_transcript_ids: vec![],
         executable,
         request_sha256: hex_digest(&request_bytes),
         response_sha256: hex_digest(&response_bytes),
@@ -800,7 +982,7 @@ pub fn verify_observation_links(
                         observation.id, observation.provenance.source_id
                     ))
                 })?;
-            verify_observation_invocation(observation, source, invocation, executions)?;
+            verify_observation_invocation(corpus, observation, source, invocation, executions)?;
             *operations
                 .entry(invocation.contents.operation.as_str())
                 .or_insert(0_usize) += 1;
@@ -824,6 +1006,7 @@ pub fn verify_observation_links(
 }
 
 fn verify_observation_invocation(
+    corpus: &crate::model::Corpus,
     observation: &crate::model::Observation,
     source: &crate::model::SourceDocument,
     invocation: &PackInvocation,
@@ -859,32 +1042,39 @@ fn verify_observation_invocation(
                     observation.id
                 )));
             }
-            let Some(execution_id) = &invocation.contents.execution_transcript_id else {
-                return Err(Error::Provenance(format!(
-                    "collect invocation does not name the execution for observation {}",
-                    observation.id
-                )));
-            };
-            if !observation.execution_transcript_ids.contains(execution_id) {
-                return Err(Error::Provenance(format!(
-                    "collect invocation execution does not match observation {}",
-                    observation.id
-                )));
-            }
-            let execution = executions
-                .iter()
-                .find(|item| item.id == *execution_id)
-                .ok_or_else(|| {
-                    Error::Provenance(format!(
-                        "collect invocation references missing execution {execution_id}"
-                    ))
-                })?;
-            validate_retained_execution(&plan.command, execution)?;
-            if execution.contents.stdout.sha256 != source.sha256 {
-                return Err(Error::Provenance(format!(
-                    "collect execution output does not match observation {} source",
-                    observation.id
-                )));
+            match plan.action()? {
+                CollectionAction::Local { command } => {
+                    let Some(execution_id) = &invocation.contents.execution_transcript_id else {
+                        return Err(Error::Provenance(format!(
+                            "collect invocation does not name the execution for observation {}",
+                            observation.id
+                        )));
+                    };
+                    if !observation.execution_transcript_ids.contains(execution_id) {
+                        return Err(Error::Provenance(format!(
+                            "collect invocation execution does not match observation {}",
+                            observation.id
+                        )));
+                    }
+                    let execution = executions
+                        .iter()
+                        .find(|item| item.id == *execution_id)
+                        .ok_or_else(|| {
+                            Error::Provenance(format!(
+                                "collect invocation references missing execution {execution_id}"
+                            ))
+                        })?;
+                    validate_retained_execution(&command, execution)?;
+                    if execution.contents.stdout.sha256 != source.sha256 {
+                        return Err(Error::Provenance(format!(
+                            "collect execution output does not match observation {} source",
+                            observation.id
+                        )));
+                    }
+                }
+                CollectionAction::Remote { .. } => {
+                    verify_remote_collection_invocation(corpus, observation, invocation)?;
+                }
             }
         }
         "normalize" => {
@@ -909,6 +1099,32 @@ fn verify_observation_invocation(
                 invocation.contents.operation
             )));
         }
+    }
+    Ok(())
+}
+
+fn verify_remote_collection_invocation(
+    corpus: &crate::model::Corpus,
+    observation: &crate::model::Observation,
+    invocation: &PackInvocation,
+) -> Result<()> {
+    let run = observation
+        .collection_run_id
+        .as_ref()
+        .and_then(|id| corpus.collections.iter().find(|run| run.id == *id))
+        .ok_or_else(|| {
+            Error::Provenance(format!(
+                "remote observation {} has no collection run",
+                observation.id
+            ))
+        })?;
+    if invocation.contents.acquisition_transcript_ids.is_empty()
+        || invocation.contents.acquisition_transcript_ids != run.acquisition_transcript_ids
+    {
+        return Err(Error::Provenance(format!(
+            "collect invocation acquisitions do not match observation {}",
+            observation.id
+        )));
     }
     Ok(())
 }
@@ -1114,7 +1330,7 @@ fn validate_assertions(
             }
         }
         if assertion.outcome == Outcome::Supported {
-            validate_supported_coverage(assertion, declared_propositions, metadata)?;
+            validate_supported_coverage(assertion, corpus, declared_propositions, metadata)?;
         }
         for evidence in assertion
             .support
@@ -1145,9 +1361,23 @@ fn validate_assertions(
 
 fn validate_supported_coverage(
     assertion: &DerivedAssertion,
+    corpus: &crate::model::Corpus,
     declared: &[Proposition],
     metadata: &PackMetadata,
 ) -> Result<()> {
+    if assertion.validity.basis == crate::assertions::ValidityBasis::PointInTime
+        && assertion.coverage.is_empty()
+    {
+        let authoritative = declared.iter().all(|proposition| {
+            assertion
+                .support
+                .iter()
+                .any(|evidence| corpus_observation_run(corpus, evidence, *proposition))
+        });
+        if authoritative {
+            return Ok(());
+        }
+    }
     if !declared.is_empty()
         && (assertion.subject.from.is_none() || assertion.subject.until.is_none())
     {
@@ -1184,4 +1414,21 @@ fn validate_supported_coverage(
         }
     }
     Ok(())
+}
+
+fn corpus_observation_run(
+    corpus: &crate::model::Corpus,
+    evidence: &crate::assertions::EvidenceUse,
+    proposition: Proposition,
+) -> bool {
+    corpus
+        .observations
+        .iter()
+        .find(|observation| observation.id == evidence.observation_id)
+        .and_then(|observation| observation.collection_run_id.as_deref())
+        .and_then(|run_id| corpus.collections.iter().find(|run| run.id == run_id))
+        .is_some_and(|run| {
+            run.outcome == crate::model::CollectionOutcome::Complete
+                && run.authority.contains(&proposition)
+        })
 }

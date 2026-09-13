@@ -23,6 +23,7 @@
             "properties": {"status": {"type": "string"}, "detail": {"type": "string"}}
           }
         },
+        "collection_run_ids": {"type": "array", "items": {"type": "string"}},
         "observation_ids": {"type": "array", "items": {"type": "string"}},
         "execution_transcript_ids": {"type": "array", "items": {"type": "string"}},
         "pack_invocation_ids": {"type": "array", "items": {"type": "string"}},

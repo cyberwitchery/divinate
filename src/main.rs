@@ -258,8 +258,6 @@ enum ExportCommand {
 
 #[derive(Subcommand)]
 enum CollectCommand {
-    /// compatibility: collect one explicit release sbom comparison
-    Release(Box<ReleaseArgs>),
     /// collect with a configured pack
     Pack {
         #[arg(long, default_value = ".evidence")]
@@ -279,36 +277,6 @@ enum CollectCommand {
         #[arg(long = "acquisition")]
         acquisitions: Vec<PathBuf>,
     },
-}
-
-#[derive(Args)]
-struct ReleaseArgs {
-    #[arg(long, default_value = ".evidence")]
-    state: PathBuf,
-    #[arg(long)]
-    repository_path: PathBuf,
-    #[arg(long)]
-    base_release: String,
-    #[arg(long)]
-    release: String,
-    #[arg(long)]
-    base_revision: Option<String>,
-    #[arg(long)]
-    revision: Option<String>,
-    #[arg(long)]
-    base_sbom: PathBuf,
-    #[arg(long)]
-    target_sbom: PathBuf,
-    #[arg(long)]
-    sbom_diff: PathBuf,
-    #[arg(long)]
-    tool_version: Option<String>,
-    #[arg(long, default_value = "supply-chain/default")]
-    policy: String,
-    #[arg(long, default_value = "added-components")]
-    fail_on: String,
-    #[arg(long)]
-    force: bool,
 }
 
 #[derive(Args)]
@@ -342,17 +310,25 @@ struct NamedPathArg {
 struct PreparedPackCollection {
     pack: String,
     collector: String,
-    observation: String,
+    observations: Vec<String>,
     corpus: Corpus,
     invocations: Vec<divinate::pack::PackCapture>,
-    execution: divinate::execution::ExecutionCapture,
+    executions: Vec<divinate::execution::ExecutionCapture>,
+    acquisitions: Vec<AcquisitionTranscript>,
 }
 
 struct PreparedSource {
     corpus: Corpus,
     executions: Vec<divinate::execution::ExecutionCapture>,
+    acquisitions: Vec<AcquisitionTranscript>,
     invocations: Vec<divinate::pack::PackCapture>,
     detail: String,
+}
+
+struct PreparedRemoteEvidence {
+    sources: Vec<divinate::model::SourceDocument>,
+    observations: Vec<Observation>,
+    invocations: Vec<divinate::pack::PackCapture>,
 }
 
 #[derive(Clone)]
@@ -361,6 +337,14 @@ struct ReleaseContext {
     revision: String,
     previous_release: String,
     previous_revision: String,
+}
+
+struct SourceRunContext<'a> {
+    repository_path: &'a std::path::Path,
+    revision: &'a str,
+    from: &'a str,
+    until: &'a str,
+    observed_at: &'a str,
 }
 
 #[derive(serde::Serialize)]
@@ -374,7 +358,7 @@ struct SourceReport {
 struct ProductCollectionReport {
     repository: String,
     branch: String,
-    release: String,
+    release: Option<String>,
     sources: Vec<SourceReport>,
     new_observations: usize,
     outcomes: BTreeMap<String, usize>,
@@ -517,7 +501,6 @@ fn run(cli: Cli) -> Result<()> {
             json,
         } => init_repository(&state, &repository_path, branch, json),
         Command::Collect { command, args } => match command {
-            Some(CollectCommand::Release(args)) => collect_release(*args),
             Some(CollectCommand::Pack {
                 state,
                 repository_path,
@@ -754,6 +737,11 @@ fn init_repository(
 fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
     let project = divinate::project::load(&args.repository_path)?;
     let config = project.config;
+    let repository_path =
+        std::fs::canonicalize(&args.repository_path).map_err(|source| Error::Io {
+            path: args.repository_path.clone(),
+            source,
+        })?;
     divinate::workflow::ensure_repository_identity(&args.state, &config.repository)?;
     let corpus_path = divinate::workflow::corpus_path(&args.state);
     let base = if corpus_path.exists() {
@@ -766,8 +754,9 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
         || Ok(time::OffsetDateTime::now_utc()),
         |value| parse_timestamp(value),
     )?;
-    let evaluated_at = format_timestamp(at)?;
-    let until = args.until.clone().unwrap_or_else(|| evaluated_at.clone());
+    let collected_at = format_timestamp(at)?;
+    let until = args.until.clone().unwrap_or_else(|| collected_at.clone());
+    let revision = divinate::release::head_revision(&args.repository_path)?;
     let enabled = config
         .sources
         .iter()
@@ -796,20 +785,20 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
     }
     let mut increment = empty_corpus();
     let mut executions = Vec::new();
+    let mut acquisitions = Vec::new();
     let mut invocations = Vec::new();
     let mut reports = Vec::new();
     let mut unavailable_optional_packs = BTreeSet::new();
+    let run_context = SourceRunContext {
+        repository_path: &repository_path,
+        revision: &revision,
+        from: &from,
+        until: &until,
+        observed_at: &collected_at,
+    };
 
     for (id, source) in enabled {
-        let context = source_context(
-            &config,
-            source,
-            release_context.as_ref(),
-            &args.repository_path,
-            &from,
-            &until,
-            &evaluated_at,
-        );
+        let context = source_context(&config, source, release_context.as_ref(), &run_context);
         match prepare_source(args, &config, source, release_context.as_ref(), &context) {
             Ok(prepared) => {
                 let incomplete = prepared
@@ -819,6 +808,7 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
                     .any(|run| run.outcome != CollectionOutcome::Complete);
                 increment = divinate::workflow::merge(&increment, &prepared.corpus)?;
                 executions.extend(prepared.executions);
+                acquisitions.extend(prepared.acquisitions);
                 invocations.extend(prepared.invocations);
                 reports.push(SourceReport {
                     source: id.clone(),
@@ -844,13 +834,20 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
         }
     }
 
-    let preview = divinate::workflow::merge(&base, &increment)?;
-    let release = release_context.map_or_else(
-        || divinate::workflow::latest_release(&preview, at),
-        |context| Ok(context.release),
-    )?;
+    let release = release_context.map(|context| context.release);
+    let evaluated_at = if args.at.is_some() {
+        collected_at
+    } else {
+        format_timestamp(time::OffsetDateTime::now_utc())?
+    };
     divinate::workflow::store_project_configuration(&args.state, &project.sha256, &project.bytes)?;
-    let merged = commit_collections(&args.state, &increment, &executions, &invocations)?;
+    let merged = commit_collections(
+        &args.state,
+        &increment,
+        &acquisitions,
+        &executions,
+        &invocations,
+    )?;
     divinate::workflow::store_collection_cycle(
         &args.state,
         divinate::workflow::CollectionCycleContents {
@@ -868,6 +865,11 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
                         },
                     )
                 })
+                .collect(),
+            collection_run_ids: increment
+                .collections
+                .iter()
+                .map(|item| item.id.clone())
                 .collect(),
             observation_ids: increment
                 .observations
@@ -894,7 +896,7 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
         TargetArgs {
             repository: Some(config.repository.clone()),
             branch: Some(config.branch.clone()),
-            release: Some(release.clone()),
+            release: release.clone(),
             from,
             until,
             at: Some(evaluated_at),
@@ -996,11 +998,7 @@ fn infer_evaluation_start(
         return Ok(current);
     }
     release.map_or_else(
-        || {
-            Err(Error::Invalid(
-                "cannot determine evaluation start; choose one with --from".into(),
-            ))
-        },
+        || divinate::release::history_start_time(&args.repository_path),
         |context| divinate::release::release_time(&args.repository_path, &context.previous_release),
     )
 }
@@ -1009,10 +1007,7 @@ fn source_context(
     project: &divinate::workflow::ProjectConfig,
     source: &divinate::workflow::SourceConfig,
     release: Option<&ReleaseContext>,
-    repository_path: &std::path::Path,
-    from: &str,
-    until: &str,
-    observed_at: &str,
+    run: &SourceRunContext<'_>,
 ) -> serde_json::Value {
     let release = (source.context == divinate::workflow::SourceContext::Release)
         .then_some(release)
@@ -1028,9 +1023,10 @@ fn source_context(
     serde_json::json!({
         "repository": project.repository,
         "branch": project.branch,
-        "repository_path": repository_path,
-        "interval": {"from": from, "until": until},
-        "observed_at": observed_at,
+        "revision": run.revision,
+        "repository_path": run.repository_path,
+        "interval": {"from": run.from, "until": run.until},
+        "observed_at": run.observed_at,
         "release": release,
         "configuration": source.configuration,
     })
@@ -1058,7 +1054,8 @@ fn prepare_source(
             let prepared = prepare_pack_collection(config, pack, collector, context)?;
             Ok(PreparedSource {
                 corpus: prepared.corpus,
-                executions: vec![prepared.execution],
+                executions: prepared.executions,
+                acquisitions: prepared.acquisitions,
                 invocations: prepared.invocations,
                 detail: "evidence recorded".into(),
             })
@@ -1098,6 +1095,7 @@ fn prepare_release_sbom_source(
     Ok(PreparedSource {
         corpus: capture.corpus,
         executions: capture.executions,
+        acquisitions: vec![],
         invocations: vec![],
         detail,
     })
@@ -1350,17 +1348,19 @@ fn record_increment(
 fn commit_collections(
     state: &std::path::Path,
     increment: &Corpus,
+    acquisitions: &[AcquisitionTranscript],
     executions: &[divinate::execution::ExecutionCapture],
     invocations: &[divinate::pack::PackCapture],
 ) -> Result<Corpus> {
-    preflight_collections(state, increment, executions, invocations)?;
+    preflight_collections(state, increment, acquisitions, executions, invocations)?;
     divinate::workflow::store_pack_invocations(state, invocations)?;
-    divinate::workflow::accumulate_with_executions(state, increment, &[], executions)
+    divinate::workflow::accumulate_with_executions(state, increment, acquisitions, executions)
 }
 
 fn preflight_collections(
     state: &std::path::Path,
     increment: &Corpus,
+    acquisition_captures: &[AcquisitionTranscript],
     captures: &[divinate::execution::ExecutionCapture],
     pack_captures: &[divinate::pack::PackCapture],
 ) -> Result<()> {
@@ -1376,7 +1376,19 @@ fn preflight_collections(
         }
     };
     let merged = divinate::workflow::merge(&base, increment)?;
-    let acquisitions = divinate::workflow::load_transcripts(state)?;
+    let mut acquisitions = divinate::workflow::load_transcripts(state)?;
+    for capture in acquisition_captures {
+        if let Some(existing) = acquisitions.iter().find(|item| item.id == capture.id) {
+            if existing != capture {
+                return Err(Error::Invalid(format!(
+                    "acquisition id collision: {}",
+                    capture.id
+                )));
+            }
+        } else {
+            acquisitions.push(capture.clone());
+        }
+    }
     let registry = divinate::workflow::load_registry(state)?;
     divinate::provenance::verify_collection_links(&merged, &acquisitions, &registry)?;
 
@@ -1452,40 +1464,6 @@ fn merge_execution(
     Ok(())
 }
 
-fn collect_release(args: ReleaseArgs) -> Result<()> {
-    let repository = divinate::release::repository_identity(&args.repository_path)?;
-    divinate::workflow::ensure_repository_identity(&args.state, &repository)?;
-    let existing = divinate::workflow::load_executions(&args.state).map_err(provenance_error)?;
-    let blobs = divinate::workflow::load_blobs(&args.state).map_err(provenance_error)?;
-    let capture = divinate::release::collect(
-        &divinate::release::ReleaseRequest {
-            repository,
-            repository_path: args.repository_path,
-            base_release: args.base_release,
-            release: args.release,
-            expected_base_revision: args.base_revision,
-            expected_revision: args.revision,
-            base_sbom: args.base_sbom,
-            target_sbom: args.target_sbom,
-            executable: args.sbom_diff,
-            reported_version: args.tool_version,
-            policy_id: args.policy,
-            fail_on: args.fail_on,
-            force: args.force,
-        },
-        &existing,
-        &blobs,
-    )?;
-    divinate::workflow::accumulate_with_executions(
-        &args.state,
-        &capture.corpus,
-        &[],
-        &capture.executions,
-    )
-    .map_err(provenance_error)?;
-    print_json(&capture.result)
-}
-
 fn inspect_pack(repository_path: &std::path::Path, id: &str) -> Result<()> {
     let config = divinate::project::load(repository_path)?
         .config
@@ -1544,13 +1522,14 @@ fn collect_pack(
     commit_collections(
         state,
         &prepared.corpus,
-        std::slice::from_ref(&prepared.execution),
+        &prepared.acquisitions,
+        &prepared.executions,
         &prepared.invocations,
     )?;
     print_json(&serde_json::json!({
         "pack": prepared.pack,
         "collector": prepared.collector,
-        "observation": prepared.observation,
+        "observations": prepared.observations,
     }))
 }
 
@@ -1568,8 +1547,33 @@ fn prepare_pack_collection(
         )));
     }
     let (plan, planned) = divinate::pack::plan(config, &metadata, collector, context)?;
-    let execution =
-        execution::capture(&plan.command.execution_request()).map_err(collection_error)?;
+    match plan.action()? {
+        divinate::pack::CollectionAction::Local { command } => prepare_local_pack_collection(
+            config, collector, metadata, described, plan, planned, &command,
+        ),
+        divinate::pack::CollectionAction::Remote { acquisition } => prepare_remote_pack_collection(
+            config,
+            collector,
+            metadata,
+            described,
+            &plan,
+            planned,
+            &acquisition,
+            context,
+        ),
+    }
+}
+
+fn prepare_local_pack_collection(
+    config: &divinate::pack::PackConfig,
+    collector: &str,
+    metadata: divinate::pack::PackMetadata,
+    described: divinate::pack::PackCapture,
+    plan: divinate::pack::CollectionPlan,
+    planned: divinate::pack::PackCapture,
+    command: &divinate::pack::CommandPlan,
+) -> Result<PreparedPackCollection> {
+    let execution = execution::capture(&command.execution_request()).map_err(collection_error)?;
     let planned =
         divinate::pack::bind_execution(planned, &execution.transcript).map_err(provenance_error)?;
     let source_bytes = execution::stdout_bytes(&execution.transcript)?;
@@ -1616,11 +1620,253 @@ fn prepare_pack_collection(
     Ok(PreparedPackCollection {
         pack: metadata.id,
         collector: collector.into(),
-        observation: observation_id,
+        observations: vec![observation_id],
         corpus,
         invocations: vec![described, planned, normalization],
-        execution,
+        executions: vec![execution],
+        acquisitions: vec![],
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_remote_pack_collection(
+    config: &divinate::pack::PackConfig,
+    collector: &str,
+    metadata: divinate::pack::PackMetadata,
+    described: divinate::pack::PackCapture,
+    plan: &divinate::pack::CollectionPlan,
+    planned: divinate::pack::PackCapture,
+    acquisition_plan: &divinate::pack::RemoteAcquisitionPlan,
+    context: &serde_json::Value,
+) -> Result<PreparedPackCollection> {
+    let transcript = capture_remote_plan(plan, acquisition_plan, context)?;
+    let branch = plan
+        .subject
+        .qualifier("branch")
+        .ok_or_else(|| Error::Invalid("github source plan has no branch identity".into()))?;
+    let interval = transcript.contents.requested_scope.clone();
+    let transcript_ids = vec![transcript.id.clone()];
+    let planned =
+        divinate::pack::bind_acquisitions(planned, &transcript_ids).map_err(provenance_error)?;
+    let assessment = acquisition::assess(&transcript, &ContractRegistry::default());
+    let outcome = acquisition_outcome(assessment.enumeration);
+    let run_id = remote_collection_id(&metadata.id, collector, &transcript.id)?;
+    let mut run = divinate::model::CollectionRun {
+        id: run_id.clone(),
+        acquisition_transcript_ids: transcript_ids,
+        collector: divinate::model::Producer {
+            name: metadata.id.clone(),
+            version: metadata.version.clone(),
+            collector: format!("pack:{}/{collector}", metadata.id),
+        },
+        endpoint: transcript.contents.initial_request.url.clone(),
+        subject: plan.subject.clone(),
+        requested_scope: divinate::model::CollectionScope {
+            proposition: transcript.contents.proposition,
+            branch: Some(branch.into()),
+            interval: interval.clone(),
+        },
+        observed_scope: (assessment.enumeration == acquisition::EnumerationStatus::Complete).then(
+            || divinate::model::CollectionScope {
+                proposition: transcript.contents.proposition,
+                branch: Some(branch.into()),
+                interval,
+            },
+        ),
+        enumeration: divinate::model::Enumeration {
+            items_fetched: assessment.items,
+            items_reported: transcript
+                .contents
+                .exchanges
+                .first()
+                .and_then(|exchange| {
+                    serde_json::from_str::<serde_json::Value>(&exchange.response.body).ok()
+                })
+                .and_then(|body| body.get("total_count").and_then(serde_json::Value::as_u64)),
+            pages_fetched: assessment.pages,
+            terminal_page_reached: assessment.enumeration
+                == acquisition::EnumerationStatus::Complete,
+            next_token_present: assessment.enumeration == acquisition::EnumerationStatus::Truncated,
+        },
+        outcome,
+        limitations: acquisition_limitations(&assessment),
+        authority: assessment.authority,
+        observation_ids: vec![],
+        started_at: transcript.contents.captured_at.clone(),
+        completed_at: transcript.contents.captured_at.clone(),
+    };
+    let evidence = normalize_remote_exchanges(
+        config,
+        &metadata,
+        plan,
+        &transcript,
+        &run_id,
+        described,
+        planned,
+    )?;
+    run.observation_ids = evidence
+        .observations
+        .iter()
+        .map(|observation| observation.id.clone())
+        .collect();
+    Ok(PreparedPackCollection {
+        pack: metadata.id,
+        collector: collector.into(),
+        observations: run.observation_ids.clone(),
+        corpus: Corpus {
+            collections: vec![run],
+            observations: evidence.observations,
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            sources: evidence.sources,
+        },
+        invocations: evidence.invocations,
+        executions: vec![],
+        acquisitions: vec![transcript],
+    })
+}
+
+fn capture_remote_plan(
+    plan: &divinate::pack::CollectionPlan,
+    acquisition_plan: &divinate::pack::RemoteAcquisitionPlan,
+    context: &serde_json::Value,
+) -> Result<AcquisitionTranscript> {
+    let repository = context["repository"]
+        .as_str()
+        .and_then(|value| value.strip_prefix("github:"))
+        .ok_or_else(|| {
+            Error::Invalid("github source requires github repository identity".into())
+        })?;
+    let branch = context["branch"]
+        .as_str()
+        .ok_or_else(|| Error::Invalid("github source requires branch context".into()))?;
+    let revision = context["revision"]
+        .as_str()
+        .ok_or_else(|| Error::Invalid("github source requires revision context".into()))?;
+    let interval = serde_json::from_value(context["interval"].clone())
+        .map_err(|error| Error::Invalid(format!("github source interval is invalid: {error}")))?;
+    let divinate::pack::RemoteAcquisitionPlan::Github {
+        resource,
+        per_page,
+        max_pages,
+    } = acquisition_plan;
+    let resource = match resource {
+        divinate::pack::GithubResource::BranchProtection => {
+            acquisition::GithubRemoteResource::BranchProtection
+        }
+        divinate::pack::GithubResource::CheckRuns => acquisition::GithubRemoteResource::CheckRuns,
+        divinate::pack::GithubResource::CommitStatuses => {
+            acquisition::GithubRemoteResource::CommitStatuses
+        }
+    };
+    acquisition::capture_github_remote(&acquisition::GithubRemoteCapture {
+        repository: repository.into(),
+        branch: branch.into(),
+        revision: revision.into(),
+        subject: plan.subject.clone(),
+        interval,
+        resource,
+        per_page: *per_page,
+        max_pages: *max_pages,
+        captured_at: parse_timestamp(&plan.observed_at)?,
+    })
+}
+
+fn normalize_remote_exchanges(
+    config: &divinate::pack::PackConfig,
+    metadata: &divinate::pack::PackMetadata,
+    plan: &divinate::pack::CollectionPlan,
+    transcript: &AcquisitionTranscript,
+    run_id: &str,
+    described: divinate::pack::PackCapture,
+    planned: divinate::pack::PackCapture,
+) -> Result<PreparedRemoteEvidence> {
+    let mut evidence = PreparedRemoteEvidence {
+        sources: vec![],
+        observations: vec![],
+        invocations: vec![described, planned],
+    };
+    for exchange in &transcript.contents.exchanges {
+        if exchange.response.status != 200 {
+            continue;
+        }
+        let source = divinate::model::SourceDocument {
+            content: exchange.response.body.clone(),
+            format: plan.adapter.clone(),
+            id: format!("src_{}", &exchange.response.body_sha256[..20]),
+            media_type: "application/json".into(),
+            path: format!("github-response:{}", exchange.response.body_sha256),
+            sha256: exchange.response.body_sha256.clone(),
+        };
+        let (normalized, normalization) = divinate::pack::normalize(
+            config,
+            metadata,
+            &plan.adapter,
+            exchange.response.body.as_bytes(),
+            &source.sha256,
+            &plan.subject,
+        )?;
+        let mut observation = divinate::pack::remote_observation(
+            normalized,
+            metadata,
+            &normalization.invocation,
+            &source,
+            plan.subject.clone(),
+            plan.observed_at.clone(),
+            run_id.into(),
+        )?;
+        observation.pack_invocation_ids = vec![
+            evidence.invocations[0].invocation.id.clone(),
+            evidence.invocations[1].invocation.id.clone(),
+            normalization.invocation.id.clone(),
+        ];
+        evidence.sources.push(source);
+        evidence.observations.push(observation);
+        evidence.invocations.push(normalization);
+    }
+    Ok(evidence)
+}
+
+fn remote_collection_id(pack: &str, collector: &str, transcript: &str) -> Result<String> {
+    let identity = serde_json::json!({
+        "pack": pack,
+        "collector": collector,
+        "acquisition": transcript,
+    });
+    let digest = divinate::hex_digest(&divinate::canonical_json(&identity)?);
+    Ok(format!("run_{}", &digest[..20]))
+}
+
+fn acquisition_outcome(status: acquisition::EnumerationStatus) -> CollectionOutcome {
+    match status {
+        acquisition::EnumerationStatus::Complete => CollectionOutcome::Complete,
+        acquisition::EnumerationStatus::Truncated => CollectionOutcome::Partial,
+        acquisition::EnumerationStatus::PermissionDenied
+        | acquisition::EnumerationStatus::Unauthenticated => CollectionOutcome::PermissionDenied,
+        acquisition::EnumerationStatus::NotFound
+        | acquisition::EnumerationStatus::RateLimited
+        | acquisition::EnumerationStatus::Failed => CollectionOutcome::Failed,
+    }
+}
+
+fn acquisition_limitations(
+    assessment: &acquisition::AcquisitionAssessment,
+) -> Vec<divinate::model::CollectionLimitation> {
+    use divinate::model::{CollectionLimitation, CollectionLimitationKind};
+    if assessment.enumeration == acquisition::EnumerationStatus::Complete {
+        return vec![];
+    }
+    let kind = match assessment.enumeration {
+        acquisition::EnumerationStatus::Truncated => CollectionLimitationKind::PaginationIncomplete,
+        acquisition::EnumerationStatus::PermissionDenied
+        | acquisition::EnumerationStatus::Unauthenticated => {
+            CollectionLimitationKind::PermissionDenied
+        }
+        _ => CollectionLimitationKind::SourceError,
+    };
+    vec![CollectionLimitation {
+        kind,
+        detail: assessment.reasons.join("; "),
+    }]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1734,7 +1980,7 @@ fn evaluate_state_with_skips(
         .map_err(provenance_error)?;
     let historical =
         divinate::workflow::as_of_with_provenance(&corpus, &transcripts, &executions, at)?;
-    let target = evaluation_in_project(project, &historical.corpus, target, at)?;
+    let target = evaluation_in_project(project, target);
     divinate::provenance::verify_execution_links(
         &historical.corpus,
         &historical.executions,
@@ -2297,9 +2543,7 @@ fn evaluation(args: TargetArgs) -> Result<(EvaluationTarget, time::OffsetDateTim
                 Error::Invalid("--repository is required outside repository-local state".into())
             })?,
             branch: args.branch.unwrap_or_else(|| "main".into()),
-            release: args.release.ok_or_else(|| {
-                Error::Invalid("--release is required outside repository-local state".into())
-            })?,
+            release: args.release,
             from: args.from,
             until: args.until,
         },
@@ -2309,19 +2553,15 @@ fn evaluation(args: TargetArgs) -> Result<(EvaluationTarget, time::OffsetDateTim
 
 fn evaluation_in_project(
     config: &divinate::workflow::ProjectConfig,
-    corpus: &divinate::model::Corpus,
     args: TargetArgs,
-    at: time::OffsetDateTime,
-) -> Result<EvaluationTarget> {
-    Ok(EvaluationTarget {
+) -> EvaluationTarget {
+    EvaluationTarget {
         repository: args.repository.unwrap_or_else(|| config.repository.clone()),
         branch: args.branch.unwrap_or_else(|| config.branch.clone()),
-        release: args
-            .release
-            .map_or_else(|| divinate::workflow::latest_release(corpus, at), Ok)?,
+        release: args.release,
         from: args.from,
         until: args.until,
-    })
+    }
 }
 
 fn verify_state(state: &std::path::Path) -> Result<()> {

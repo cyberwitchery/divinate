@@ -37,7 +37,8 @@ pub struct DossierContents {
     pub repository: String,
     pub evaluated_at: String,
     pub interval: DossierInterval,
-    pub release: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<String>,
     pub corpus_sha256: String,
     pub evidence_sources: Vec<EvidenceSourceSummary>,
     pub acquisitions: Vec<AcquisitionSummary>,
@@ -187,13 +188,17 @@ pub fn build_with_registry(
     evaluated_at: OffsetDateTime,
 ) -> Result<Dossier> {
     provenance::verify_collection_links(corpus, acquisitions, registry)?;
-    let selected = [
+    let mut selected = vec![
         AssertionType::ConfiguredIndependentReview,
         AssertionType::EveryMainChangeReviewed,
-        AssertionType::DependencyChangeVisibility,
-        AssertionType::ReleaseSupplyChainPolicy,
-        AssertionType::AdequateHumanSecurityReview,
     ];
+    if target.release.is_some() {
+        selected.extend([
+            AssertionType::DependencyChangeVisibility,
+            AssertionType::ReleaseSupplyChainPolicy,
+            AssertionType::AdequateHumanSecurityReview,
+        ]);
+    }
     let mut controls = selected
         .iter()
         .map(|kind| {
@@ -258,7 +263,9 @@ pub fn render_markdown(dossier: &Dossier) -> String {
         dossier.contents.interval.from, dossier.contents.interval.until
     )
     .unwrap();
-    writeln!(out, "release: `{}`  ", dossier.contents.release).unwrap();
+    if let Some(release) = &dossier.contents.release {
+        writeln!(out, "release: `{release}`  ").unwrap();
+    }
     writeln!(out).unwrap();
     render_overview(&mut out, dossier);
     render_history(&mut out, &dossier.contents.historical_context);
@@ -657,6 +664,9 @@ fn control_title(kind: &AssertionType) -> String {
         AssertionType::AdequateHumanSecurityReview => "adequate human security review".into(),
         AssertionType::ConfiguredReviewRequirement => "two-review configuration".into(),
         AssertionType::ReleaseReviewOperation => "release review operation".into(),
+        AssertionType::External(value) if value == "github_current_revision_checks_passed" => {
+            "observed GitHub revision results acceptable".into()
+        }
         AssertionType::External(value) => human_name(value),
     }
 }
@@ -739,6 +749,7 @@ const fn proposition_name(value: Proposition) -> &'static str {
         Proposition::RepositoryMutations => "repository_mutations",
         Proposition::CommitAncestry => "commit_ancestry",
         Proposition::BranchConfiguration => "branch_configuration",
+        Proposition::RevisionChecks => "revision_checks",
         Proposition::SupplyChainPolicyDecision => "supply_chain_policy_decision",
         Proposition::DeclaredDependencies => "declared_dependencies",
     }

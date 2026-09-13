@@ -31,6 +31,7 @@ serde_yaml_ng = "0.10"
 sha2 = "0.10"
 thiserror = "2"
 time = { version = "0.3", features = ["formatting", "parsing"] }
+ureq = { version = "3.4", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::process::Command;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -26,6 +27,34 @@ pub const TRANSCRIPT_SCHEMA_VERSION: &str = "0.1.0";
 pub const GITHUB_COMMITS_CONTRACT: &str = "github-commits/v1";
 /// one branch-protection response. establishes configured intent only.
 pub const GITHUB_BRANCH_PROTECTION_CONTRACT: &str = "github-branch-protection/v1";
+/// check runs reported for one exact repository revision.
+pub const GITHUB_CHECK_RUNS_CONTRACT: &str = "github-check-runs/v1";
+/// latest classic commit status for each context on one exact repository revision.
+pub const GITHUB_COMMIT_STATUSES_CONTRACT: &str = "github-commit-statuses/v1";
+
+const GITHUB_API_ORIGIN: &str = "https://api.github.com";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// the github resources that core can acquire for packs.
+pub enum GithubRemoteResource {
+    BranchProtection,
+    CheckRuns,
+    CommitStatuses,
+}
+
+#[derive(Debug, Clone)]
+/// one provider-aware github acquisition requested by a pack.
+pub struct GithubRemoteCapture {
+    pub repository: String,
+    pub branch: String,
+    pub revision: String,
+    pub subject: Subject,
+    pub interval: TimeRange,
+    pub resource: GithubRemoteResource,
+    pub per_page: u16,
+    pub max_pages: u16,
+    pub captured_at: OffsetDateTime,
+}
 
 #[derive(Debug, Clone)]
 /// options for capturing a github commit enumeration.
@@ -105,9 +134,29 @@ pub struct HttpResponse {
 /// how enumeration ended.
 pub enum AcquisitionTermination {
     Exhausted,
-    Truncated { next_url: String },
-    PermissionDenied { diagnostic: String },
-    Failed { diagnostic: String },
+    Truncated {
+        next_url: String,
+    },
+    Unauthenticated {
+        diagnostic: String,
+    },
+    PermissionDenied {
+        diagnostic: String,
+    },
+    NotFound {
+        diagnostic: String,
+    },
+    RateLimited {
+        diagnostic: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reset_at: Option<String>,
+    },
+    UnsafeRedirect {
+        location: String,
+    },
+    Failed {
+        diagnostic: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -151,7 +200,10 @@ pub enum ContractStatus {
 pub enum EnumerationStatus {
     Complete,
     Truncated,
+    Unauthenticated,
     PermissionDenied,
+    NotFound,
+    RateLimited,
     Failed,
 }
 
@@ -328,6 +380,322 @@ pub fn capture_github_branch_protection(
         exchanges,
         termination,
     })
+}
+
+/// acquire one narrow github resource with credentials held only by core.
+///
+/// # Errors
+///
+/// returns an error when the plan is invalid, no credential is available, or
+/// github cannot be reached. http failures are retained as transcript outcomes.
+pub fn capture_github_remote(options: &GithubRemoteCapture) -> Result<AcquisitionTranscript> {
+    validate_github_remote(options)?;
+    let token = github_token()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+    capture_github_remote_with(options, |url| github_get(&agent, url, &token))
+}
+
+fn capture_github_remote_with<F>(
+    options: &GithubRemoteCapture,
+    mut fetch: F,
+) -> Result<AcquisitionTranscript>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    validate_github_remote(options)?;
+    let captured_at = format_time(options.captured_at)?;
+    let (contract, proposition, initial_url) = match options.resource {
+        GithubRemoteResource::BranchProtection => (
+            GITHUB_BRANCH_PROTECTION_CONTRACT,
+            Proposition::BranchConfiguration,
+            format!(
+                "{GITHUB_API_ORIGIN}/repos/{}/branches/{}",
+                options.repository,
+                percent_encode(&options.branch)
+            ),
+        ),
+        GithubRemoteResource::CheckRuns => (
+            GITHUB_CHECK_RUNS_CONTRACT,
+            Proposition::RevisionChecks,
+            format!(
+                "{GITHUB_API_ORIGIN}/repos/{}/commits/{}/check-runs?per_page={}&page=1",
+                options.repository,
+                percent_encode(&options.revision),
+                options.per_page
+            ),
+        ),
+        GithubRemoteResource::CommitStatuses => (
+            GITHUB_COMMIT_STATUSES_CONTRACT,
+            Proposition::RevisionChecks,
+            format!(
+                "{GITHUB_API_ORIGIN}/repos/{}/commits/{}/status?per_page={}&page=1",
+                options.repository,
+                percent_encode(&options.revision),
+                options.per_page
+            ),
+        ),
+    };
+    let mut exchanges = Vec::new();
+    let mut url = initial_url.clone();
+    let termination = loop {
+        ensure_github_url(&url)?;
+        let exchange = fetch(&url)?;
+        let status = exchange.response.status;
+        let next = next_link(&exchange.response.headers);
+        let response_body = exchange.response.body.clone();
+        let response_headers = exchange.response.headers.clone();
+        exchanges.push(exchange);
+
+        if status != 200 {
+            break classify_github_failure(status, &response_body, &response_headers);
+        }
+
+        match options.resource {
+            GithubRemoteResource::BranchProtection if exchanges.len() == 1 => {
+                let body: serde_json::Value =
+                    serde_json::from_str(&response_body).map_err(|error| {
+                        Error::Invalid(format!("github branch response is not JSON: {error}"))
+                    })?;
+                let protected = body
+                    .get("protected")
+                    .and_then(serde_json::Value::as_bool)
+                    .ok_or_else(|| {
+                        Error::Invalid(
+                            "github branch response has no boolean protected field".into(),
+                        )
+                    })?;
+                if !protected {
+                    break AcquisitionTermination::Exhausted;
+                }
+                url = format!(
+                    "{GITHUB_API_ORIGIN}/repos/{}/branches/{}/protection",
+                    options.repository,
+                    percent_encode(&options.branch)
+                );
+            }
+            GithubRemoteResource::BranchProtection => {
+                break AcquisitionTermination::Exhausted;
+            }
+            GithubRemoteResource::CheckRuns | GithubRemoteResource::CommitStatuses => {
+                if let Some(next_url) = next {
+                    ensure_github_url(&next_url)?;
+                    if exchanges.len() == usize::from(options.max_pages) {
+                        break AcquisitionTermination::Truncated { next_url };
+                    }
+                    url = next_url;
+                } else {
+                    break AcquisitionTermination::Exhausted;
+                }
+            }
+        }
+    };
+
+    seal_transcript(TranscriptContents {
+        collector_contract: contract.into(),
+        collector_version: env!("CARGO_PKG_VERSION").into(),
+        subject: options.subject.clone(),
+        proposition,
+        requested_scope: options.interval.clone(),
+        captured_at,
+        initial_request: HttpRequest {
+            method: "GET".into(),
+            url: initial_url,
+        },
+        exchanges,
+        termination,
+    })
+}
+
+fn validate_github_remote(options: &GithubRemoteCapture) -> Result<()> {
+    if options.per_page == 0
+        || options.per_page > 100
+        || options.max_pages == 0
+        || options.max_pages > 1_000
+    {
+        return Err(Error::Invalid(
+            "github per-page must be between 1 and 100 and max-pages between 1 and 1000".into(),
+        ));
+    }
+    let parts = options.repository.split('/').collect::<Vec<_>>();
+    if parts.len() != 2
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || matches!(*part, "." | "..")
+                || !part
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+    {
+        return Err(Error::Invalid(
+            "github repository must be an owner/name pair".into(),
+        ));
+    }
+    if options.branch.is_empty() || options.revision.is_empty() {
+        return Err(Error::Invalid(
+            "github acquisition requires branch and revision context".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn github_token() -> Result<String> {
+    if let Ok(output) = Command::new("gh").args(["auth", "token"]).output() {
+        if output.status.success() {
+            let token = String::from_utf8(output.stdout).map_err(|_| {
+                Error::Invalid("github credential helper returned non-utf8 data".into())
+            })?;
+            let token = token.trim().to_owned();
+            if !token.is_empty() {
+                return Ok(token);
+            }
+        }
+    }
+    if let Ok(token) = std::env::var("GITHUB_TOKEN") {
+        if !token.trim().is_empty() {
+            return Ok(token);
+        }
+    }
+    Err(Error::Collection(
+        "GitHub source requires authentication; authenticate with `gh auth login` or set GITHUB_TOKEN"
+            .into(),
+    ))
+}
+
+fn github_get(agent: &ureq::Agent, url: &str, token: &str) -> Result<HttpExchange> {
+    ensure_github_url(url)?;
+    let mut response = agent
+        .get(url)
+        .header("accept", "application/vnd.github+json")
+        .header("authorization", &format!("Bearer {token}"))
+        .header(
+            "user-agent",
+            concat!("divinate/", env!("CARGO_PKG_VERSION")),
+        )
+        .header("x-github-api-version", "2022-11-28")
+        .call()
+        .map_err(|_| {
+            Error::Collection("github request failed before receiving a response".into())
+        })?;
+    let status = response.status().as_u16();
+    let headers = retained_github_headers(response.headers());
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|_| Error::Collection("github response body could not be read".into()))?;
+    reject_reflected_credential(&body, &headers, token)?;
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|error| Error::Invalid(format!("github response body is not JSON: {error}")))?;
+    Ok(HttpExchange {
+        request: HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+        },
+        response: HttpResponse {
+            status,
+            headers,
+            body_sha256: hex_digest(body.as_bytes()),
+            item_count: json_item_count(&parsed),
+            body,
+        },
+    })
+}
+
+fn reject_reflected_credential(
+    body: &str,
+    headers: &BTreeMap<String, String>,
+    token: &str,
+) -> Result<()> {
+    if body.contains(token) || headers.values().any(|value| value.contains(token)) {
+        return Err(Error::Collection(
+            "github response reflected credential material; response was not retained".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn retained_github_headers(headers: &ureq::http::HeaderMap) -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "date",
+        "etag",
+        "link",
+        "location",
+        "retry-after",
+        "x-accepted-oauth-scopes",
+        "x-github-api-version-selected",
+        "x-github-request-id",
+        "x-oauth-scopes",
+        "x-ratelimit-limit",
+        "x-ratelimit-remaining",
+        "x-ratelimit-reset",
+        "x-ratelimit-resource",
+        "x-ratelimit-used",
+    ];
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str().to_ascii_lowercase();
+            ALLOWED
+                .contains(&name.as_str())
+                .then(|| value.to_str().ok().map(|value| (name, value.to_owned())))?
+        })
+        .collect()
+}
+
+fn ensure_github_url(url: &str) -> Result<()> {
+    let allowed = url
+        .strip_prefix(GITHUB_API_ORIGIN)
+        .is_some_and(|path| path.starts_with('/'));
+    if !allowed || url.contains('@') || url.contains('#') {
+        return Err(Error::Invalid(format!(
+            "github acquisition refused URL outside {GITHUB_API_ORIGIN}"
+        )));
+    }
+    Ok(())
+}
+
+fn classify_github_failure(
+    status: u16,
+    body: &str,
+    headers: &BTreeMap<String, String>,
+) -> AcquisitionTermination {
+    let diagnostic = github_diagnostic(status, body);
+    match status {
+        301 | 302 | 303 | 307 | 308 => AcquisitionTermination::UnsafeRedirect {
+            location: headers.get("location").cloned().unwrap_or_default(),
+        },
+        401 => AcquisitionTermination::Unauthenticated { diagnostic },
+        403 if headers.get("x-ratelimit-remaining").map(String::as_str) == Some("0") => {
+            AcquisitionTermination::RateLimited {
+                diagnostic,
+                reset_at: headers.get("x-ratelimit-reset").cloned(),
+            }
+        }
+        403 => AcquisitionTermination::PermissionDenied { diagnostic },
+        404 => AcquisitionTermination::NotFound { diagnostic },
+        429 => AcquisitionTermination::RateLimited {
+            diagnostic,
+            reset_at: headers.get("x-ratelimit-reset").cloned(),
+        },
+        _ => AcquisitionTermination::Failed { diagnostic },
+    }
+}
+
+fn github_diagnostic(status: u16, body: &str) -> String {
+    let message = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "request failed".into());
+    sanitize_diagnostic(&format!("HTTP {status}: {message}"))
 }
 
 /// verify transcript integrity, pagination, collector contract, and authority.
@@ -514,13 +882,21 @@ fn assess_enumeration(
         }
     }
     for pair in transcript.contents.exchanges.windows(2) {
-        if next_link(&pair[0].response.headers).as_deref() != Some(pair[1].request.url.as_str()) {
+        let planned_branch_detail = transcript.contents.collector_contract
+            == GITHUB_BRANCH_PROTECTION_CONTRACT
+            && pair[1].request.url == format!("{}/protection", pair[0].request.url);
+        if !planned_branch_detail
+            && next_link(&pair[0].response.headers).as_deref() != Some(pair[1].request.url.as_str())
+        {
             reasons.push("response pagination link does not match the following request".into());
             return EnumerationStatus::Failed;
         }
     }
     match &transcript.contents.termination {
         AcquisitionTermination::Exhausted => {
+            if let Some(status) = assess_github_result_count(transcript, reasons) {
+                return status;
+            }
             let terminal = transcript
                 .contents
                 .exchanges
@@ -551,9 +927,31 @@ fn assess_enumeration(
             reasons.push("collection stopped while a next page was available".into());
             EnumerationStatus::Truncated
         }
+        AcquisitionTermination::Unauthenticated { diagnostic } => {
+            reasons.push(format!("source is unauthenticated: {diagnostic}"));
+            EnumerationStatus::Unauthenticated
+        }
         AcquisitionTermination::PermissionDenied { diagnostic } => {
             reasons.push(format!("source access denied: {diagnostic}"));
             EnumerationStatus::PermissionDenied
+        }
+        AcquisitionTermination::NotFound { diagnostic } => {
+            reasons.push(format!("source resource was not found: {diagnostic}"));
+            EnumerationStatus::NotFound
+        }
+        AcquisitionTermination::RateLimited {
+            diagnostic,
+            reset_at,
+        } => {
+            reasons.push(reset_at.as_ref().map_or_else(
+                || format!("source rate limit reached: {diagnostic}"),
+                |reset| format!("source rate limit reached: {diagnostic}; reset {reset}"),
+            ));
+            EnumerationStatus::RateLimited
+        }
+        AcquisitionTermination::UnsafeRedirect { location } => {
+            reasons.push(format!("authenticated redirect refused: {location}"));
+            EnumerationStatus::Failed
         }
         AcquisitionTermination::Failed { diagnostic } => {
             reasons.push(format!("collector failed: {diagnostic}"));
@@ -562,15 +960,65 @@ fn assess_enumeration(
     }
 }
 
+fn assess_github_result_count(
+    transcript: &AcquisitionTranscript,
+    reasons: &mut Vec<String>,
+) -> Option<EnumerationStatus> {
+    let label = match transcript.contents.collector_contract.as_str() {
+        GITHUB_CHECK_RUNS_CONTRACT => "check run",
+        GITHUB_COMMIT_STATUSES_CONTRACT => "commit status",
+        _ => return None,
+    };
+    let reported = transcript
+        .contents
+        .exchanges
+        .first()
+        .and_then(|exchange| {
+            serde_json::from_str::<serde_json::Value>(&exchange.response.body).ok()
+        })
+        .and_then(|body| body.get("total_count").and_then(serde_json::Value::as_u64));
+    let fetched = transcript
+        .contents
+        .exchanges
+        .iter()
+        .map(|exchange| exchange.response.item_count)
+        .sum::<u64>();
+    match reported {
+        Some(reported) if reported != fetched => {
+            reasons.push(format!(
+                "github reported {reported} {label}(s), but {fetched} were retained"
+            ));
+            Some(EnumerationStatus::Truncated)
+        }
+        None => {
+            reasons.push(format!("github {label} response has no total_count"));
+            Some(EnumerationStatus::Failed)
+        }
+        Some(_) => None,
+    }
+}
+
 fn contract_authority(contract: &str) -> Vec<Proposition> {
     match contract {
         GITHUB_COMMITS_CONTRACT => vec![Proposition::CommitAncestry],
         GITHUB_BRANCH_PROTECTION_CONTRACT => vec![Proposition::BranchConfiguration],
+        GITHUB_CHECK_RUNS_CONTRACT | GITHUB_COMMIT_STATUSES_CONTRACT => {
+            vec![Proposition::RevisionChecks]
+        }
         _ => vec![],
     }
 }
 
 fn json_item_count(value: &serde_json::Value) -> u64 {
+    if let Some(items) = value
+        .get("check_runs")
+        .and_then(serde_json::Value::as_array)
+    {
+        return u64::try_from(items.len()).unwrap_or(u64::MAX);
+    }
+    if let Some(items) = value.get("statuses").and_then(serde_json::Value::as_array) {
+        return u64::try_from(items.len()).unwrap_or(u64::MAX);
+    }
     value
         .as_array()
         .and_then(|items| u64::try_from(items.len()).ok())
@@ -687,6 +1135,52 @@ fn format_time(value: OffsetDateTime) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn remote(resource: GithubRemoteResource) -> GithubRemoteCapture {
+        GithubRemoteCapture {
+            repository: "cyberwitchery/divinate".into(),
+            branch: "main".into(),
+            revision: "abc123".into(),
+            subject: Subject {
+                kind: "repository".into(),
+                id: "github:cyberwitchery/divinate".into(),
+                qualifiers: BTreeMap::from([
+                    ("branch".into(), serde_json::json!("main")),
+                    ("revision".into(), serde_json::json!("abc123")),
+                ]),
+            },
+            interval: TimeRange {
+                from: "2026-09-11T00:00:00Z".into(),
+                until: "2026-09-12T00:00:00Z".into(),
+            },
+            resource,
+            per_page: 100,
+            max_pages: 10,
+            captured_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn exchange(
+        url: &str,
+        status: u16,
+        body: &str,
+        headers: BTreeMap<String, String>,
+    ) -> HttpExchange {
+        let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
+        HttpExchange {
+            request: HttpRequest {
+                method: "GET".into(),
+                url: url.into(),
+            },
+            response: HttpResponse {
+                status,
+                headers,
+                body: body.into(),
+                body_sha256: hex_digest(body.as_bytes()),
+                item_count: json_item_count(&parsed),
+            },
+        }
+    }
+
     #[test]
     fn next_link_is_extracted() {
         let headers = BTreeMap::from([(
@@ -712,5 +1206,226 @@ mod tests {
             exchange.response.body_sha256,
             hex_digest(exchange.response.body.as_bytes())
         );
+    }
+
+    #[test]
+    fn unprotected_branch_is_complete_configuration_evidence() {
+        let options = remote(GithubRemoteResource::BranchProtection);
+        let transcript = capture_github_remote_with(&options, |url| {
+            Ok(exchange(
+                url,
+                200,
+                r#"{"protected":false}"#,
+                BTreeMap::new(),
+            ))
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.authority, vec![Proposition::BranchConfiguration]);
+        assert_eq!(
+            transcript.contents.exchanges[0].response.body,
+            r#"{"protected":false}"#
+        );
+    }
+
+    #[test]
+    fn permission_denial_is_not_an_unprotected_branch() {
+        let options = remote(GithubRemoteResource::BranchProtection);
+        let transcript = capture_github_remote_with(&options, |url| {
+            Ok(exchange(
+                url,
+                403,
+                r#"{"message":"Resource not accessible"}"#,
+                BTreeMap::new(),
+            ))
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::PermissionDenied);
+        assert!(assessment.authority.is_empty());
+        assert_eq!(transcript.contents.exchanges.len(), 1);
+    }
+
+    #[test]
+    fn protected_branch_collects_the_detailed_policy() {
+        let options = remote(GithubRemoteResource::BranchProtection);
+        let mut request = 0;
+        let transcript = capture_github_remote_with(&options, |url| {
+            request += 1;
+            if request == 1 {
+                Ok(exchange(url, 200, r#"{"protected":true}"#, BTreeMap::new()))
+            } else {
+                assert!(url.ends_with("/branches/main/protection"));
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"required_pull_request_reviews":{"required_approving_review_count":2}}"#,
+                    BTreeMap::new(),
+                ))
+            }
+        })
+        .unwrap();
+        assert_eq!(transcript.contents.exchanges.len(), 2);
+        assert_eq!(
+            assess(&transcript, &ContractRegistry::default()).enumeration,
+            EnumerationStatus::Complete
+        );
+    }
+
+    #[test]
+    fn check_run_pagination_retains_incomplete_state() {
+        let mut options = remote(GithubRemoteResource::CheckRuns);
+        options.max_pages = 1;
+        let transcript = capture_github_remote_with(&options, |url| {
+            Ok(exchange(
+                url,
+                200,
+                r#"{"total_count":2,"check_runs":[{"name":"ci"}]}"#,
+                BTreeMap::from([(
+                    "link".into(),
+                    "<https://api.github.com/repos/cyberwitchery/divinate/commits/abc123/check-runs?per_page=100&page=2>; rel=\"next\"".into(),
+                )]),
+            ))
+        })
+        .unwrap();
+        assert_eq!(
+            assess(&transcript, &ContractRegistry::default()).enumeration,
+            EnumerationStatus::Truncated
+        );
+    }
+
+    #[test]
+    fn check_run_count_mismatch_cannot_establish_complete_coverage() {
+        let options = remote(GithubRemoteResource::CheckRuns);
+        let transcript = capture_github_remote_with(&options, |url| {
+            Ok(exchange(
+                url,
+                200,
+                r#"{"total_count":2,"check_runs":[{"name":"ci"}]}"#,
+                BTreeMap::new(),
+            ))
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
+        assert!(assessment.authority.is_empty());
+    }
+
+    #[test]
+    fn commit_statuses_retain_complete_paginated_current_state() {
+        let options = remote(GithubRemoteResource::CommitStatuses);
+        let mut page = 0;
+        let transcript = capture_github_remote_with(&options, |url| {
+            page += 1;
+            if page == 1 {
+                assert!(url.ends_with("/commits/abc123/status?per_page=100&page=1"));
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"state":"failure","total_count":2,"statuses":[{"context":"ci","state":"success"}]}"#,
+                    BTreeMap::from([(
+                        "link".into(),
+                        "<https://api.github.com/repos/cyberwitchery/divinate/commits/abc123/status?per_page=100&page=2>; rel=\"next\"".into(),
+                    )]),
+                ))
+            } else {
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"state":"failure","total_count":2,"statuses":[{"context":"security","state":"failure"}]}"#,
+                    BTreeMap::new(),
+                ))
+            }
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.items, 2);
+        assert_eq!(assessment.authority, vec![Proposition::RevisionChecks]);
+    }
+
+    #[test]
+    fn commit_status_count_mismatch_cannot_establish_complete_coverage() {
+        let options = remote(GithubRemoteResource::CommitStatuses);
+        let transcript = capture_github_remote_with(&options, |url| {
+            Ok(exchange(
+                url,
+                200,
+                r#"{"state":"success","total_count":2,"statuses":[{"context":"ci","state":"success"}]}"#,
+                BTreeMap::new(),
+            ))
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
+        assert!(assessment.authority.is_empty());
+    }
+
+    #[test]
+    fn rate_limit_and_redirect_are_distinct_failures() {
+        let rate = classify_github_failure(
+            403,
+            r#"{"message":"API rate limit exceeded"}"#,
+            &BTreeMap::from([
+                ("x-ratelimit-remaining".into(), "0".into()),
+                ("x-ratelimit-reset".into(), "123".into()),
+            ]),
+        );
+        assert!(matches!(rate, AcquisitionTermination::RateLimited { .. }));
+        let redirect = classify_github_failure(
+            302,
+            r#"{"message":"Moved"}"#,
+            &BTreeMap::from([("location".into(), "https://evil.invalid/".into())]),
+        );
+        assert!(matches!(
+            redirect,
+            AcquisitionTermination::UnsafeRedirect { .. }
+        ));
+        assert!(matches!(
+            classify_github_failure(404, r#"{"message":"Not Found"}"#, &BTreeMap::new()),
+            AcquisitionTermination::NotFound { .. }
+        ));
+        assert!(ensure_github_url("https://evil.invalid/steal").is_err());
+    }
+
+    #[test]
+    fn retained_headers_never_include_credentials() {
+        let token = "divinate-test-token-4f6c0f504a";
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        headers.insert("set-cookie", format!("session={token}").parse().unwrap());
+        headers.insert("x-github-request-id", "request-1".parse().unwrap());
+        let retained = retained_github_headers(&headers);
+        let serialized = serde_json::to_string(&retained).unwrap();
+        assert_eq!(
+            retained.get("x-github-request-id").map(String::as_str),
+            Some("request-1")
+        );
+        assert!(!serialized.contains(token));
+        assert!(!retained.contains_key("authorization"));
+        assert!(!retained.contains_key("set-cookie"));
+        assert!(reject_reflected_credential("safe", &retained, token).is_ok());
+        assert!(reject_reflected_credential(token, &retained, token).is_err());
+        assert!(reject_reflected_credential(
+            "safe",
+            &BTreeMap::from([(
+                "location".into(),
+                format!("https://example.invalid/{token}")
+            )]),
+            token,
+        )
+        .is_err());
+        let options = remote(GithubRemoteResource::CommitStatuses);
+        let transcript = capture_github_remote_with(&options, |url| {
+            Ok(exchange(
+                url,
+                200,
+                r#"{"state":"pending","total_count":0,"statuses":[]}"#,
+                retained.clone(),
+            ))
+        })
+        .unwrap();
+        assert!(!serde_json::to_string(&transcript).unwrap().contains(token));
     }
 }

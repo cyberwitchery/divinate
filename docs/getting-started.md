@@ -72,6 +72,49 @@ repository-relative paths are also accepted. divinate has no local override
 file in this release because PATH covers the current machine-local requirement.
 do not put secrets in YAML. credential-like configuration keys are rejected.
 
+the divinate repository's own [`divinate.yaml`](../divinate.yaml) is a complete
+example. it configures the in-tree Cargo.lock and GitHub packs through
+repository-relative executable paths. the GitHub source needs an authenticated
+`gh` installation or `GITHUB_TOKEN`; neither credential is declared in YAML.
+
+an authenticated GitHub source is declared like any other pack source:
+
+```yaml
+packs:
+  cyberwitchery.github:
+    executable: divinate-pack-github
+
+sources:
+  github-branch-protection:
+    provider:
+      pack: cyberwitchery.github
+      collector: branch-protection
+    required: true
+  github-check-runs:
+    provider:
+      pack: cyberwitchery.github
+      collector: check-runs
+    required: true
+  github-commit-statuses:
+    provider:
+      pack: cyberwitchery.github
+      collector: commit-statuses
+    required: true
+```
+
+core obtains a token from `gh auth token`, then falls back to `GITHUB_TOKEN`.
+packs receive neither the token nor ambient environment. acquisition transcripts
+retain sanitized request metadata and exact response bodies.
+
+"observed GitHub revision results acceptable" considers both Checks API check
+runs and classic commit statuses for the same revision. it supports only when
+both populations are completely enumerated, at least one result exists, and
+every result is terminal and acceptable. `success`, plus the Checks API's
+`neutral` and `skipped` conclusions, are acceptable. failures contradict the
+claim. pending, unknown, absent, or incomplete results leave it insufficient.
+this is an observed-result claim; it does not assert that every
+branch-protection-required context ran.
+
 ## collect and evaluate
 
 ```sh
@@ -87,9 +130,10 @@ normal collection:
 5. evaluates the current scope; and
 6. writes `.evidence/dossiers/current.md`.
 
-the first release evaluation starts at the preceding release's commit time.
-later evaluations start at the former current evaluation time. the evaluation
-ends at collection time.
+the first release evaluation starts at the preceding release's commit time. a
+first repository-scoped evaluation starts at the unique Git root commit; a
+multiple-root history requires `--from`. later evaluations start at the former
+current evaluation time. the evaluation ends at collection time.
 
 when a release value is not unique, collection stops before committing the
 prepared increment:

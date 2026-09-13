@@ -78,7 +78,8 @@ protocol version 1 has four operations:
 
 - `describe` returns metadata, collectors, evaluators, source contracts,
   evaluator inputs, coverage propositions, and configuration shape.
-- `collect` returns a local command plan for core to execute and retain.
+- `collect` returns either a local command plan or one supported provider-aware
+  remote acquisition plan for core to execute and retain.
 - `normalize` converts retained command output into typed observation fields.
 - `evaluate` derives structured assertion fields from selected saved state.
 
@@ -120,7 +121,24 @@ coverage requirements core enforces. relevant zero-result collection runs remain
 available to evaluators.
 
 the examples under [`packs/`](../packs) include an sbom collector, a
-configuration collector, and a separately distributed evaluator.
+configuration collector, the in-tree GitHub source, and a separately distributed
+evaluator.
+
+the first remote plan is deliberately narrow:
+
+```json
+{"acquisition":{"provider":"github","resource":"commit_statuses","per_page":100,"max_pages":10}}
+```
+
+the only resources are branch protection, check runs, and commit statuses. the pack supplies no
+URL, headers, or credential. core derives the API URL from verified repository,
+branch, and revision context, injects authentication only for
+`https://api.github.com`, disables redirects, and captures pagination.
+
+the commit-status resource uses GitHub's combined-status endpoint. it returns
+the latest status for each context rather than the raw status history. Divinate
+still follows pagination and requires `total_count` to match the retained
+statuses before treating that mechanism as complete.
 
 ## execution and retained configuration
 
@@ -150,8 +168,9 @@ coverage. core computes assertion and derivation identity. legacy `id` and
 
 each coverage decision must name a declared proposition and equal core's own
 assessment. a supported coverage-backed assertion requires a non-empty interval
-and complete coverage for every declared proposition. core validates declared
-requirements but cannot detect a proposition the pack failed to declare.
+and complete coverage for every declared proposition. point-in-time support may
+instead resolve to a complete authoritative acquisition run. core validates
+declared requirements but cannot detect a proposition the pack failed to declare.
 
 ## provenance and security
 
@@ -160,13 +179,13 @@ permissions. divinate does not sandbox packs.
 
 each invocation retains executable digest, pack id and version, protocol version,
 operation, request, response, and content digests. collection invocations also
-retain the resulting execution id.
+retain the resulting execution id or acquisition transcript ids.
 
 packs cannot persist corpus files directly. core validates identities, references,
 coverage, and collisions before writing state. saved invocations and assertions
 verify without the pack. reevaluation executes the currently configured binary;
 reproducing an older derivation requires that older executable.
 
-protocol version 1 plans local commands only. authenticated remote collection
-requires a core-owned acquisition path. unknown versions and operations fail;
-there is no capability fallback.
+protocol version 1 also accepts the narrow provider-aware GitHub acquisition
+plan above. it is not arbitrary authenticated HTTP. unknown providers,
+resources, versions, and operations fail; there is no capability fallback.
