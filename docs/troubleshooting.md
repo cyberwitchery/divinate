@@ -78,6 +78,15 @@ permission than public repository reads. `status` reports unauthenticated,
 permission-denied, rate-limited, and incomplete acquisitions as gaps rather than
 interpreting them as absent protection or checks.
 
+## azure devops authentication or permission failure
+
+authenticate Azure CLI with `az login`, or expose a PAT through
+`AZURE_DEVOPS_EXT_PAT` for the Divinate process. do not put a PAT in YAML or pack
+configuration. repository lookup and branch-policy reads require Azure DevOps
+code access. unauthenticated, permission-denied, missing, redirected, and
+incomplete responses remain explicit gaps; none means that the branch has no
+policies.
+
 ## unknown assertion or execution id
 
 `provenance` reads one saved evaluation. pass the label that produced the
@@ -95,6 +104,8 @@ recover an observation id or assertion id.
 do not edit acquisition, execution, invocation, corpus, or blob files by hand.
 restore the complete state directory from a known archive and run `divinate
 verify` again. a partial copy is a common cause of missing-object failures.
+`corpus.json` is not required for projectless `run` state, but every retained
+execution transcript must still resolve its executable, input, and output blobs.
 
 ## a command cannot see normal environment settings
 

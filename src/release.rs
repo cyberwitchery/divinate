@@ -454,7 +454,7 @@ fn validate_repository_identity(repository: &Path, expected: &str) -> Result<()>
     Ok(())
 }
 
-/// derive the canonical github identity from a checkout's origin.
+/// derive the canonical repository identity from a checkout's origin.
 ///
 /// # Errors
 ///
@@ -474,9 +474,9 @@ pub fn repository_identity(repository: &Path) -> Result<String> {
     }
     let origin = String::from_utf8(output.stdout)
         .map_err(|_| Error::Provenance("git origin is not utf-8".into()))?;
-    github_identity(origin.trim()).ok_or_else(|| {
+    repository_identity_from_origin(origin.trim()).ok_or_else(|| {
         Error::Provenance(format!(
-            "git origin {:?} is not a supported github url",
+            "git origin {:?} is not a supported repository URL",
             origin.trim()
         ))
     })
@@ -679,6 +679,48 @@ fn github_identity(origin: &str) -> Option<String> {
     (path.split('/').count() == 2).then(|| format!("github:{path}"))
 }
 
+fn repository_identity_from_origin(origin: &str) -> Option<String> {
+    github_identity(origin).or_else(|| azure_devops_identity(origin))
+}
+
+fn azure_devops_identity(origin: &str) -> Option<String> {
+    if let Some(path) = origin
+        .strip_prefix("git@ssh.dev.azure.com:v3/")
+        .or_else(|| origin.strip_prefix("ssh://git@ssh.dev.azure.com/v3/"))
+    {
+        let mut parts = path.trim_matches('/').split('/');
+        let identity = azure_devops_identity_parts(parts.next()?, parts.next()?, parts.next()?)?;
+        return parts.next().is_none().then_some(identity);
+    }
+    if let Some(path) = origin.strip_prefix("https://dev.azure.com/") {
+        let (organization, remainder) = path.split_once('/')?;
+        let (project, repository) = remainder.split_once("/_git/")?;
+        return azure_devops_identity_parts(organization, project, repository);
+    }
+    if let Some(path) = origin.strip_prefix("https://") {
+        let (organization, remainder) = path.split_once(".visualstudio.com/")?;
+        let (project, repository) = remainder.split_once("/_git/")?;
+        return azure_devops_identity_parts(organization, project, repository);
+    }
+    None
+}
+
+fn azure_devops_identity_parts(
+    organization: &str,
+    project: &str,
+    repository: &str,
+) -> Option<String> {
+    let repository = repository.strip_suffix(".git").unwrap_or(repository);
+    let valid = [organization, project, repository].iter().all(|part| {
+        !part.is_empty()
+            && !matches!(*part, "." | "..")
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    });
+    valid.then(|| format!("azure-devops:{organization}/{project}/{repository}"))
+}
+
 fn validate_request(request: &ReleaseRequest) -> Result<()> {
     if request.repository.trim().is_empty()
         || request.base_release.trim().is_empty()
@@ -861,4 +903,48 @@ fn gate_result_bytes(
 
 fn provenance<T>(message: impl Into<String>) -> Result<T> {
     Err(Error::Provenance(message.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::repository_identity_from_origin;
+
+    #[test]
+    fn repository_origins_have_stable_provider_specific_identities() {
+        for origin in [
+            "git@github.com:cyberwitchery/divinate.git",
+            "https://github.com/cyberwitchery/divinate.git",
+            "ssh://git@github.com/cyberwitchery/divinate.git",
+        ] {
+            assert_eq!(
+                repository_identity_from_origin(origin).as_deref(),
+                Some("github:cyberwitchery/divinate")
+            );
+        }
+        for origin in [
+            "git@ssh.dev.azure.com:v3/ibw-ag/uTraxx/uTraxx.Platform",
+            "ssh://git@ssh.dev.azure.com/v3/ibw-ag/uTraxx/uTraxx.Platform",
+            "https://dev.azure.com/ibw-ag/uTraxx/_git/uTraxx.Platform",
+            "https://ibw-ag.visualstudio.com/uTraxx/_git/uTraxx.Platform",
+        ] {
+            assert_eq!(
+                repository_identity_from_origin(origin).as_deref(),
+                Some("azure-devops:ibw-ag/uTraxx/uTraxx.Platform")
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_or_ambiguous_origins_are_rejected() {
+        for origin in [
+            "https://dev.azure.com/ibw-ag/uTraxx/uTraxx.Platform",
+            "https://dev.azure.com/ibw-ag/uTraxx/_git/one/extra",
+            "git@ssh.dev.azure.com:v3/ibw-ag/uTraxx",
+            "git@ssh.dev.azure.com:v3/ibw-ag/uTraxx/one/extra",
+            "https://example.invalid/ibw-ag/uTraxx/_git/uTraxx.Platform",
+            "azure-devops:ibw-ag/uTraxx/uTraxx.Platform",
+        ] {
+            assert_eq!(repository_identity_from_origin(origin), None, "{origin}");
+        }
+    }
 }

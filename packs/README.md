@@ -7,6 +7,9 @@ each directory contains one executable implementing pack protocol version 1. see
   exact Cargo.lock dependency inventory and derives a repository-scoped claim.
 - `github` plans branch-protection, check-run, and commit-status reads. core performs the
   authenticated requests; the pack receives only retained response bytes.
+- `azure-devops` plans current branch-policy reads. core resolves the repository
+  ID, authenticates, and retains the exact Azure responses without exposing the
+  credential to the pack.
 - `sbom-collector` collects and normalizes `sbom-diff` output.
 - `config-collector` shows a configuration-driven collector.
 - `external-evaluator` evaluates observations produced by another pack.

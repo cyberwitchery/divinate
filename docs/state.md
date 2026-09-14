@@ -69,6 +69,8 @@ configuration keys fail validation. plain executable names resolve through
 repository identity is explicit in YAML because it is security-relevant intent.
 init infers it from Git once, and later commands verify it against the checkout.
 `.evidence/repository.json` binds local historical state to the same identity.
+supported canonical forms are `github:owner/repository` and
+`azure-devops:organization/project/repository`.
 
 there is no `divinate.local.yaml` in this version. PATH covers the current need
 for machine-local executable selection without allowing an unreviewed file to
@@ -79,7 +81,7 @@ change evidence semantics.
 - `repository.json` binds the state directory to its repository identity.
 - `contracts.json` records source-contract invalidations used in evaluation.
 - `corpus.json` contains collection runs, observations, and normalized source
-  documents.
+  documents. it is absent from projectless execution-only state.
 - `project-configs/` contains exact content-addressed snapshots of YAML used by
   collection and evaluation.
 - `collection-cycles/` links one configuration digest and source results to the
@@ -94,6 +96,12 @@ change evidence semantics.
   evaluation's configuration reference.
 - `dossiers/` contains JSON dossiers and their Markdown rendering.
 - `views/` contains JSON and Markdown reviews and due-diligence responses.
+
+`verify` checks every immutable object present. without `corpus.json`, it checks
+execution and acquisition transcript integrity, blobs, pack invocations, and
+their direct references. with a corpus, it additionally verifies the complete
+observation, collection, configuration, and evaluation graph. verification does
+not create missing project objects.
 
 ## configuration provenance
 

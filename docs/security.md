@@ -75,6 +75,20 @@ none is interpreted as an empty protected-branch, check-run, or commit-status
 population. retained
 GitHub evidence verifies offline without a network connection or credential.
 
+for Azure DevOps, core asks Azure CLI for an in-memory access token and falls
+back to the standard `AZURE_DEVOPS_EXT_PAT` environment variable. the helper is
+operational plumbing and is not captured as an execution. PAT authentication is
+constructed in memory. the raw credential and Authorization value are rejected
+if reflected in a response.
+
+Azure DevOps packs can currently request only the named branch-policy resource.
+core constructs URLs under the verified organization's
+`https://dev.azure.com` path, resolves the repository name to Azure's repository
+ID, and fetches policies applying to the configured branch. only pagination and
+diagnostic response headers are retained. redirects are disabled. permission
+failure remains an evidence gap rather than evidence that no policy exists.
+retained Azure evidence verifies without Azure CLI, a PAT, or network access.
+
 ## integrity limits
 
 sha-256 addressing and offline verification detect changes to retained bytes and

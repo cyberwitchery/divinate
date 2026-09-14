@@ -121,24 +121,33 @@ coverage requirements core enforces. relevant zero-result collection runs remain
 available to evaluators.
 
 the examples under [`packs/`](../packs) include an sbom collector, a
-configuration collector, the in-tree GitHub source, and a separately distributed
-evaluator.
+configuration collector, the in-tree GitHub and Azure DevOps sources, and a
+separately distributed evaluator.
 
-the first remote plan is deliberately narrow:
+remote plans are provider-aware and deliberately narrow:
 
 ```json
 {"acquisition":{"provider":"github","resource":"commit_statuses","per_page":100,"max_pages":10}}
+{"acquisition":{"provider":"azure_devops","resource":"branch_policy","max_pages":10}}
 ```
 
-the only resources are branch protection, check runs, and commit statuses. the pack supplies no
-URL, headers, or credential. core derives the API URL from verified repository,
-branch, and revision context, injects authentication only for
-`https://api.github.com`, disables redirects, and captures pagination.
+GitHub resources are branch protection, check runs, and commit statuses. Azure
+DevOps currently exposes only branch policy. the pack supplies no URL, headers,
+or credential. core derives each API URL from verified repository context,
+scopes authentication to the provider host, disables redirects, and captures
+pagination.
 
 the commit-status resource uses GitHub's combined-status endpoint. it returns
 the latest status for each context rather than the raw status history. Divinate
 still follows pagination and requires `total_count` to match the retained
 statuses before treating that mechanism as complete.
+
+the Azure DevOps branch-policy resource first resolves the configured repository
+name to Azure's repository ID, then calls the Git policy-configurations endpoint
+for the fully qualified branch ref. both responses and every continuation page
+are retained. its contract establishes the current configuration Azure DevOps
+reported for that repository branch at acquisition time. it does not establish
+historical review or build enforcement.
 
 ## execution and retained configuration
 
@@ -186,6 +195,7 @@ coverage, and collisions before writing state. saved invocations and assertions
 verify without the pack. reevaluation executes the currently configured binary;
 reproducing an older derivation requires that older executable.
 
-protocol version 1 also accepts the narrow provider-aware GitHub acquisition
-plan above. it is not arbitrary authenticated HTTP. unknown providers,
-resources, versions, and operations fail; there is no capability fallback.
+protocol version 1 accepts only the named provider-aware GitHub and Azure DevOps
+acquisition plans above. it is not arbitrary authenticated HTTP. unknown
+providers, resources, versions, and operations fail; there is no capability
+fallback.

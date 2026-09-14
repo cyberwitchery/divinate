@@ -1640,10 +1640,16 @@ fn prepare_remote_pack_collection(
     context: &serde_json::Value,
 ) -> Result<PreparedPackCollection> {
     let transcript = capture_remote_plan(plan, acquisition_plan, context)?;
+    if transcript.contents.collector_contract != plan.adapter {
+        return Err(Error::Provenance(format!(
+            "remote source adapter {} does not match acquisition contract {}",
+            plan.adapter, transcript.contents.collector_contract
+        )));
+    }
     let branch = plan
         .subject
         .qualifier("branch")
-        .ok_or_else(|| Error::Invalid("github source plan has no branch identity".into()))?;
+        .ok_or_else(|| Error::Invalid("remote source plan has no branch identity".into()))?;
     let interval = transcript.contents.requested_scope.clone();
     let transcript_ids = vec![transcript.id.clone()];
     let planned =
@@ -1730,45 +1736,81 @@ fn capture_remote_plan(
     acquisition_plan: &divinate::pack::RemoteAcquisitionPlan,
     context: &serde_json::Value,
 ) -> Result<AcquisitionTranscript> {
-    let repository = context["repository"]
+    let repository_identity = context["repository"]
         .as_str()
-        .and_then(|value| value.strip_prefix("github:"))
-        .ok_or_else(|| {
-            Error::Invalid("github source requires github repository identity".into())
-        })?;
+        .ok_or_else(|| Error::Invalid("remote source requires repository identity".into()))?;
     let branch = context["branch"]
         .as_str()
-        .ok_or_else(|| Error::Invalid("github source requires branch context".into()))?;
+        .ok_or_else(|| Error::Invalid("remote source requires branch context".into()))?;
     let revision = context["revision"]
         .as_str()
-        .ok_or_else(|| Error::Invalid("github source requires revision context".into()))?;
+        .ok_or_else(|| Error::Invalid("remote source requires revision context".into()))?;
     let interval = serde_json::from_value(context["interval"].clone())
-        .map_err(|error| Error::Invalid(format!("github source interval is invalid: {error}")))?;
-    let divinate::pack::RemoteAcquisitionPlan::Github {
-        resource,
-        per_page,
-        max_pages,
-    } = acquisition_plan;
-    let resource = match resource {
-        divinate::pack::GithubResource::BranchProtection => {
-            acquisition::GithubRemoteResource::BranchProtection
+        .map_err(|error| Error::Invalid(format!("remote source interval is invalid: {error}")))?;
+    match acquisition_plan {
+        divinate::pack::RemoteAcquisitionPlan::Github {
+            resource,
+            per_page,
+            max_pages,
+        } => {
+            let repository = repository_identity.strip_prefix("github:").ok_or_else(|| {
+                Error::Invalid("github source requires github repository identity".into())
+            })?;
+            let resource = match resource {
+                divinate::pack::GithubResource::BranchProtection => {
+                    acquisition::GithubRemoteResource::BranchProtection
+                }
+                divinate::pack::GithubResource::CheckRuns => {
+                    acquisition::GithubRemoteResource::CheckRuns
+                }
+                divinate::pack::GithubResource::CommitStatuses => {
+                    acquisition::GithubRemoteResource::CommitStatuses
+                }
+            };
+            acquisition::capture_github_remote(&acquisition::GithubRemoteCapture {
+                repository: repository.into(),
+                branch: branch.into(),
+                revision: revision.into(),
+                subject: plan.subject.clone(),
+                interval,
+                resource,
+                per_page: *per_page,
+                max_pages: *max_pages,
+                captured_at: parse_timestamp(&plan.observed_at)?,
+            })
         }
-        divinate::pack::GithubResource::CheckRuns => acquisition::GithubRemoteResource::CheckRuns,
-        divinate::pack::GithubResource::CommitStatuses => {
-            acquisition::GithubRemoteResource::CommitStatuses
+        divinate::pack::RemoteAcquisitionPlan::AzureDevops {
+            resource: divinate::pack::AzureDevopsResource::BranchPolicy,
+            max_pages,
+        } => {
+            let identity = repository_identity
+                .strip_prefix("azure-devops:")
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "azure devops source requires azure-devops repository identity".into(),
+                    )
+                })?;
+            let parts = identity.split('/').collect::<Vec<_>>();
+            let [organization, project, repository] = parts.as_slice() else {
+                return Err(Error::Invalid(
+                    "azure devops repository identity must be organization/project/repository"
+                        .into(),
+                ));
+            };
+            acquisition::capture_azure_devops_branch_policy(
+                &acquisition::AzureDevopsRemoteCapture {
+                    organization: (*organization).into(),
+                    project: (*project).into(),
+                    repository: (*repository).into(),
+                    branch: branch.into(),
+                    subject: plan.subject.clone(),
+                    interval,
+                    max_pages: *max_pages,
+                    captured_at: parse_timestamp(&plan.observed_at)?,
+                },
+            )
         }
-    };
-    acquisition::capture_github_remote(&acquisition::GithubRemoteCapture {
-        repository: repository.into(),
-        branch: branch.into(),
-        revision: revision.into(),
-        subject: plan.subject.clone(),
-        interval,
-        resource,
-        per_page: *per_page,
-        max_pages: *max_pages,
-        captured_at: parse_timestamp(&plan.observed_at)?,
-    })
+    }
 }
 
 fn normalize_remote_exchanges(
@@ -1794,7 +1836,7 @@ fn normalize_remote_exchanges(
             format: plan.adapter.clone(),
             id: format!("src_{}", &exchange.response.body_sha256[..20]),
             media_type: "application/json".into(),
-            path: format!("github-response:{}", exchange.response.body_sha256),
+            path: format!("remote-response:{}", exchange.response.body_sha256),
             sha256: exchange.response.body_sha256.clone(),
         };
         let (normalized, normalization) = divinate::pack::normalize(
@@ -2565,39 +2607,96 @@ fn evaluation_in_project(
 }
 
 fn verify_state(state: &std::path::Path) -> Result<()> {
-    let corpus = load_corpus(&divinate::workflow::corpus_path(state))?;
+    let corpus_path = divinate::workflow::corpus_path(state);
+    let corpus = corpus_path
+        .is_file()
+        .then(|| load_corpus(&corpus_path))
+        .transpose()?;
     let acquisitions = divinate::workflow::load_transcripts(state).map_err(provenance_error)?;
     let executions = divinate::workflow::load_executions(state).map_err(provenance_error)?;
     let blobs = divinate::workflow::load_blobs(state).map_err(provenance_error)?;
     let registry = divinate::workflow::load_registry(state)?;
-    let acquisition_links =
-        divinate::provenance::verify_collection_links(&corpus, &acquisitions, &registry)
-            .map_err(provenance_error)?;
-    let execution_links =
-        divinate::provenance::verify_execution_links(&corpus, &executions, &blobs)
-            .map_err(provenance_error)?;
+    for transcript in &acquisitions {
+        let assessment = acquisition::assess(transcript, &registry);
+        if assessment.integrity != acquisition::IntegrityStatus::Verified {
+            return Err(Error::Provenance(format!(
+                "acquisition transcript {} failed integrity: {}",
+                transcript.id,
+                assessment.reasons.join("; ")
+            )));
+        }
+    }
     for transcript in &executions {
         execution::verify(transcript, &blobs).map_err(provenance_error)?;
     }
     let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
-    divinate::pack::verify_observation_links(&corpus, &pack_invocations, &executions, &blobs)
-        .map_err(provenance_error)?;
     for invocation in &pack_invocations {
         divinate::pack::verify(invocation, &blobs).map_err(provenance_error)?;
+        divinate::pack::verify_transcript_links(invocation, &executions, &acquisitions)
+            .map_err(provenance_error)?;
     }
-    let configured_cycles = divinate::workflow::verify_configuration_provenance(
-        state,
-        &corpus,
-        &executions,
-        &pack_invocations,
-    )
-    .map_err(provenance_error)?;
+    let (corpus_status, acquisition_links, execution_links, configured_cycles) =
+        if let Some(corpus) = &corpus {
+            let acquisition_links =
+                divinate::provenance::verify_collection_links(corpus, &acquisitions, &registry)
+                    .map_err(provenance_error)?;
+            let execution_links =
+                divinate::provenance::verify_execution_links(corpus, &executions, &blobs)
+                    .map_err(provenance_error)?;
+            divinate::pack::verify_observation_links(
+                corpus,
+                &pack_invocations,
+                &executions,
+                &blobs,
+            )
+            .map_err(provenance_error)?;
+            let configured_cycles = divinate::workflow::verify_configuration_provenance(
+                state,
+                corpus,
+                &executions,
+                &pack_invocations,
+            )
+            .map_err(provenance_error)?;
+            (
+                "present",
+                acquisition_links.len(),
+                execution_links.len(),
+                configured_cycles,
+            )
+        } else {
+            if !divinate::workflow::load_collection_cycles(state)?.is_empty() {
+                return Err(Error::Provenance(
+                    "collection cycles are present but corpus.json is absent".into(),
+                ));
+            }
+            let assertions = state.join("assertions");
+            if assertions.is_dir()
+                && std::fs::read_dir(&assertions)
+                    .map_err(|source| Error::Io {
+                        path: assertions.clone(),
+                        source,
+                    })?
+                    .filter_map(std::result::Result::ok)
+                    .any(|entry| {
+                        entry
+                            .path()
+                            .extension()
+                            .is_some_and(|value| value == "json")
+                    })
+            {
+                return Err(Error::Provenance(
+                    "saved evaluations are present but corpus.json is absent".into(),
+                ));
+            }
+            ("absent", 0, 0, 0)
+        };
     print_json(&serde_json::json!({
         "status": "verified",
+        "corpus": corpus_status,
         "acquisition_transcripts": acquisitions.len(),
-        "collection_acquisition_links": acquisition_links.len(),
+        "collection_acquisition_links": acquisition_links,
         "execution_transcripts": executions.len(),
-        "observation_execution_links": execution_links.len(),
+        "observation_execution_links": execution_links,
         "pack_invocations": pack_invocations.len(),
         "configured_collection_cycles": configured_cycles,
         "content_blobs": blobs.len(),

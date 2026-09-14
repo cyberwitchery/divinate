@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""plan and interpret current azure devops branch-policy evidence."""
+
+import json
+import sys
+
+
+PACK_ID = "cyberwitchery.azure-devops"
+PACK_VERSION = "0.1.0"
+MINIMUM_REVIEWERS = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"
+BUILD_VALIDATION = "0609b952-1397-4640-95ec-e00a01b2c241"
+
+
+def fail(message):
+    print(json.dumps({"ok": False, "error": message}, separators=(",", ":")))
+    raise SystemExit(0)
+
+
+def reply(result):
+    print(json.dumps({"ok": True, "result": result}, separators=(",", ":")))
+
+
+def subject(context):
+    return {
+        "kind": "repository",
+        "id": context["repository"],
+        "repository": context["repository"],
+        "branch": context["branch"],
+        "revision": context["revision"],
+    }
+
+
+def normalized_policy(policy):
+    if not isinstance(policy, dict) or not isinstance(policy.get("id"), int):
+        fail("azure devops branch-policy response contains an invalid policy")
+    policy_type = policy.get("type") or {}
+    settings = policy.get("settings") or {}
+    scopes = settings.get("scope") or []
+    if not isinstance(scopes, list):
+        fail("azure devops branch policy has an invalid scope")
+    return {
+        "id": policy["id"],
+        "type_id": policy_type.get("id"),
+        "type_name": policy_type.get("displayName"),
+        "enabled": bool(policy.get("isEnabled", False)),
+        "blocking": bool(policy.get("isBlocking", False)),
+        "minimum_approver_count": settings.get("minimumApproverCount"),
+        "creator_vote_counts": settings.get("creatorVoteCounts"),
+        "reset_on_source_push": settings.get("resetOnSourcePush"),
+        "reset_rejections_on_source_push": settings.get("resetRejectionsOnSourcePush"),
+        "block_last_pusher_vote": settings.get("blockLastPusherVote"),
+        "build_definition_id": settings.get("buildDefinitionId"),
+        "status_name": settings.get("statusName"),
+        "scopes": sorted(
+            [
+                {
+                    "repository_id": scope.get("repositoryId"),
+                    "ref_name": scope.get("refName"),
+                    "match_kind": scope.get("matchKind"),
+                }
+                for scope in scopes
+                if isinstance(scope, dict)
+            ],
+            key=lambda item: (
+                item.get("repository_id") or "",
+                item.get("ref_name") or "",
+                item.get("match_kind") or "",
+            ),
+        ),
+    }
+
+
+def normalize(payload, branch):
+    policies = payload.get("value")
+    if not isinstance(policies, list):
+        fail("azure devops branch-policy response has no value array")
+    normalized = [normalized_policy(policy) for policy in policies]
+    normalized.sort(key=lambda item: item["id"])
+    return {
+        "claim_key": "azure-devops:branch-policy",
+        "data": {"branch": branch, "policies": normalized},
+        "evidence_class": "configured_intent",
+        "kind": "configuration_snapshot",
+        "severity": None,
+        "status": None,
+    }
+
+
+def normalize_repository(payload):
+    if not isinstance(payload.get("id"), str) or not isinstance(payload.get("name"), str):
+        fail("azure devops repository response has no identity")
+    return {
+        "claim_key": "azure-devops:repository-binding",
+        "data": {
+            "repository_id": payload["id"],
+            "repository_name": payload["name"],
+        },
+        "evidence_class": "configured_intent",
+        "kind": "configuration_snapshot",
+        "severity": None,
+        "status": None,
+    }
+
+
+def evidence_use(observation):
+    return {
+        "observation_id": observation["id"],
+        "source_id": observation["provenance"]["source_id"],
+        "reason": "Azure DevOps reported the policies applying to this branch",
+    }
+
+
+def assertion(assertion_type, claim, evaluation):
+    target = evaluation["target"]
+    return {
+        "assertion_type": assertion_type,
+        "claim": claim,
+        "subject": {
+            "repository": target["repository"],
+            "branch": target["branch"],
+            "release": None,
+            "from": target["from"],
+            "until": target["until"],
+        },
+        "outcome": "insufficient_evidence",
+        "evaluated_at": evaluation["evaluated_at"],
+        "validity": {
+            "basis": "point_in_time",
+            "at": evaluation["evaluated_at"],
+            "from": None,
+            "through": None,
+            "fresh_until": None,
+        },
+        "support": [],
+        "contradictions": [],
+        "considered": [],
+        "missing": [],
+        "identity_joins": [],
+        "reasoning": [],
+        "limitations": [
+            "current configuration does not establish historical policy enforcement"
+        ],
+        "coverage": [],
+    }
+
+
+def latest_observations(evaluation):
+    target = evaluation["target"]
+    matching = [
+        item
+        for item in (evaluation.get("corpus") or {}).get("observations") or []
+        if item.get("claim_key") == "azure-devops:branch-policy"
+        and (item.get("subject") or {}).get("id") == target["repository"]
+        and (item.get("subject") or {}).get("branch") == target["branch"]
+    ]
+    if not matching:
+        return []
+    observed_at = max(item.get("observed_at", "") for item in matching)
+    return [item for item in matching if item.get("observed_at") == observed_at]
+
+
+def complete_authoritative(evaluation, observations):
+    if not observations:
+        return False
+    runs = {
+        item.get("id"): item
+        for item in (evaluation.get("corpus") or {}).get("collections") or []
+    }
+    return all(
+        (runs.get(item.get("collection_run_id")) or {}).get("outcome") == "complete"
+        and "branch_configuration"
+        in ((runs.get(item.get("collection_run_id")) or {}).get("authority") or [])
+        and ((runs.get(item.get("collection_run_id")) or {}).get("enumeration") or {}).get(
+            "terminal_page_reached"
+        )
+        and not ((runs.get(item.get("collection_run_id")) or {}).get("enumeration") or {}).get(
+            "next_token_present"
+        )
+        for item in observations
+    )
+
+
+def evaluate(evaluation, evaluator):
+    definitions = {
+        "blocking-policy": (
+            "azure_devops_blocking_branch_policy_configured",
+            "the Azure DevOps branch has at least one enabled blocking policy",
+            lambda policy: policy["enabled"] and policy["blocking"],
+        ),
+        "approving-review": (
+            "azure_devops_approving_review_configured",
+            "the Azure DevOps branch requires at least one approving reviewer",
+            lambda policy: policy["type_id"] == MINIMUM_REVIEWERS
+            and policy["enabled"]
+            and policy["blocking"]
+            and isinstance(policy["minimum_approver_count"], int)
+            and policy["minimum_approver_count"] > 0,
+        ),
+        "build-validation": (
+            "azure_devops_blocking_build_validation_configured",
+            "the Azure DevOps branch has enabled blocking build validation",
+            lambda policy: policy["type_id"] == BUILD_VALIDATION
+            and policy["enabled"]
+            and policy["blocking"],
+        ),
+    }
+    if evaluator not in definitions:
+        fail("unsupported evaluator")
+    assertion_type, claim, predicate = definitions[evaluator]
+    result = assertion(assertion_type, claim, evaluation)
+    observations = latest_observations(evaluation)
+    policies = [
+        policy
+        for observation in observations
+        for policy in observation["data"].get("policies", [])
+    ]
+    uses = [evidence_use(observation) for observation in observations]
+    evidence_ids = [observation["id"] for observation in observations]
+    if not complete_authoritative(evaluation, observations):
+        result["considered"] = uses
+        result["missing"].append(
+            {
+                "requirement": "complete current Azure DevOps branch-policy configuration",
+                "subject": evaluation["target"]["repository"],
+                "reason": "no complete authoritative branch-policy enumeration is available",
+            }
+        )
+        return result
+    matching = [policy for policy in policies if predicate(policy)]
+    result["reasoning"].append(
+        {
+            "code": f"azure_devops_{evaluator.replace('-', '_')}",
+            "conclusion": (
+                f"Azure DevOps reported {len(policies)} applicable policies; "
+                f"{len(matching)} satisfied this current-configuration predicate"
+            ),
+            "evidence_ids": evidence_ids,
+        }
+    )
+    if matching:
+        result["outcome"] = "supported"
+        result["support"] = uses
+    else:
+        result["outcome"] = "contradicted"
+        result["contradictions"] = uses
+    return result
+
+
+try:
+    request = json.load(sys.stdin)
+except (json.JSONDecodeError, UnicodeDecodeError):
+    fail("request is not valid json")
+if request.get("protocol_version") != 1:
+    fail("unsupported protocol version")
+
+operation = request.get("operation")
+if operation == "describe":
+    reply(
+        {
+            "id": PACK_ID,
+            "version": PACK_VERSION,
+            "protocol_version": 1,
+            "collectors": ["branch-policy"],
+            "evaluators": ["blocking-policy", "approving-review", "build-validation"],
+            "evaluator_inputs": {
+                "blocking-policy": ["azure-devops:branch-policy"],
+                "approving-review": ["azure-devops:branch-policy"],
+                "build-validation": ["azure-devops:branch-policy"],
+            },
+            "evaluator_propositions": {
+                "blocking-policy": ["branch_configuration"],
+                "approving-review": ["branch_configuration"],
+                "build-validation": ["branch_configuration"],
+            },
+            "source_contracts": ["azure-devops-branch-policy/v1"],
+            "configuration_schema": {},
+        }
+    )
+elif operation == "collect":
+    collection = request.get("input") or {}
+    if collection.get("collector") != "branch-policy":
+        fail("unsupported collector")
+    context = collection.get("context") or {}
+    reply(
+        {
+            "adapter": "azure-devops-branch-policy/v1",
+            "subject": subject(context),
+            "observed_at": context["observed_at"],
+            "acquisition": {
+                "provider": "azure_devops",
+                "resource": "branch_policy",
+                "max_pages": 10,
+            },
+        }
+    )
+elif operation == "normalize":
+    source = (request.get("input") or {}).get("source") or {}
+    try:
+        payload = json.loads(source.get("content", ""))
+    except json.JSONDecodeError:
+        fail("azure devops response is not valid json")
+    source_subject = (request.get("input") or {}).get("subject") or {}
+    if (request.get("input") or {}).get("adapter") != "azure-devops-branch-policy/v1":
+        fail("unsupported adapter")
+    if isinstance(payload.get("value"), list):
+        reply(normalize(payload, source_subject.get("branch")))
+    else:
+        reply(normalize_repository(payload))
+elif operation == "evaluate":
+    evaluation = request.get("input") or {}
+    reply([evaluate(evaluation, evaluation.get("evaluator"))])
+else:
+    fail("unsupported operation")

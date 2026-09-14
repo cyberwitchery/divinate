@@ -16,5 +16,8 @@
 - dogfood committed configuration with a repository-scoped Cargo.lock source
 - collect authenticated GitHub branch protection, check runs, and commit
   statuses through credential-safe core acquisition
+- verify projectless execution state without inventing a corpus or repository
+- support canonical Azure DevOps repository identity and current branch-policy
+  evidence through credential-safe core acquisition
 - remove the scanner-specific `collect release` compatibility command
 - allow repository-scoped evaluation without inventing a release

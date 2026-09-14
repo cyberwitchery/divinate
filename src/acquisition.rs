@@ -31,8 +31,12 @@ pub const GITHUB_BRANCH_PROTECTION_CONTRACT: &str = "github-branch-protection/v1
 pub const GITHUB_CHECK_RUNS_CONTRACT: &str = "github-check-runs/v1";
 /// latest classic commit status for each context on one exact repository revision.
 pub const GITHUB_COMMIT_STATUSES_CONTRACT: &str = "github-commit-statuses/v1";
+/// current azure devops policies that apply to one repository branch.
+pub const AZURE_DEVOPS_BRANCH_POLICY_CONTRACT: &str = "azure-devops-branch-policy/v1";
 
 const GITHUB_API_ORIGIN: &str = "https://api.github.com";
+const AZURE_DEVOPS_API_ORIGIN: &str = "https://dev.azure.com";
+const AZURE_DEVOPS_RESOURCE: &str = "499b84ac-1321-427f-aa17-267ca6975798";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// the github resources that core can acquire for packs.
@@ -52,6 +56,19 @@ pub struct GithubRemoteCapture {
     pub interval: TimeRange,
     pub resource: GithubRemoteResource,
     pub per_page: u16,
+    pub max_pages: u16,
+    pub captured_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone)]
+/// one provider-aware azure devops acquisition requested by a pack.
+pub struct AzureDevopsRemoteCapture {
+    pub organization: String,
+    pub project: String,
+    pub repository: String,
+    pub branch: String,
+    pub subject: Subject,
+    pub interval: TimeRange,
     pub max_pages: u16,
     pub captured_at: OffsetDateTime,
 }
@@ -685,6 +702,377 @@ fn classify_github_failure(
     }
 }
 
+/// acquire the current branch policy from azure devops with credentials held by core.
+///
+/// # Errors
+///
+/// returns an error when the request context is invalid, no credential is
+/// available, or the provider cannot be reached.
+pub fn capture_azure_devops_branch_policy(
+    options: &AzureDevopsRemoteCapture,
+) -> Result<AcquisitionTranscript> {
+    validate_azure_devops_remote(options)?;
+    let credential = azure_devops_credential()?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+    capture_azure_devops_branch_policy_with(options, |url| {
+        azure_devops_get(&agent, url, &options.organization, &credential)
+    })
+}
+
+fn capture_azure_devops_branch_policy_with<F>(
+    options: &AzureDevopsRemoteCapture,
+    mut fetch: F,
+) -> Result<AcquisitionTranscript>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    validate_azure_devops_remote(options)?;
+    let captured_at = format_time(options.captured_at)?;
+    let initial_url = format!(
+        "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/repositories/{}?api-version=7.1",
+        percent_encode(&options.organization),
+        percent_encode(&options.project),
+        percent_encode(&options.repository),
+    );
+    let mut url = initial_url.clone();
+    let mut exchanges = Vec::new();
+    let termination = loop {
+        ensure_azure_devops_url(&url, &options.organization)?;
+        let exchange = fetch(&url)?;
+        let status = exchange.response.status;
+        let next = azure_devops_next_url(&url, &exchange.response.headers);
+        let body = exchange.response.body.clone();
+        let headers = exchange.response.headers.clone();
+        exchanges.push(exchange);
+        if status != 200 {
+            break classify_azure_devops_failure(status, &body, &headers);
+        }
+        if exchanges.len() == 1 {
+            let repository: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+                Error::Invalid(format!(
+                    "azure devops repository response is not JSON: {error}"
+                ))
+            })?;
+            let id = repository
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| is_uuid(id))
+                .ok_or_else(|| {
+                    Error::Invalid("azure devops repository response has no valid id".into())
+                })?;
+            let name = repository
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    Error::Invalid("azure devops repository response has no name".into())
+                })?;
+            if name != options.repository {
+                return Err(Error::Provenance(format!(
+                    "azure devops resolved repository {:?}, not {:?}",
+                    name, options.repository
+                )));
+            }
+            url = format!(
+                "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/policy/configurations?repositoryId={}&refName={}&%24top=100&api-version=7.1",
+                percent_encode(&options.organization),
+                percent_encode(&options.project),
+                percent_encode(id),
+                percent_encode(&format!("refs/heads/{}", options.branch)),
+            );
+            continue;
+        }
+        if let Some(next_url) = next {
+            if exchanges.len().saturating_sub(1) == usize::from(options.max_pages) {
+                break AcquisitionTermination::Truncated { next_url };
+            }
+            url = next_url;
+        } else {
+            break AcquisitionTermination::Exhausted;
+        }
+    };
+    seal_transcript(TranscriptContents {
+        collector_contract: AZURE_DEVOPS_BRANCH_POLICY_CONTRACT.into(),
+        collector_version: env!("CARGO_PKG_VERSION").into(),
+        subject: options.subject.clone(),
+        proposition: Proposition::BranchConfiguration,
+        requested_scope: options.interval.clone(),
+        captured_at,
+        initial_request: HttpRequest {
+            method: "GET".into(),
+            url: initial_url,
+        },
+        exchanges,
+        termination,
+    })
+}
+
+fn validate_azure_devops_remote(options: &AzureDevopsRemoteCapture) -> Result<()> {
+    if options.max_pages == 0 || options.max_pages > 1_000 {
+        return Err(Error::Invalid(
+            "azure devops max-pages must be between 1 and 1000".into(),
+        ));
+    }
+    for (label, value) in [
+        ("organization", options.organization.as_str()),
+        ("project", options.project.as_str()),
+        ("repository", options.repository.as_str()),
+        ("branch", options.branch.as_str()),
+    ] {
+        if value.is_empty()
+            || value == "."
+            || value == ".."
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        {
+            return Err(Error::Invalid(format!(
+                "azure devops {label} contains unsupported characters"
+            )));
+        }
+    }
+    Ok(())
+}
+
+enum AzureDevopsCredential {
+    Bearer(String),
+    Pat(String),
+}
+
+impl AzureDevopsCredential {
+    fn secret(&self) -> &str {
+        match self {
+            Self::Bearer(value) | Self::Pat(value) => value,
+        }
+    }
+
+    fn authorization(&self) -> String {
+        match self {
+            Self::Bearer(token) => format!("Bearer {token}"),
+            Self::Pat(token) => format!("Basic {}", base64(&format!(":{token}"))),
+        }
+    }
+}
+
+fn azure_devops_credential() -> Result<AzureDevopsCredential> {
+    if let Ok(output) = Command::new("az")
+        .args([
+            "account",
+            "get-access-token",
+            "--resource",
+            AZURE_DEVOPS_RESOURCE,
+            "--query",
+            "accessToken",
+            "--output",
+            "tsv",
+        ])
+        .output()
+    {
+        if output.status.success() {
+            let token = String::from_utf8(output.stdout).map_err(|_| {
+                Error::Invalid("azure credential helper returned non-utf8 data".into())
+            })?;
+            let token = token.trim().to_owned();
+            if !token.is_empty() {
+                return Ok(AzureDevopsCredential::Bearer(token));
+            }
+        }
+    }
+    if let Ok(token) = std::env::var("AZURE_DEVOPS_EXT_PAT") {
+        if !token.trim().is_empty() {
+            return Ok(AzureDevopsCredential::Pat(token));
+        }
+    }
+    Err(Error::Collection(
+        "Azure DevOps source requires authentication; run `az login` or set AZURE_DEVOPS_EXT_PAT"
+            .into(),
+    ))
+}
+
+fn azure_devops_get(
+    agent: &ureq::Agent,
+    url: &str,
+    organization: &str,
+    credential: &AzureDevopsCredential,
+) -> Result<HttpExchange> {
+    ensure_azure_devops_url(url, organization)?;
+    let authorization = credential.authorization();
+    let mut response = agent
+        .get(url)
+        .header("accept", "application/json")
+        .header("authorization", &authorization)
+        .header(
+            "user-agent",
+            concat!("divinate/", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .map_err(|_| {
+            Error::Collection("azure devops request failed before receiving a response".into())
+        })?;
+    let status = response.status().as_u16();
+    let headers = retained_azure_devops_headers(response.headers());
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|_| Error::Collection("azure devops response body could not be read".into()))?;
+    reject_reflected_azure_credential(&body, &headers, credential.secret(), &authorization)?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        Error::Invalid(format!("azure devops response body is not JSON: {error}"))
+    })?;
+    Ok(HttpExchange {
+        request: HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+        },
+        response: HttpResponse {
+            status,
+            headers,
+            body_sha256: hex_digest(body.as_bytes()),
+            item_count: json_item_count(&parsed),
+            body,
+        },
+    })
+}
+
+fn retained_azure_devops_headers(headers: &ureq::http::HeaderMap) -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "date",
+        "etag",
+        "location",
+        "retry-after",
+        "x-ms-continuationtoken",
+        "x-vss-e2eid",
+    ];
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str().to_ascii_lowercase();
+            ALLOWED
+                .contains(&name.as_str())
+                .then(|| value.to_str().ok().map(|value| (name, value.to_owned())))?
+        })
+        .collect()
+}
+
+fn reject_reflected_azure_credential(
+    body: &str,
+    headers: &BTreeMap<String, String>,
+    secret: &str,
+    authorization: &str,
+) -> Result<()> {
+    if body.contains(secret)
+        || body.contains(authorization)
+        || headers
+            .values()
+            .any(|value| value.contains(secret) || value.contains(authorization))
+    {
+        return Err(Error::Collection(
+            "azure devops response reflected credential material; response was not retained".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_azure_devops_url(url: &str, organization: &str) -> Result<()> {
+    let allowed_prefix = format!(
+        "{AZURE_DEVOPS_API_ORIGIN}/{}/",
+        percent_encode(organization)
+    );
+    if !url.starts_with(&allowed_prefix) || url.contains('@') || url.contains('#') {
+        return Err(Error::Invalid(format!(
+            "azure devops acquisition refused URL outside {allowed_prefix}"
+        )));
+    }
+    Ok(())
+}
+
+fn azure_devops_next_url(current: &str, headers: &BTreeMap<String, String>) -> Option<String> {
+    let token = headers.get("x-ms-continuationtoken")?;
+    let base = current
+        .split("&continuationToken=")
+        .next()
+        .unwrap_or(current);
+    Some(format!(
+        "{base}&continuationToken={}",
+        percent_encode(token)
+    ))
+}
+
+fn is_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn classify_azure_devops_failure(
+    status: u16,
+    body: &str,
+    headers: &BTreeMap<String, String>,
+) -> AcquisitionTermination {
+    let diagnostic = azure_devops_diagnostic(status, body);
+    match status {
+        301 | 302 | 303 | 307 | 308 => AcquisitionTermination::UnsafeRedirect {
+            location: headers.get("location").cloned().unwrap_or_default(),
+        },
+        401 => AcquisitionTermination::Unauthenticated { diagnostic },
+        403 => AcquisitionTermination::PermissionDenied { diagnostic },
+        404 => AcquisitionTermination::NotFound { diagnostic },
+        429 => AcquisitionTermination::RateLimited {
+            diagnostic,
+            reset_at: headers.get("retry-after").cloned(),
+        },
+        _ => AcquisitionTermination::Failed { diagnostic },
+    }
+}
+
+fn azure_devops_diagnostic(status: u16, body: &str) -> String {
+    let message = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "request failed".into());
+    sanitize_diagnostic(&format!("HTTP {status}: {message}"))
+}
+
+fn base64(value: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes = value.as_bytes();
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(char::from(ALPHABET[usize::from(first >> 2)]));
+        encoded.push(char::from(
+            ALPHABET[usize::from(((first & 0x03) << 4) | (second >> 4))],
+        ));
+        encoded.push(if chunk.len() > 1 {
+            char::from(ALPHABET[usize::from(((second & 0x0f) << 2) | (third >> 6))])
+        } else {
+            '='
+        });
+        encoded.push(if chunk.len() > 2 {
+            char::from(ALPHABET[usize::from(third & 0x3f)])
+        } else {
+            '='
+        });
+    }
+    encoded
+}
+
 fn github_diagnostic(status: u16, body: &str) -> String {
     let message = serde_json::from_str::<serde_json::Value>(body)
         .ok()
@@ -716,20 +1104,27 @@ pub fn assess(
     } else {
         vec![]
     };
+    let evidence_exchanges = evidence_exchanges(transcript);
     AcquisitionAssessment {
         transcript_id: transcript.id.clone(),
         integrity,
         contract,
         enumeration,
         authority,
-        pages: u64::try_from(transcript.contents.exchanges.len()).unwrap_or(u64::MAX),
-        items: transcript
-            .contents
-            .exchanges
+        pages: u64::try_from(evidence_exchanges.len()).unwrap_or(u64::MAX),
+        items: evidence_exchanges
             .iter()
             .map(|exchange| exchange.response.item_count)
             .sum(),
         reasons,
+    }
+}
+
+fn evidence_exchanges(transcript: &AcquisitionTranscript) -> &[HttpExchange] {
+    if transcript.contents.collector_contract == AZURE_DEVOPS_BRANCH_POLICY_CONTRACT {
+        transcript.contents.exchanges.get(1..).unwrap_or_default()
+    } else {
+        &transcript.contents.exchanges
     }
 }
 
@@ -875,22 +1270,9 @@ fn assess_enumeration(
     transcript: &AcquisitionTranscript,
     reasons: &mut Vec<String>,
 ) -> EnumerationStatus {
-    if let Some(first) = transcript.contents.exchanges.first() {
-        if first.request != transcript.contents.initial_request {
-            reasons.push("first exchange does not match the initial request".into());
-            return EnumerationStatus::Failed;
-        }
-    }
-    for pair in transcript.contents.exchanges.windows(2) {
-        let planned_branch_detail = transcript.contents.collector_contract
-            == GITHUB_BRANCH_PROTECTION_CONTRACT
-            && pair[1].request.url == format!("{}/protection", pair[0].request.url);
-        if !planned_branch_detail
-            && next_link(&pair[0].response.headers).as_deref() != Some(pair[1].request.url.as_str())
-        {
-            reasons.push("response pagination link does not match the following request".into());
-            return EnumerationStatus::Failed;
-        }
+    if let Some(reason) = invalid_exchange_sequence(transcript) {
+        reasons.push(reason.into());
+        return EnumerationStatus::Failed;
     }
     match &transcript.contents.termination {
         AcquisitionTermination::Exhausted => {
@@ -903,7 +1285,12 @@ fn assess_enumeration(
                 .last()
                 .is_some_and(|exchange| {
                     exchange.response.status == 200
-                        && next_link(&exchange.response.headers).is_none()
+                        && next_request_url(
+                            &transcript.contents.collector_contract,
+                            &exchange.request.url,
+                            &exchange.response.headers,
+                        )
+                        .is_none()
                 });
             if terminal {
                 EnumerationStatus::Complete
@@ -917,7 +1304,13 @@ fn assess_enumeration(
                 .contents
                 .exchanges
                 .last()
-                .and_then(|exchange| next_link(&exchange.response.headers))
+                .and_then(|exchange| {
+                    next_request_url(
+                        &transcript.contents.collector_contract,
+                        &exchange.request.url,
+                        &exchange.response.headers,
+                    )
+                })
                 .as_deref()
                 != Some(next_url.as_str())
             {
@@ -958,6 +1351,60 @@ fn assess_enumeration(
             EnumerationStatus::Failed
         }
     }
+}
+
+fn invalid_exchange_sequence(transcript: &AcquisitionTranscript) -> Option<&'static str> {
+    if transcript
+        .contents
+        .exchanges
+        .first()
+        .is_some_and(|first| first.request != transcript.contents.initial_request)
+    {
+        return Some("first exchange does not match the initial request");
+    }
+    for pair in transcript.contents.exchanges.windows(2) {
+        let planned_branch_detail = transcript.contents.collector_contract
+            == GITHUB_BRANCH_PROTECTION_CONTRACT
+            && pair[1].request.url == format!("{}/protection", pair[0].request.url);
+        let planned_azure_policy = transcript.contents.collector_contract
+            == AZURE_DEVOPS_BRANCH_POLICY_CONTRACT
+            && azure_policy_url_from_repository_exchange(
+                &pair[0],
+                transcript.contents.subject.qualifier("branch"),
+            )
+            .as_deref()
+                == Some(pair[1].request.url.as_str());
+        if !planned_branch_detail
+            && !planned_azure_policy
+            && next_request_url(
+                &transcript.contents.collector_contract,
+                &pair[0].request.url,
+                &pair[0].response.headers,
+            )
+            .as_deref()
+                != Some(pair[1].request.url.as_str())
+        {
+            return Some("response pagination link does not match the following request");
+        }
+    }
+    None
+}
+
+fn azure_policy_url_from_repository_exchange(
+    exchange: &HttpExchange,
+    branch: Option<&str>,
+) -> Option<String> {
+    if !exchange.request.url.contains("/_apis/git/repositories/") {
+        return None;
+    }
+    let body: serde_json::Value = serde_json::from_str(&exchange.response.body).ok()?;
+    let id = body.get("id")?.as_str().filter(|id| is_uuid(id))?;
+    let prefix = exchange.request.url.split("/_apis/").next()?;
+    Some(format!(
+        "{prefix}/_apis/git/policy/configurations?repositoryId={}&refName={}&%24top=100&api-version=7.1",
+        percent_encode(id),
+        percent_encode(&format!("refs/heads/{}", branch?)),
+    ))
 }
 
 fn assess_github_result_count(
@@ -1001,11 +1448,25 @@ fn assess_github_result_count(
 fn contract_authority(contract: &str) -> Vec<Proposition> {
     match contract {
         GITHUB_COMMITS_CONTRACT => vec![Proposition::CommitAncestry],
-        GITHUB_BRANCH_PROTECTION_CONTRACT => vec![Proposition::BranchConfiguration],
+        GITHUB_BRANCH_PROTECTION_CONTRACT | AZURE_DEVOPS_BRANCH_POLICY_CONTRACT => {
+            vec![Proposition::BranchConfiguration]
+        }
         GITHUB_CHECK_RUNS_CONTRACT | GITHUB_COMMIT_STATUSES_CONTRACT => {
             vec![Proposition::RevisionChecks]
         }
         _ => vec![],
+    }
+}
+
+fn next_request_url(
+    contract: &str,
+    current: &str,
+    headers: &BTreeMap<String, String>,
+) -> Option<String> {
+    if contract == AZURE_DEVOPS_BRANCH_POLICY_CONTRACT {
+        azure_devops_next_url(current, headers)
+    } else {
+        next_link(headers)
     }
 }
 
@@ -1017,6 +1478,9 @@ fn json_item_count(value: &serde_json::Value) -> u64 {
         return u64::try_from(items.len()).unwrap_or(u64::MAX);
     }
     if let Some(items) = value.get("statuses").and_then(serde_json::Value::as_array) {
+        return u64::try_from(items.len()).unwrap_or(u64::MAX);
+    }
+    if let Some(items) = value.get("value").and_then(serde_json::Value::as_array) {
         return u64::try_from(items.len()).unwrap_or(u64::MAX);
     }
     value
@@ -1154,6 +1618,29 @@ mod tests {
             },
             resource,
             per_page: 100,
+            max_pages: 10,
+            captured_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn azure_remote() -> AzureDevopsRemoteCapture {
+        AzureDevopsRemoteCapture {
+            organization: "ibw-ag".into(),
+            project: "uTraxx".into(),
+            repository: "uTraxx.Platform".into(),
+            branch: "develop".into(),
+            subject: Subject {
+                kind: "repository".into(),
+                id: "azure-devops:ibw-ag/uTraxx/uTraxx.Platform".into(),
+                qualifiers: BTreeMap::from([
+                    ("branch".into(), serde_json::json!("develop")),
+                    ("revision".into(), serde_json::json!("abc123")),
+                ]),
+            },
+            interval: TimeRange {
+                from: "2026-09-11T00:00:00Z".into(),
+                until: "2026-09-12T00:00:00Z".into(),
+            },
             max_pages: 10,
             captured_at: OffsetDateTime::UNIX_EPOCH,
         }
@@ -1427,5 +1914,126 @@ mod tests {
         })
         .unwrap();
         assert!(!serde_json::to_string(&transcript).unwrap().contains(token));
+    }
+
+    #[test]
+    fn azure_branch_policy_pagination_retains_complete_authority() {
+        let options = azure_remote();
+        let transcript = capture_azure_devops_branch_policy_with(&options, |url| {
+            if url.contains("/_apis/git/repositories/") {
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"id":"11111111-2222-3333-4444-555555555555","name":"uTraxx.Platform"}"#,
+                    BTreeMap::new(),
+                ))
+            } else if url.contains("continuationToken=next") {
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"count":1,"value":[{"id":2}]}"#,
+                    BTreeMap::new(),
+                ))
+            } else {
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"count":1,"value":[{"id":1}]}"#,
+                    BTreeMap::from([("x-ms-continuationtoken".into(), "next".into())]),
+                ))
+            }
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.pages, 2);
+        assert_eq!(assessment.items, 2);
+        assert_eq!(assessment.authority, vec![Proposition::BranchConfiguration]);
+        assert_eq!(transcript.contents.exchanges.len(), 3);
+        assert!(transcript.contents.exchanges[1]
+            .request
+            .url
+            .contains("repositoryId=11111111-2222-3333-4444-555555555555"));
+        assert!(transcript.contents.exchanges[1]
+            .request
+            .url
+            .contains("refName=refs%2Fheads%2Fdevelop"));
+    }
+
+    #[test]
+    fn azure_credentials_and_cross_origin_redirects_are_refused() {
+        let token = "divinate-azure-test-token-98d4a67f";
+        assert_eq!(base64(":pat"), "OnBhdA==");
+        let authorization = AzureDevopsCredential::Pat(token.into()).authorization();
+        let mut headers = ureq::http::HeaderMap::new();
+        headers.insert("authorization", authorization.parse().unwrap());
+        headers.insert("set-cookie", format!("session={token}").parse().unwrap());
+        headers.insert("x-vss-e2eid", "request-1".parse().unwrap());
+        let retained = retained_azure_devops_headers(&headers);
+        let serialized = serde_json::to_string(&retained).unwrap();
+        assert!(!serialized.contains(token));
+        assert!(!retained.contains_key("authorization"));
+        assert!(!retained.contains_key("set-cookie"));
+        assert!(
+            reject_reflected_azure_credential("safe", &retained, token, &authorization).is_ok()
+        );
+        assert!(
+            reject_reflected_azure_credential(token, &retained, token, &authorization).is_err()
+        );
+        assert!(reject_reflected_azure_credential(
+            &authorization,
+            &retained,
+            token,
+            &authorization
+        )
+        .is_err());
+        assert!(ensure_azure_devops_url("https://evil.invalid/steal", "ibw-ag").is_err());
+        let failure = classify_azure_devops_failure(
+            302,
+            r#"{"message":"Moved"}"#,
+            &BTreeMap::from([("location".into(), "https://evil.invalid/".into())]),
+        );
+        assert!(matches!(
+            failure,
+            AcquisitionTermination::UnsafeRedirect { .. }
+        ));
+
+        let options = azure_remote();
+        let transcript = capture_azure_devops_branch_policy_with(&options, |url| {
+            if url.contains("/_apis/git/repositories/") {
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"id":"11111111-2222-3333-4444-555555555555","name":"uTraxx.Platform"}"#,
+                    retained.clone(),
+                ))
+            } else {
+                Ok(exchange(
+                    url,
+                    200,
+                    r#"{"count":0,"value":[]}"#,
+                    BTreeMap::new(),
+                ))
+            }
+        })
+        .unwrap();
+        assert!(!serde_json::to_string(&transcript).unwrap().contains(token));
+    }
+
+    #[test]
+    fn azure_permission_denial_has_no_branch_configuration_authority() {
+        let options = azure_remote();
+        let transcript = capture_azure_devops_branch_policy_with(&options, |url| {
+            Ok(exchange(
+                url,
+                403,
+                r#"{"message":"access denied"}"#,
+                BTreeMap::new(),
+            ))
+        })
+        .unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::PermissionDenied);
+        assert!(assessment.authority.is_empty());
     }
 }

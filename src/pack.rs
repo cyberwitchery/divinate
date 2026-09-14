@@ -187,6 +187,11 @@ pub enum RemoteAcquisitionPlan {
         #[serde(default = "default_max_pages")]
         max_pages: u16,
     },
+    AzureDevops {
+        resource: AzureDevopsResource,
+        #[serde(default = "default_max_pages")]
+        max_pages: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,6 +201,13 @@ pub enum GithubResource {
     BranchProtection,
     CheckRuns,
     CommitStatuses,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// the narrow azure devops resources core can acquire for packs.
+pub enum AzureDevopsResource {
+    BranchPolicy,
 }
 
 const fn default_per_page() -> u16 {
@@ -926,6 +938,47 @@ pub fn verify(invocation: &PackInvocation, blobs: &BTreeMap<String, Vec<u8>>) ->
         return Err(Error::Provenance(format!(
             "pack invocation failed integrity: {}",
             invocation.id
+        )));
+    }
+    Ok(())
+}
+
+/// verify retained pack links to independently stored execution and acquisition objects.
+///
+/// # Errors
+///
+/// returns an error when an invocation names a transcript that is not retained.
+pub fn verify_transcript_links(
+    invocation: &PackInvocation,
+    executions: &[crate::execution::ExecutionTranscript],
+    acquisitions: &[crate::acquisition::AcquisitionTranscript],
+) -> Result<()> {
+    let execution_ids = executions
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let acquisition_ids = acquisitions
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if let Some(id) = invocation
+        .contents
+        .execution_transcript_id
+        .as_deref()
+        .filter(|id| !execution_ids.contains(id))
+    {
+        return Err(Error::Provenance(format!(
+            "pack invocation references missing execution transcript {id}"
+        )));
+    }
+    if let Some(id) = invocation
+        .contents
+        .acquisition_transcript_ids
+        .iter()
+        .find(|id| !acquisition_ids.contains(id.as_str()))
+    {
+        return Err(Error::Provenance(format!(
+            "pack invocation references missing acquisition transcript {id}"
         )));
     }
     Ok(())
