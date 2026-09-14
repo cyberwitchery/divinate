@@ -263,7 +263,8 @@ pub fn evaluate_configured_independent_review(
     )?;
     let Some((latest, observed_at)) = branch_configurations(corpus, target, at)?.pop() else {
         let authority_withdrawn = corpus.observations.iter().any(|item| {
-            item.kind == ObservationKind::ConfigurationSnapshot
+            is_github_branch_protection(item, &target.branch)
+                && item.kind == ObservationKind::ConfigurationSnapshot
                 && item.subject.id == target.repository
                 && item.subject.qualifier("branch") == Some(target.branch.as_str())
                 && !observation_authoritative(corpus, item, Proposition::BranchConfiguration)
@@ -1163,7 +1164,8 @@ fn branch_configurations<'a>(
         .observations
         .iter()
         .filter(|item| {
-            item.kind == ObservationKind::ConfigurationSnapshot
+            is_github_branch_protection(item, &target.branch)
+                && item.kind == ObservationKind::ConfigurationSnapshot
                 && item.evidence_class == EvidenceClass::ConfiguredIntent
                 && item.subject.id == target.repository
                 && item.subject.qualifier("branch") == Some(target.branch.as_str())
@@ -1174,6 +1176,14 @@ fn branch_configurations<'a>(
     matches.retain(|(_, observed_at)| *observed_at <= at);
     matches.sort_by_key(|(observation, observed_at)| (*observed_at, &observation.id));
     Ok(matches)
+}
+
+fn is_github_branch_protection(observation: &Observation, branch: &str) -> bool {
+    observation.claim_key == "github:branch-protection"
+        || observation
+            .claim_key
+            .strip_prefix("github:branch-protection:")
+            == Some(branch)
 }
 
 fn observation_authoritative(
