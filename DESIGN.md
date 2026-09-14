@@ -154,6 +154,10 @@ source contracts define the propositions and scopes a remote collector can
 establish. normalizers define the meaning of retained tool output. evaluators define
 claim semantics.
 
+provider-specific observations may derive provider-neutral assertions when the
+predicate is genuinely shared. the assertion keeps its stable semantic identity;
+provider details remain in its evidence, reasoning, and derivation provenance.
+
 GitHub packs select branch protection, revision check runs, or revision commit
 statuses. Azure DevOps packs currently select only current branch policy. core
 derives provider URLs from verified repository context, obtains a local

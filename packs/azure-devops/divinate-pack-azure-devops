@@ -152,6 +152,7 @@ def latest_observations(evaluation):
         if item.get("claim_key") == "azure-devops:branch-policy"
         and (item.get("subject") or {}).get("id") == target["repository"]
         and (item.get("subject") or {}).get("branch") == target["branch"]
+        and (item.get("data") or {}).get("branch") == target["branch"]
     ]
     if not matching:
         return []
@@ -188,8 +189,8 @@ def evaluate(evaluation, evaluator):
             lambda policy: policy["enabled"] and policy["blocking"],
         ),
         "approving-review": (
-            "azure_devops_approving_review_configured",
-            "the Azure DevOps branch requires at least one approving reviewer",
+            "configured_independent_review",
+            f"changes to {evaluation['target']['branch']} are configured to require approval before merge",
             lambda policy: policy["type_id"] == MINIMUM_REVIEWERS
             and policy["enabled"]
             and policy["blocking"]
@@ -208,6 +209,12 @@ def evaluate(evaluation, evaluator):
         fail("unsupported evaluator")
     assertion_type, claim, predicate = definitions[evaluator]
     result = assertion(assertion_type, claim, evaluation)
+    if evaluator == "approving-review":
+        # This is the same point-in-time branch subject as core's
+        # provider-neutral configured-review assertion. Evaluation intervals
+        # belong to historical claims, not current configuration identity.
+        result["subject"]["from"] = None
+        result["subject"]["until"] = None
     observations = latest_observations(evaluation)
     policies = [
         policy

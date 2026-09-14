@@ -87,6 +87,31 @@ fn universal_gap_and_human_boundary_remain_specific() {
         human.missing[0].requirement,
         "security_review_scope_and_content"
     );
+
+    let markdown = dossier::render_markdown(&dossier);
+    let interval = "2026-09-01T00:00:00Z to 2026-09-05T00:00:00Z";
+    assert_eq!(
+        markdown.matches(&format!("uncovered: {interval}")).count(),
+        1
+    );
+    assert!(markdown.contains("missing coverage: pull request reviews, repository mutations"));
+}
+
+#[test]
+fn distinct_uncovered_intervals_remain_distinct_in_markdown() {
+    let mut corpus = collect(Path::new("fixtures/collection.json")).unwrap();
+    corpus.collections.clear();
+    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let mut assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
+    let historical = assertions
+        .iter_mut()
+        .find(|item| item.assertion_type == AssertionType::EveryMainChangeReviewed)
+        .unwrap();
+    historical.coverage[1].uncovered_intervals[0].from = "2026-09-02T00:00:00Z".into();
+    let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();
+    let markdown = dossier::render_markdown(&dossier);
+    assert!(markdown.contains("uncovered: 2026-09-01T00:00:00Z to 2026-09-05T00:00:00Z"));
+    assert!(markdown.contains("uncovered: 2026-09-02T00:00:00Z to 2026-09-05T00:00:00Z"));
 }
 
 #[test]
@@ -95,6 +120,25 @@ fn current_and_historical_configuration_are_both_rendered() {
     let markdown = dossier::render_markdown(&dossier);
     assert!(markdown.contains("branch protection required 2 approving review(s)"));
     assert!(markdown.contains("branch protection required 1 approving review(s)"));
+}
+
+#[test]
+fn configured_review_title_uses_the_assertion_branch() {
+    let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
+    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let mut assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
+    assertions
+        .iter_mut()
+        .find(|item| item.assertion_type == AssertionType::ConfiguredIndependentReview)
+        .unwrap()
+        .subject
+        .branch = Some("develop".into());
+    let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();
+    assert!(dossier
+        .contents
+        .controls
+        .iter()
+        .any(|control| control.title == "approval required on develop"));
 }
 
 #[test]

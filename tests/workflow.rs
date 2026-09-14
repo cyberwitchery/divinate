@@ -310,6 +310,22 @@ fn dd_view_reuses_existing_assertions_and_sources_without_acquisition() {
 }
 
 #[test]
+fn dd_view_groups_equivalent_coverage_gaps_without_merging_requirements() {
+    let mut corpus = corpus();
+    corpus.collections.clear();
+    let assertions = assertions::evaluate_all(
+        &corpus,
+        &target(),
+        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
+    )
+    .unwrap();
+    let markdown = views::render_dd(&views::dd_response(&assertions));
+    let interval = "uncovered intervals: 2026-09-01T00:00:00Z to 2026-09-05T00:00:00Z";
+    assert_eq!(markdown.matches(interval).count(), 1);
+    assert!(markdown.contains("missing coverage: pull request reviews, repository mutations"));
+}
+
+#[test]
 fn pack_assertions_reach_both_views_without_conflating_subjects() {
     let mut previous = assertions::evaluate_all(
         &corpus(),

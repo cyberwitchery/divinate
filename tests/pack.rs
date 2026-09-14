@@ -252,10 +252,39 @@ fn azure_devops_policy_assertions_require_complete_current_configuration() {
     for evaluator in ["blocking-policy", "approving-review", "build-validation"] {
         let response = azure_pack_result(&azure_policy_evaluation(evaluator, &policies, true));
         assert_eq!(response["result"][0]["outcome"], "supported");
+        if evaluator == "approving-review" {
+            assert_eq!(
+                response["result"][0]["assertion_type"],
+                "configured_independent_review"
+            );
+            assert_eq!(
+                response["result"][0]["claim"],
+                "changes to develop are configured to require approval before merge"
+            );
+            assert_eq!(
+                response["result"][0]["subject"]["from"],
+                serde_json::Value::Null
+            );
+            assert_eq!(
+                response["result"][0]["subject"]["until"],
+                serde_json::Value::Null
+            );
+        }
     }
+}
+
+#[test]
+fn azure_devops_review_assertion_rejects_incomplete_or_nonqualifying_policy() {
+    let qualifying = serde_json::json!([{
+        "id": 1,
+        "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd",
+        "enabled": true,
+        "blocking": true,
+        "minimum_approver_count": 2
+    }]);
     let response = azure_pack_result(&azure_policy_evaluation(
         "approving-review",
-        &policies,
+        &qualifying,
         false,
     ));
     assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
@@ -265,6 +294,49 @@ fn azure_devops_policy_assertions_require_complete_current_configuration() {
         true,
     ));
     assert_eq!(response["result"][0]["outcome"], "contradicted");
+    let response = azure_pack_result(&azure_policy_evaluation(
+        "approving-review",
+        &serde_json::json!([]),
+        true,
+    ));
+    assert_eq!(response["result"][0]["outcome"], "contradicted");
+
+    for policy in [
+        serde_json::json!({
+            "id": 3,
+            "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd",
+            "enabled": false,
+            "blocking": true,
+            "minimum_approver_count": 2
+        }),
+        serde_json::json!({
+            "id": 4,
+            "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd",
+            "enabled": true,
+            "blocking": false,
+            "minimum_approver_count": 2
+        }),
+        serde_json::json!({
+            "id": 5,
+            "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd",
+            "enabled": true,
+            "blocking": true,
+            "minimum_approver_count": 0
+        }),
+    ] {
+        let response = azure_pack_result(&azure_policy_evaluation(
+            "approving-review",
+            &serde_json::json!([policy]),
+            true,
+        ));
+        assert_eq!(response["result"][0]["outcome"], "contradicted");
+    }
+
+    let mut mismatched = azure_policy_evaluation("approving-review", &qualifying, true);
+    mismatched["input"]["corpus"]["observations"][0]["subject"]["branch"] =
+        serde_json::json!("main");
+    let response = azure_pack_result(&mismatched);
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
 }
 
 #[test]

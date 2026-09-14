@@ -47,6 +47,34 @@ fn repository_evaluation_does_not_invent_release_scope() {
     }));
 }
 
+#[test]
+fn provider_specific_core_assertions_and_limitations_apply_only_to_github() {
+    let corpus = corpus();
+    let github =
+        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
+            .unwrap();
+    assert!(github
+        .limitations
+        .iter()
+        .any(|item| item.contains("github audit events")));
+
+    let mut azure = target();
+    azure.repository = "azure-devops:ibw-ag/uTraxx/uTraxx.Platform".into();
+    azure.branch = "develop".into();
+    azure.release = None;
+    let assertions = evaluate_all(&corpus, &azure, at("2026-09-05T00:00:00Z")).unwrap();
+    assert_eq!(assertions.len(), 1);
+    assert_eq!(
+        assertions[0].assertion_type,
+        divinate::assertions::AssertionType::EveryMainChangeReviewed
+    );
+    assert_eq!(assertions[0].outcome, Outcome::InsufficientEvidence);
+    assert!(assertions[0]
+        .limitations
+        .iter()
+        .all(|item| !item.to_ascii_lowercase().contains("github")));
+}
+
 fn at(value: &str) -> time::OffsetDateTime {
     parse_timestamp(value).unwrap()
 }

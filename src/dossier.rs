@@ -4,7 +4,7 @@
 //! limitations into a portable view. assertion ids and evaluator versions retain
 //! the link to the source derivations.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use serde::Serialize;
@@ -282,7 +282,7 @@ pub fn render_markdown(dossier: &Dossier) -> String {
 fn control_entry(corpus: &Corpus, assertion: &DerivedAssertion) -> Result<ControlEntry> {
     Ok(ControlEntry {
         assertion_id: assertion.id.clone(),
-        title: control_title(&assertion.assertion_type),
+        title: control_title(assertion),
         semantics: control_semantics(&assertion.assertion_type).into(),
         state: outcome_name(assertion.outcome).into(),
         why: assertion
@@ -591,9 +591,14 @@ fn render_control(out: &mut String, control: &ControlEntry) {
     render_evidence(out, "evidence", &control.evidence);
     render_coverage(out, &control.coverage);
     render_evidence(out, "contradictions", &control.contradictions);
-    if !control.missing.is_empty() {
+    let missing = control
+        .missing
+        .iter()
+        .filter(|gap| !gap.requirement.starts_with("complete_authoritative_"))
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
         writeln!(out, "### evidence gaps\n").unwrap();
-        for gap in &control.missing {
+        for gap in missing {
             writeln!(out, "- {} ({})", gap.reason, gap.subject).unwrap();
         }
         writeln!(out).unwrap();
@@ -621,6 +626,7 @@ fn render_coverage(out: &mut String, coverage: &[DossierCoverage]) {
         return;
     }
     writeln!(out, "### coverage\n").unwrap();
+    let mut gaps = BTreeMap::<&str, BTreeSet<String>>::new();
     for item in coverage {
         writeln!(
             out,
@@ -634,8 +640,19 @@ fn render_coverage(out: &mut String, coverage: &[DossierCoverage]) {
             writeln!(out, "  - {run}").unwrap();
         }
         for gap in &item.uncovered {
-            writeln!(out, "  - uncovered: {gap}").unwrap();
+            gaps.entry(gap)
+                .or_default()
+                .insert(human_name(&item.proposition));
         }
+    }
+    for (gap, propositions) in gaps {
+        writeln!(out, "- uncovered: {gap}").unwrap();
+        writeln!(
+            out,
+            "  - missing coverage: {}",
+            propositions.into_iter().collect::<Vec<_>>().join(", ")
+        )
+        .unwrap();
     }
     writeln!(out).unwrap();
 }
@@ -655,9 +672,16 @@ fn human_name(value: &str) -> String {
     value.replace('_', " ")
 }
 
-fn control_title(kind: &AssertionType) -> String {
-    match kind {
-        AssertionType::ConfiguredIndependentReview => "approval required on main".into(),
+fn control_title(assertion: &DerivedAssertion) -> String {
+    match &assertion.assertion_type {
+        AssertionType::ConfiguredIndependentReview => format!(
+            "approval required on {}",
+            assertion
+                .subject
+                .branch
+                .as_deref()
+                .unwrap_or("target branch")
+        ),
         AssertionType::EveryMainChangeReviewed => "changes received required review".into(),
         AssertionType::DependencyChangeVisibility => "release dependency changes preserved".into(),
         AssertionType::ReleaseSupplyChainPolicy => "release dependency gate".into(),
