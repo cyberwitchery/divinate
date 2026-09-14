@@ -256,9 +256,7 @@ pub fn render_dd(response: &DdResponse) -> String {
             )
             .unwrap();
         }
-        for gap in &assertion.missing {
-            writeln!(out, "- gap: {}", gap.reason).unwrap();
-        }
+        render_missing_gaps(&mut out, assertion);
         for limitation in &assertion.limitations {
             writeln!(out, "- limitation: {limitation}").unwrap();
         }
@@ -284,6 +282,34 @@ pub fn render_dd(response: &DdResponse) -> String {
         writeln!(out).unwrap();
     }
     out
+}
+
+fn render_missing_gaps(out: &mut String, assertion: &DerivedAssertion) {
+    let mut gaps = BTreeMap::<(String, String), BTreeSet<String>>::new();
+    for gap in &assertion.missing {
+        gaps.entry((gap.reason.clone(), gap.subject.clone()))
+            .or_default()
+            .insert(gap.requirement.clone());
+    }
+    for ((reason, _subject), requirements) in gaps {
+        writeln!(out, "- gap: {reason}").unwrap();
+        let coverage = requirements
+            .iter()
+            .filter_map(|requirement| {
+                requirement
+                    .strip_prefix("complete_authoritative_")
+                    .and_then(|value| value.strip_suffix("_coverage"))
+                    .map(human_name)
+            })
+            .collect::<Vec<_>>();
+        if !coverage.is_empty() {
+            writeln!(out, "  - missing coverage: {}", coverage.join(", ")).unwrap();
+        }
+    }
+}
+
+fn human_name(value: &str) -> String {
+    value.replace('_', " ")
 }
 
 fn render_strings(out: &mut String, heading: &str, values: &[String]) {

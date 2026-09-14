@@ -224,11 +224,15 @@ pub fn evaluate_all(
     target: &EvaluationTarget,
     at: OffsetDateTime,
 ) -> Result<Vec<DerivedAssertion>> {
-    let mut assertions = vec![
-        evaluate_configured_reviews(corpus, target, at)?,
-        evaluate_every_main_change_reviewed(corpus, target, at)?,
-        evaluate_configured_independent_review(corpus, target, at)?,
-    ];
+    let mut assertions = if target.repository.starts_with("github:") {
+        vec![
+            evaluate_configured_reviews(corpus, target, at)?,
+            evaluate_every_main_change_reviewed(corpus, target, at)?,
+            evaluate_configured_independent_review(corpus, target, at)?,
+        ]
+    } else {
+        vec![evaluate_every_main_change_reviewed(corpus, target, at)?]
+    };
     if target.release.is_some() {
         assertions.extend([
             evaluate_release_reviews(corpus, target, at)?,
@@ -432,7 +436,19 @@ pub fn evaluate_every_main_change_reviewed(
         ));
     }
     assertion.coverage = vec![mutation_coverage, review_coverage];
-    assertion.limitations.push("github audit events are treated as authoritative for recorded repository mutations only because the collection run declares that proposition and complete scope".into());
+    if authoritative_mutation_runs.iter().any(|run_id| {
+        corpus.collections.iter().any(|run| {
+            &run.id == run_id
+                && (run.collector.name.to_ascii_lowercase().contains("github")
+                    || run
+                        .collector
+                        .collector
+                        .to_ascii_lowercase()
+                        .contains("github"))
+        })
+    }) {
+        assertion.limitations.push("github audit events are treated as authoritative for recorded repository mutations only because the collection run declares that proposition and complete scope".into());
+    }
     Ok(assertion)
 }
 

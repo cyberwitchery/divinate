@@ -146,9 +146,11 @@ core asks Azure DevOps for the repository identity and policies applying to the
 configured branch. it obtains an access token from `az account
 get-access-token`, then falls back to `AZURE_DEVOPS_EXT_PAT`. neither credential
 appears in YAML or pack input. the resulting assertions describe current
-configured blocking policies, approving reviews, and build validation. they do
-not establish historical operating effectiveness, pull-request review history,
-pipeline existence, or pipeline results.
+configured blocking policies, approval before merge, and build validation. the
+approval assertion is provider-neutral; its reasoning and provenance identify
+Azure DevOps. these assertions do not establish historical operating
+effectiveness, pull-request review history, pipeline existence, or pipeline
+results.
 
 ## collect and evaluate
 

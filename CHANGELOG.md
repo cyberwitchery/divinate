@@ -20,5 +20,6 @@
 - support canonical Azure DevOps repository identity and current branch-policy
   evidence through credential-safe core acquisition
 - keep typed branch-policy evaluators scoped to their observation schema
+- render shared governance claims without duplicate provider-specific rows or gaps
 - remove the scanner-specific `collect release` compatibility command
 - allow repository-scoped evaluation without inventing a release
