@@ -3,9 +3,9 @@ use std::path::Path;
 
 use divinate as evidence_spike;
 use evidence_spike::assertions::{
-    evaluate_adequate_security_review, evaluate_all, evaluate_configured_reviews,
-    evaluate_every_main_change_reviewed, evaluate_release_reviews, evaluate_supply_chain,
-    EvaluationTarget, Outcome,
+    evaluate_adequate_security_review, evaluate_all, evaluate_configured_independent_review,
+    evaluate_configured_reviews, evaluate_every_main_change_reviewed, evaluate_release_reviews,
+    evaluate_supply_chain, EvaluationTarget, Outcome,
 };
 use evidence_spike::coverage::{assess, CoverageOutcome, CoverageRequirement, RunDisposition};
 use evidence_spike::model::{
@@ -129,6 +129,54 @@ fn historical_configuration_survives_a_later_change() {
             .count(),
         2
     );
+}
+
+#[test]
+fn core_github_evaluators_ignore_newer_azure_branch_policy_observations() {
+    let mut corpus = corpus();
+    let mut azure = corpus
+        .observations
+        .iter()
+        .find(|item| item.claim_key.starts_with("github:branch-protection:"))
+        .unwrap()
+        .clone();
+    azure.id = "ev_azure_branch_policy".into();
+    azure.claim_key = "azure-devops:branch-policy".into();
+    azure.observed_at = "2026-09-04T12:00:00Z".into();
+    azure.data = json!({
+        "branch": "main",
+        "policies": [{
+            "blocking": true,
+            "enabled": true,
+            "minimum_approver_count": 2,
+            "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"
+        }]
+    });
+    corpus.observations.push(azure);
+
+    let configured =
+        evaluate_configured_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let independent =
+        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-05T00:00:00Z"))
+            .unwrap();
+
+    assert_eq!(configured.outcome, Outcome::Contradicted);
+    assert_eq!(independent.outcome, Outcome::Supported);
+    assert!(configured
+        .considered
+        .iter()
+        .all(|item| item.observation_id != "ev_azure_branch_policy"));
+
+    corpus
+        .observations
+        .retain(|item| !item.claim_key.starts_with("github:branch-protection"));
+    let configured =
+        evaluate_configured_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let independent =
+        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-05T00:00:00Z"))
+            .unwrap();
+    assert_eq!(configured.outcome, Outcome::InsufficientEvidence);
+    assert_eq!(independent.outcome, Outcome::InsufficientEvidence);
 }
 
 #[test]
