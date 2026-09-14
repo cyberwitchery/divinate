@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::process::Command;
 
 use divinate as evidence_spike;
 use evidence_spike::execution::{self, ExecutionRequest, NamedPath, RetainedBytes};
@@ -150,6 +151,90 @@ fn declared_output_file_is_preserved_and_verified() {
         .unwrap_err()
         .to_string()
         .contains("failed integrity"));
+}
+
+#[test]
+fn projectless_runs_verify_without_a_corpus_or_repository_identity() {
+    let state = tempfile::tempdir().unwrap();
+    for value in ["one", "two"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+            .args(["run", "--state"])
+            .arg(state.path())
+            .args(["--tool", "printf", "/usr/bin/printf", "--", value])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let verified = verify_cli(state.path());
+    assert!(
+        verified.status.success(),
+        "{}",
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(report["status"], "verified");
+    assert_eq!(report["corpus"], "absent");
+    assert_eq!(report["execution_transcripts"], 2);
+    assert!(!state.path().join("corpus.json").exists());
+    assert!(!state.path().join("repository.json").exists());
+}
+
+#[test]
+fn projectless_verification_rejects_tampered_streams_and_missing_blobs() {
+    let state = tempfile::tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["run", "--state"])
+        .arg(state.path())
+        .args(["--tool", "printf", "/usr/bin/printf", "--", "evidence"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let transcript = workflow::load_executions(state.path())
+        .unwrap()
+        .pop()
+        .unwrap();
+    let transcript_path = state
+        .path()
+        .join("executions")
+        .join(format!("{}.json", transcript.id));
+    let original = fs::read(&transcript_path).unwrap();
+    let mut tampered = transcript.clone();
+    tampered.contents.stdout.content.push_str("00");
+    divinate::write_json(&tampered, &transcript_path).unwrap();
+    assert!(!verify_cli(state.path()).status.success());
+
+    fs::write(&transcript_path, original).unwrap();
+    let executable = &transcript.contents.tool.executable.sha256;
+    fs::remove_file(state.path().join("blobs").join(executable)).unwrap();
+    let verified = verify_cli(state.path());
+    assert!(!verified.status.success());
+    assert!(String::from_utf8_lossy(&verified.stderr).contains("missing execution blob"));
+}
+
+#[test]
+fn initialized_empty_state_verifies_and_malformed_execution_does_not() {
+    let state = tempfile::tempdir().unwrap();
+    workflow::init(state.path()).unwrap();
+    let verified = verify_cli(state.path());
+    assert!(verified.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&verified.stdout).unwrap()["corpus"],
+        "absent"
+    );
+    fs::write(state.path().join("executions/bad.json"), b"not json").unwrap();
+    assert!(!verify_cli(state.path()).status.success());
+}
+
+fn verify_cli(state: &std::path::Path) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["verify", "--state"])
+        .arg(state)
+        .output()
+        .unwrap()
 }
 
 fn retained(bytes: &[u8]) -> RetainedBytes {

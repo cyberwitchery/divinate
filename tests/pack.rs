@@ -157,6 +157,117 @@ fn github_pack_normalizes_branch_and_check_responses() {
 }
 
 #[test]
+fn azure_devops_pack_plans_and_normalizes_branch_policy() {
+    let config = pack_config(
+        example("packs/azure-devops/divinate-pack-azure-devops"),
+        serde_json::Value::Null,
+    );
+    let (metadata, _) = pack::describe(&config).unwrap();
+    assert_eq!(metadata.id, "cyberwitchery.azure-devops");
+    let context = serde_json::json!({
+        "repository": "azure-devops:example-org/example-project/example-repository",
+        "branch": "develop",
+        "revision": "abc123",
+        "interval": {
+            "from": "2026-09-11T00:00:00Z",
+            "until": "2026-09-12T00:00:00Z"
+        },
+        "observed_at": "2026-09-12T00:00:00Z",
+        "configuration": {}
+    });
+    let (plan, capture) = pack::plan(&config, &metadata, "branch-policy", &context).unwrap();
+    assert!(matches!(
+        plan.action().unwrap(),
+        pack::CollectionAction::Remote {
+            acquisition: pack::RemoteAcquisitionPlan::AzureDevops {
+                resource: pack::AzureDevopsResource::BranchPolicy,
+                ..
+            }
+        }
+    ));
+    let retained = serde_json::to_string(&capture.invocation).unwrap();
+    assert!(!retained.to_ascii_lowercase().contains("authorization"));
+    assert!(!retained.to_ascii_lowercase().contains("token"));
+
+    let subject = Subject {
+        kind: "repository".into(),
+        id: "azure-devops:example-org/example-project/example-repository".into(),
+        qualifiers: BTreeMap::from([
+            ("branch".into(), serde_json::json!("develop")),
+            ("revision".into(), serde_json::json!("abc123")),
+        ]),
+    };
+    let response = br#"{"count":1,"value":[{"id":7,"isEnabled":true,"isBlocking":true,"type":{"id":"fa4e907d-c16b-4a4c-9dfa-4906e5d171dd","displayName":"Minimum number of reviewers"},"settings":{"minimumApproverCount":2,"creatorVoteCounts":false,"resetOnSourcePush":true,"scope":[{"repositoryId":"repo-guid","refName":"refs/heads/develop","matchKind":"exact"}]}}]}"#;
+    let (normalized, _) = pack::normalize(
+        &config,
+        &metadata,
+        "azure-devops-branch-policy/v1",
+        response,
+        &divinate::hex_digest(response),
+        &subject,
+    )
+    .unwrap();
+    assert_eq!(normalized.claim_key, "azure-devops:branch-policy");
+    assert_eq!(normalized.data["policies"][0]["minimum_approver_count"], 2);
+    assert_eq!(
+        normalized.data["policies"][0]["scopes"][0]["ref_name"],
+        "refs/heads/develop"
+    );
+}
+
+#[test]
+fn azure_devops_policy_assertions_require_complete_current_configuration() {
+    let policies = serde_json::json!([
+        {
+            "id": 1,
+            "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd",
+            "type_name": "Minimum number of reviewers",
+            "enabled": true,
+            "blocking": true,
+            "minimum_approver_count": 2,
+            "creator_vote_counts": false,
+            "reset_on_source_push": true,
+            "reset_rejections_on_source_push": null,
+            "block_last_pusher_vote": null,
+            "build_definition_id": null,
+            "status_name": null,
+            "scopes": []
+        },
+        {
+            "id": 2,
+            "type_id": "0609b952-1397-4640-95ec-e00a01b2c241",
+            "type_name": "Build",
+            "enabled": true,
+            "blocking": true,
+            "minimum_approver_count": null,
+            "creator_vote_counts": null,
+            "reset_on_source_push": null,
+            "reset_rejections_on_source_push": null,
+            "block_last_pusher_vote": null,
+            "build_definition_id": 5,
+            "status_name": null,
+            "scopes": []
+        }
+    ]);
+    for evaluator in ["blocking-policy", "approving-review", "build-validation"] {
+        let response = azure_pack_result(&azure_policy_evaluation(evaluator, &policies, true));
+        assert_eq!(response["result"][0]["outcome"], "supported");
+    }
+    let response = azure_pack_result(&azure_policy_evaluation(
+        "approving-review",
+        &policies,
+        false,
+    ));
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    let response = azure_pack_result(&azure_policy_evaluation(
+        "build-validation",
+        &serde_json::json!([]),
+        true,
+    ));
+    assert_eq!(response["result"][0]["outcome"], "contradicted");
+}
+
+#[test]
 fn github_ci_assertion_requires_both_status_mechanisms() {
     let success_check = serde_json::json!({
         "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
@@ -1479,7 +1590,15 @@ fn github_ci_request(
 }
 
 fn github_pack_result(request: &serde_json::Value) -> serde_json::Value {
-    let mut child = Command::new(example("packs/github/divinate-pack-github"))
+    pack_result("packs/github/divinate-pack-github", request)
+}
+
+fn azure_pack_result(request: &serde_json::Value) -> serde_json::Value {
+    pack_result("packs/azure-devops/divinate-pack-azure-devops", request)
+}
+
+fn pack_result(executable: &str, request: &serde_json::Value) -> serde_json::Value {
+    let mut child = Command::new(example(executable))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -1493,6 +1612,54 @@ fn github_pack_result(request: &serde_json::Value) -> serde_json::Value {
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn azure_policy_evaluation(
+    evaluator: &str,
+    policies: &serde_json::Value,
+    complete: bool,
+) -> serde_json::Value {
+    serde_json::json!({
+        "protocol_version": 1,
+        "operation": "evaluate",
+        "configuration": null,
+        "input": {
+            "evaluator": evaluator,
+            "target": {
+                "repository": "azure-devops:example-org/example-project/example-repository",
+                "branch": "develop",
+                "release": null,
+                "from": "2026-09-11T00:00:00Z",
+                "until": "2026-09-12T00:00:00Z"
+            },
+            "evaluated_at": "2026-09-12T00:00:00Z",
+            "coverage": [{"outcome": if complete { "complete" } else { "incomplete" }}],
+            "corpus": {
+                "collections": [{
+                    "id": "run_policy",
+                    "outcome": if complete { "complete" } else { "partial" },
+                    "authority": if complete { serde_json::json!(["branch_configuration"]) } else { serde_json::json!([]) },
+                    "enumeration": {
+                        "terminal_page_reached": complete,
+                        "next_token_present": !complete
+                    }
+                }],
+                "observations": [{
+                    "id": "azure_policy",
+                    "claim_key": "azure-devops:branch-policy",
+                    "collection_run_id": "run_policy",
+                    "observed_at": "2026-09-12T00:00:00Z",
+                    "subject": {
+                        "id": "azure-devops:example-org/example-project/example-repository",
+                        "branch": "develop",
+                        "revision": "abc123"
+                    },
+                    "data": {"branch": "develop", "policies": policies},
+                    "provenance": {"source_id": "src_policy"}
+                }]
+            }
+        }
+    })
 }
 
 fn executable(path: &Path, bytes: &[u8]) {

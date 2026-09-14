@@ -5,7 +5,7 @@ the resulting human-readable views.
 
 ## initialize a new repository
 
-run this from a Git checkout with a GitHub `origin`:
+run this from a Git checkout with a supported `origin`:
 
 ```sh
 divinate init
@@ -16,8 +16,16 @@ init infers the normalized repository identity and symbolic branch, creates
 local `.evidence/` state, and writes a minimal `divinate.yaml`. commit the YAML
 file. it is project intent, not collected evidence.
 
-common GitHub SSH and HTTPS origins normalize to `github:owner/name`. divinate
-verifies that the checkout still matches the identity in YAML before using it.
+common GitHub SSH and HTTPS origins normalize to `github:owner/name`. Azure
+DevOps SSH and HTTPS origins normalize to
+`azure-devops:organization/project/repository`. divinate verifies that the
+checkout still matches the identity in YAML before using it.
+
+accepted Azure forms are
+`git@ssh.dev.azure.com:v3/organization/project/repository`,
+`ssh://git@ssh.dev.azure.com/v3/organization/project/repository`,
+`https://dev.azure.com/organization/project/_git/repository`, and the equivalent
+`organization.visualstudio.com` HTTPS form.
 
 ## declare sources
 
@@ -115,6 +123,33 @@ claim. pending, unknown, absent, or incomplete results leave it insufficient.
 this is an observed-result claim; it does not assert that every
 branch-protection-required context ran.
 
+an Azure DevOps branch-policy source uses the same declarative model:
+
+```yaml
+repository:
+  identity: azure-devops:example-org/example-project/example-repository
+  branch: develop
+
+packs:
+  cyberwitchery.azure-devops:
+    executable: divinate-pack-azure-devops
+
+sources:
+  azure-branch-policy:
+    provider:
+      pack: cyberwitchery.azure-devops
+      collector: branch-policy
+    required: true
+```
+
+core asks Azure DevOps for the repository identity and policies applying to the
+configured branch. it obtains an access token from `az account
+get-access-token`, then falls back to `AZURE_DEVOPS_EXT_PAT`. neither credential
+appears in YAML or pack input. the resulting assertions describe current
+configured blocking policies, approving reviews, and build validation. they do
+not establish historical operating effectiveness, pull-request review history,
+pipeline existence, or pipeline results.
+
 ## collect and evaluate
 
 ```sh
@@ -201,6 +236,17 @@ divinate extract <execution-id> --output retained-output.json
 verification is offline. each normal collection records a content-addressed
 snapshot of the exact YAML and links its collection cycle and evaluation to that
 digest. later YAML edits do not rewrite old evidence.
+
+projectless execution state is also verifiable:
+
+```sh
+divinate run --tool derive ./derive -- input
+divinate verify
+```
+
+when `corpus.json` is absent, verify checks retained executions, blobs,
+acquisitions, pack invocations, and their available links directly. it does not
+create a corpus or repository identity.
 
 review `.evidence/` before committing, sharing, or archiving it. retained source
 content, stdout, and stderr are byte-exact and may contain sensitive data.

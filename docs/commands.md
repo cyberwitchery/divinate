@@ -16,7 +16,8 @@ divinate init [--branch <branch>] [--repository-path <checkout>]
 
 creates a minimal `divinate.yaml` and initializes local evidence state.
 repository identity comes from the normalized Git `origin`; branch defaults to
-the current symbolic branch. an existing YAML file is validated, not replaced.
+the current symbolic branch. GitHub and Azure DevOps origins are supported. an
+existing YAML file is validated, not replaced.
 
 if YAML is absent and legacy `.evidence/config.json` exists, init converts its
 live pack and source configuration to YAML. it leaves the legacy file in place
@@ -159,9 +160,11 @@ divinate extract [--state <path>] <execution-id>
   [--stream stdout|stderr] --output <path>
 ```
 
-`verify` checks retained provenance offline. `provenance` prints one assertion's
-evidence graph as JSON. `extract` verifies an execution and writes its exact
-retained stream.
+`verify` checks retained provenance offline. a corpus is optional: projectless
+`run` state verifies its execution transcripts and blobs directly, while state
+with a corpus still receives full graph verification. `provenance` prints one
+assertion's evidence graph as JSON. `extract` verifies an execution and writes
+its exact retained stream.
 
 ## migration from imperative setup
 

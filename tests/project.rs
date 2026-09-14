@@ -68,6 +68,40 @@ fn init_creates_strict_minimal_yaml() {
 }
 
 #[test]
+fn azure_devops_checkout_initializes_and_rejects_identity_drift() {
+    let repository = Repository::new();
+    git(&repository.path, &["remote", "remove", "origin"]);
+    git(
+        &repository.path,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "git@ssh.dev.azure.com:v3/example-org/example-project/example-repository",
+        ],
+    );
+    let state = repository.directory.path().join("state");
+    let output = cli(&repository.path, &state, &["init", "--branch", "develop"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let file: ProjectFile =
+        serde_yaml_ng::from_slice(&fs::read(repository.path.join(project::PROJECT_FILE)).unwrap())
+            .unwrap();
+    assert_eq!(
+        file.repository.identity,
+        "azure-devops:example-org/example-project/example-repository"
+    );
+    assert_eq!(file.repository.branch, "develop");
+
+    let mut mismatched = file;
+    mismatched.repository.identity = "azure-devops:example-org/example-project/Other".into();
+    project::store(&repository.path, &mismatched).unwrap();
+    let error = project::load(&repository.path).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("not divinate.yaml repository identity"));
+}
+
+#[test]
 fn duplicate_source_ids_are_rejected() {
     let repository = Repository::new();
     fs::write(

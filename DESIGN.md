@@ -46,6 +46,11 @@ names resolve through `PATH`; there is no machine-local override layer. source
 presence means enabled, required or optional behavior is declarative, and
 source-specific values remain nested under that source.
 
+repository identity remains a canonical string with provider-specific parsing.
+core currently accepts `github:owner/repository` and
+`azure-devops:organization/project/repository`; this is not a claim of generic
+Git-host support.
+
 each collection stores the exact YAML under its content digest and links that
 snapshot to the collection cycle. evaluations name the same configuration
 digest. current configuration can therefore change without rewriting or
@@ -110,6 +115,12 @@ bytes. it also checks immutable collection-cycle identities, exact project
 configuration digests, evaluation configuration references, and their evidence
 links.
 
+immutable execution, acquisition, and pack objects can exist without a corpus.
+verification checks those objects and their direct links independently, then
+checks corpus and configuration graph links only when those higher-level objects
+exist. it never creates an empty corpus or repository identity to make
+projectless state appear complete.
+
 local commands receive an empty environment plus explicit values. credential-like
 argv and environment names are rejected. stdout and stderr are stored without
 redaction.
@@ -143,12 +154,12 @@ source contracts define the propositions and scopes a remote collector can
 establish. normalizers define the meaning of retained tool output. evaluators define
 claim semantics.
 
-GitHub is the first authenticated provider. a pack selects one of three named
-resources: branch protection, revision check runs, or revision commit statuses.
-core derives the API URL from verified repository context, obtains a local
+GitHub packs select branch protection, revision check runs, or revision commit
+statuses. Azure DevOps packs currently select only current branch policy. core
+derives provider URLs from verified repository context, obtains a local
 credential, performs HTTPS, captures pagination, and strips credential-bearing
-metadata before persistence. the pack receives exact retained response bytes,
-never the credential.
+metadata before persistence. packs receive exact retained response bytes, never
+credentials.
 
 ## packs
 
@@ -164,11 +175,11 @@ pack collector
 protocol version 1 has four operations: `describe`, `collect`, `normalize`,
 and `evaluate`.
 
-`collect` returns either a command plan or the narrow provider-aware GitHub
-acquisition plan. core executes it and binds the resulting execution or
-acquisition transcript to the pack invocation. `normalize` receives retained
-source bytes and returns typed observation fields. core assigns observation
-identity and provenance.
+`collect` returns either a command plan or one narrow provider-aware acquisition
+plan. core executes it and binds the resulting execution or acquisition
+transcript to the pack invocation. `normalize` receives retained source bytes
+and returns typed observation fields. core assigns observation identity and
+provenance.
 
 `evaluate` receives the observations and collection runs declared by the pack's
 metadata. core assigns assertion and evaluator identity, validates evidence
@@ -196,8 +207,9 @@ saved pack assertions remain verifiable without executing the pack. reevaluation
 uses the currently configured executable. reproducing an old derivation requires
 configuring the corresponding old executable.
 
-protocol version 1 plans local commands and the three named GitHub acquisitions.
-it does not expose arbitrary authenticated HTTP or secret-bearing headers.
+protocol version 1 plans local commands, three named GitHub acquisitions, and
+one Azure DevOps branch-policy acquisition. it does not expose arbitrary
+authenticated HTTP or secret-bearing headers.
 
 the repository dogfoods this boundary with in-tree Cargo.lock and GitHub packs
 declared in root `divinate.yaml`. the GitHub pack owns endpoint interpretation;

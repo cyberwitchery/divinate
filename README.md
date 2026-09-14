@@ -35,6 +35,8 @@ $EDITOR divinate.yaml
 `init` derives repository identity from `origin`, derives the branch from Git,
 creates `.evidence/`, and writes a minimal `divinate.yaml`. commit the YAML file
 so source configuration can be reviewed with the rest of the repository.
+GitHub repositories use `github:owner/name`; Azure DevOps repositories use
+`azure-devops:organization/project/repository`.
 
 a repository using the built-in release SBOM source can declare:
 
@@ -85,6 +87,12 @@ real, committed example backed by the in-tree Cargo.lock and GitHub sources.
 GitHub collection uses `gh auth token`, falling back to `GITHUB_TOKEN`, without
 passing or retaining the credential. its revision CI evidence covers both check
 runs and classic commit statuses. authenticate once with `gh auth login`.
+
+Azure DevOps branch policy is also an external pack source. core obtains an
+Azure DevOps access token from Azure CLI, falling back to
+`AZURE_DEVOPS_EXT_PAT`, and retains neither credential. current policy evidence
+can establish configured blocking policy, reviewer, and build-validation claims;
+it does not establish historical enforcement.
 
 ## collect and review
 
@@ -147,6 +155,10 @@ divinate verify
 divinate provenance <assertion-id>
 divinate extract <execution-id> --output retained-output.json
 ```
+
+`run` and `verify` also work without a repository project. in that mode verify
+checks retained execution transcripts and blobs directly; it does not invent a
+corpus or repository identity.
 
 see the [command reference](docs/commands.md) for the complete interface.
 
