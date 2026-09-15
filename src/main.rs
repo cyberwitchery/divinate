@@ -1655,7 +1655,8 @@ fn prepare_remote_pack_collection(
     let planned =
         divinate::pack::bind_acquisitions(planned, &transcript_ids).map_err(provenance_error)?;
     let assessment = acquisition::assess(&transcript, &ContractRegistry::default());
-    let outcome = acquisition_outcome(assessment.enumeration);
+    let (outcome, observed_interval, limitations) =
+        remote_collection_scope(&transcript, &assessment)?;
     let run_id = remote_collection_id(&metadata.id, collector, &transcript.id)?;
     let mut run = divinate::model::CollectionRun {
         id: run_id.clone(),
@@ -1672,13 +1673,11 @@ fn prepare_remote_pack_collection(
             branch: Some(branch.into()),
             interval: interval.clone(),
         },
-        observed_scope: (assessment.enumeration == acquisition::EnumerationStatus::Complete).then(
-            || divinate::model::CollectionScope {
-                proposition: transcript.contents.proposition,
-                branch: Some(branch.into()),
-                interval,
-            },
-        ),
+        observed_scope: observed_interval.map(|interval| divinate::model::CollectionScope {
+            proposition: transcript.contents.proposition,
+            branch: Some(branch.into()),
+            interval,
+        }),
         enumeration: divinate::model::Enumeration {
             items_fetched: assessment.items,
             items_reported: transcript
@@ -1695,7 +1694,7 @@ fn prepare_remote_pack_collection(
             next_token_present: assessment.enumeration == acquisition::EnumerationStatus::Truncated,
         },
         outcome,
-        limitations: acquisition_limitations(&assessment),
+        limitations,
         authority: assessment.authority,
         observation_ids: vec![],
         started_at: transcript.contents.captured_at.clone(),
@@ -1729,6 +1728,61 @@ fn prepare_remote_pack_collection(
         executions: vec![],
         acquisitions: vec![transcript],
     })
+}
+
+fn remote_collection_scope(
+    transcript: &AcquisitionTranscript,
+    assessment: &acquisition::AcquisitionAssessment,
+) -> Result<(
+    CollectionOutcome,
+    Option<divinate::model::TimeRange>,
+    Vec<divinate::model::CollectionLimitation>,
+)> {
+    if assessment.enumeration != acquisition::EnumerationStatus::Complete {
+        return Ok((
+            acquisition_outcome(assessment.enumeration),
+            None,
+            acquisition_limitations(assessment),
+        ));
+    }
+    if matches!(
+        transcript.contents.collector_contract.as_str(),
+        acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
+            | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+    ) {
+        let requested_from = parse_timestamp(&transcript.contents.requested_scope.from)?;
+        let requested_until = parse_timestamp(&transcript.contents.requested_scope.until)?;
+        let retained_from =
+            parse_timestamp(&transcript.contents.captured_at)? - time::Duration::days(365);
+        if requested_until <= retained_from {
+            return Ok((
+                CollectionOutcome::RetentionLimited,
+                None,
+                vec![divinate::model::CollectionLimitation {
+                    kind: divinate::model::CollectionLimitationKind::RetentionBoundary,
+                    detail: "GitHub repository activity is available for at most one year".into(),
+                }],
+            ));
+        }
+        if requested_from < retained_from {
+            return Ok((
+                CollectionOutcome::RetentionLimited,
+                Some(divinate::model::TimeRange {
+                    from: format_timestamp(retained_from)?,
+                    until: transcript.contents.requested_scope.until.clone(),
+                }),
+                vec![divinate::model::CollectionLimitation {
+                    kind: divinate::model::CollectionLimitationKind::RetentionBoundary,
+                    detail: "GitHub repository activity is available for at most one year".into(),
+                }],
+            ));
+        }
+    }
+    Ok((
+        CollectionOutcome::Complete,
+        Some(transcript.contents.requested_scope.clone()),
+        vec![],
+    ))
 }
 
 fn capture_remote_plan(
@@ -1766,6 +1820,12 @@ fn capture_remote_plan(
                 divinate::pack::GithubResource::CommitStatuses => {
                     acquisition::GithubRemoteResource::CommitStatuses
                 }
+                divinate::pack::GithubResource::RepositoryMutations => {
+                    acquisition::GithubRemoteResource::RepositoryMutations
+                }
+                divinate::pack::GithubResource::PullRequestReviews => {
+                    acquisition::GithubRemoteResource::PullRequestReviews
+                }
             };
             acquisition::capture_github_remote(&acquisition::GithubRemoteCapture {
                 repository: repository.into(),
@@ -1780,7 +1840,7 @@ fn capture_remote_plan(
             })
         }
         divinate::pack::RemoteAcquisitionPlan::AzureDevops {
-            resource: divinate::pack::AzureDevopsResource::BranchPolicy,
+            resource,
             max_pages,
         } => {
             let identity = repository_identity
@@ -1797,18 +1857,28 @@ fn capture_remote_plan(
                         .into(),
                 ));
             };
-            acquisition::capture_azure_devops_branch_policy(
-                &acquisition::AzureDevopsRemoteCapture {
-                    organization: (*organization).into(),
-                    project: (*project).into(),
-                    repository: (*repository).into(),
-                    branch: branch.into(),
-                    subject: plan.subject.clone(),
-                    interval,
-                    max_pages: *max_pages,
-                    captured_at: parse_timestamp(&plan.observed_at)?,
-                },
-            )
+            let resource = match resource {
+                divinate::pack::AzureDevopsResource::BranchPolicy => {
+                    acquisition::AzureDevopsRemoteResource::BranchPolicy
+                }
+                divinate::pack::AzureDevopsResource::RepositoryMutations => {
+                    acquisition::AzureDevopsRemoteResource::RepositoryMutations
+                }
+                divinate::pack::AzureDevopsResource::PullRequestReviews => {
+                    acquisition::AzureDevopsRemoteResource::PullRequestReviews
+                }
+            };
+            acquisition::capture_azure_devops_remote(&acquisition::AzureDevopsRemoteCapture {
+                organization: (*organization).into(),
+                project: (*project).into(),
+                repository: (*repository).into(),
+                branch: branch.into(),
+                resource,
+                subject: plan.subject.clone(),
+                interval,
+                max_pages: *max_pages,
+                captured_at: parse_timestamp(&plan.observed_at)?,
+            })
         }
     }
 }
@@ -1822,6 +1892,17 @@ fn normalize_remote_exchanges(
     described: divinate::pack::PackCapture,
     planned: divinate::pack::PackCapture,
 ) -> Result<PreparedRemoteEvidence> {
+    if matches!(
+        transcript.contents.collector_contract.as_str(),
+        acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
+            | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+            | acquisition::AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT
+            | acquisition::AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT
+    ) {
+        return normalize_remote_transcript(
+            config, metadata, plan, transcript, run_id, described, planned,
+        );
+    }
     let mut evidence = PreparedRemoteEvidence {
         sources: vec![],
         observations: vec![],
@@ -1866,6 +1947,71 @@ fn normalize_remote_exchanges(
         evidence.invocations.push(normalization);
     }
     Ok(evidence)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_remote_transcript(
+    config: &divinate::pack::PackConfig,
+    metadata: &divinate::pack::PackMetadata,
+    plan: &divinate::pack::CollectionPlan,
+    transcript: &AcquisitionTranscript,
+    run_id: &str,
+    described: divinate::pack::PackCapture,
+    planned: divinate::pack::PackCapture,
+) -> Result<PreparedRemoteEvidence> {
+    if transcript
+        .contents
+        .exchanges
+        .iter()
+        .any(|exchange| exchange.response.status != 200)
+    {
+        return Ok(PreparedRemoteEvidence {
+            sources: vec![],
+            observations: vec![],
+            invocations: vec![described, planned],
+        });
+    }
+    let transcript_value = serde_json::to_value(transcript).map_err(|error| {
+        Error::Invalid(format!("cannot serialize acquisition transcript: {error}"))
+    })?;
+    let bytes = divinate::canonical_json(&transcript_value)?;
+    let digest = divinate::hex_digest(&bytes);
+    let source = divinate::model::SourceDocument {
+        content: String::from_utf8(bytes.clone())
+            .map_err(|_| Error::Invalid("acquisition transcript is not utf-8 JSON".into()))?,
+        format: plan.adapter.clone(),
+        id: format!("src_{}", &digest[..20]),
+        media_type: "application/json".into(),
+        path: format!("acquisition-transcript:{}", transcript.id),
+        sha256: digest.clone(),
+    };
+    let (normalized, normalization) = divinate::pack::normalize(
+        config,
+        metadata,
+        &plan.adapter,
+        &bytes,
+        &digest,
+        &plan.subject,
+    )?;
+    let mut observation = divinate::pack::remote_observation(
+        normalized,
+        metadata,
+        &normalization.invocation,
+        &source,
+        plan.subject.clone(),
+        plan.observed_at.clone(),
+        run_id.into(),
+    )?;
+    observation.pack_invocation_ids = vec![
+        described.invocation.id.clone(),
+        planned.invocation.id.clone(),
+        normalization.invocation.id.clone(),
+    ];
+    Ok(PreparedRemoteEvidence {
+        sources: vec![source],
+        observations: vec![observation],
+        invocations: vec![described, planned, normalization],
+    })
 }
 
 fn remote_collection_id(pack: &str, collector: &str, transcript: &str) -> Result<String> {

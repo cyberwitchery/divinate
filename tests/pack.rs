@@ -16,6 +16,14 @@ fn example(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(relative)
 }
 
+fn github_pack() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_divinate-pack-github"))
+}
+
+fn azure_devops_pack() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_divinate-pack-azure-devops"))
+}
+
 fn pack_config(executable: PathBuf, configuration: serde_json::Value) -> pack::PackConfig {
     pack::PackConfig {
         executable,
@@ -54,10 +62,7 @@ fn every_pack_shape_shares_one_protocol() {
 
 #[test]
 fn github_pack_plans_remote_reads_without_receiving_credentials() {
-    let config = pack_config(
-        example("packs/github/divinate-pack-github"),
-        serde_json::Value::Null,
-    );
+    let config = pack_config(github_pack(), serde_json::Value::Null);
     let (metadata, _) = pack::describe(&config).unwrap();
     assert_eq!(metadata.id, "cyberwitchery.github");
     let context = serde_json::json!({
@@ -102,10 +107,7 @@ fn github_pack_plans_remote_reads_without_receiving_credentials() {
 
 #[test]
 fn github_pack_normalizes_branch_and_check_responses() {
-    let config = pack_config(
-        example("packs/github/divinate-pack-github"),
-        serde_json::Value::Null,
-    );
+    let config = pack_config(github_pack(), serde_json::Value::Null);
     let (metadata, _) = pack::describe(&config).unwrap();
     let subject = Subject {
         kind: "repository".into(),
@@ -158,10 +160,7 @@ fn github_pack_normalizes_branch_and_check_responses() {
 
 #[test]
 fn azure_devops_pack_plans_and_normalizes_branch_policy() {
-    let config = pack_config(
-        example("packs/azure-devops/divinate-pack-azure-devops"),
-        serde_json::Value::Null,
-    );
+    let config = pack_config(azure_devops_pack(), serde_json::Value::Null);
     let (metadata, _) = pack::describe(&config).unwrap();
     assert_eq!(metadata.id, "cyberwitchery.azure-devops");
     let context = serde_json::json!({
@@ -1662,15 +1661,15 @@ fn github_ci_request(
 }
 
 fn github_pack_result(request: &serde_json::Value) -> serde_json::Value {
-    pack_result("packs/github/divinate-pack-github", request)
+    pack_result_path(&github_pack(), request)
 }
 
 fn azure_pack_result(request: &serde_json::Value) -> serde_json::Value {
-    pack_result("packs/azure-devops/divinate-pack-azure-devops", request)
+    pack_result_path(&azure_devops_pack(), request)
 }
 
-fn pack_result(executable: &str, request: &serde_json::Value) -> serde_json::Value {
-    let mut child = Command::new(example(executable))
+fn pack_result_path(executable: &Path, request: &serde_json::Value) -> serde_json::Value {
+    let mut child = Command::new(executable)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()

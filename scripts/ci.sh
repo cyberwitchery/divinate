@@ -22,6 +22,8 @@ DIVINATE_DOGFOOD_TARGET=target/dogfood
 CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
 
 echo "==> dogfood configured collection"
+CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo build --quiet --bins
+export PATH="$PWD/$DIVINATE_DOGFOOD_TARGET/debug:$PATH"
 CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- collect
 CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- verify
 

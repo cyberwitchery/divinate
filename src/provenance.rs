@@ -213,8 +213,11 @@ pub fn verify_collection_links(
             }
             let owner = run_links.len();
             for exchange in &transcript.contents.exchanges {
-                digest_owner.insert(exchange.response.body_sha256.as_str(), owner);
+                digest_owner.insert(exchange.response.body_sha256.clone(), owner);
             }
+            let transcript_json = serde_json::to_value(transcript).map_err(Error::Serialize)?;
+            let transcript_bytes = crate::canonical_json(&transcript_json)?;
+            digest_owner.insert(crate::hex_digest(&transcript_bytes), owner);
             run_links.push(CollectionTranscriptLink {
                 collection_run_id: run.id.clone(),
                 transcript_id: transcript.id.clone(),

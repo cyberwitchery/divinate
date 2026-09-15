@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use divinate::assertions::{AssertionType, DerivedAssertion, Outcome};
-use divinate::{project, read_json};
+use divinate::read_json;
 
 fn repository() -> (tempfile::TempDir, PathBuf) {
     let directory = tempfile::tempdir().unwrap();
@@ -33,17 +33,6 @@ fn repository() -> (tempfile::TempDir, PathBuf) {
     let mut permissions = fs::metadata(&pack).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&pack, permissions).unwrap();
-    let github_pack_directory = root.join("packs/github");
-    fs::create_dir_all(&github_pack_directory).unwrap();
-    fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("packs/github/divinate-pack-github"),
-        github_pack_directory.join("divinate-pack-github"),
-    )
-    .unwrap();
-    let github_pack = github_pack_directory.join("divinate-pack-github");
-    let mut permissions = fs::metadata(&github_pack).unwrap().permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&github_pack, permissions).unwrap();
     fs::copy(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"),
         root.join("Cargo.lock"),
@@ -54,7 +43,10 @@ fn repository() -> (tempfile::TempDir, PathBuf) {
     let configuration = configuration
         .split_once("  github-branch-protection:\n")
         .map_or(configuration.as_str(), |(local, _)| local)
-        .to_owned();
+        .replace(
+            "executable: divinate-pack-github",
+            &format!("executable: {}", env!("CARGO_BIN_EXE_divinate-pack-github")),
+        );
     fs::write(root.join("divinate.yaml"), configuration).unwrap();
     git(&root, &["add", "."]);
     git(&root, &["commit", "-qm", "configured clone"]);
@@ -64,17 +56,22 @@ fn repository() -> (tempfile::TempDir, PathBuf) {
 #[test]
 fn repository_configuration_is_a_real_collectable_source() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let loaded = project::load(root).unwrap();
-    assert_eq!(loaded.config.repository, "github:cyberwitchery/divinate");
-    assert!(loaded.config.sources.contains_key("cargo-lock"));
-    assert!(loaded
-        .config
-        .sources
-        .contains_key("github-branch-protection"));
-    assert!(loaded.config.sources.contains_key("github-check-runs"));
-    assert!(loaded.config.sources.contains_key("github-commit-statuses"));
-    assert!(loaded.config.packs.contains_key("cyberwitchery.cargo-lock"));
-    assert!(loaded.config.packs.contains_key("cyberwitchery.github"));
+    let source = fs::read(root.join("divinate.yaml")).unwrap();
+    let configured: serde_yaml_ng::Value = serde_yaml_ng::from_slice(&source).unwrap();
+    assert_eq!(
+        configured["repository"]["identity"],
+        "github:cyberwitchery/divinate"
+    );
+    for source in [
+        "cargo-lock",
+        "github-branch-protection",
+        "github-check-runs",
+        "github-commit-statuses",
+        "github-repository-mutations",
+        "github-pull-request-reviews",
+    ] {
+        assert!(configured["sources"].get(source).is_some(), "{source}");
+    }
 }
 
 #[test]

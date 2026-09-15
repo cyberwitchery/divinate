@@ -16,6 +16,13 @@ these checks reduce obvious mistakes; they are not a general secret detector.
 protect `.evidence/` according to the sensitivity of the collected systems and
 outputs. review it before committing, sharing, or archiving it.
 
+the historical PR/review resources use the existing core-only provider
+credentials. their request plans contain named resources, never URLs or auth
+headers. the Rust reference packs receive sanitized retained transcripts only.
+PR descriptions and comments in exact response bodies may contain confidential
+project information even though credentials are refused. offline verification
+and reevaluation do not need authentication.
+
 ## project configuration
 
 `divinate.yaml` is a committed declaration, not a secret store. credential-like

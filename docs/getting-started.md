@@ -152,6 +152,43 @@ Azure DevOps. these assertions do not establish historical operating
 effectiveness, pull-request review history, pipeline existence, or pipeline
 results.
 
+to collect historical approving-review evidence, add these collectors to the
+same provider pack. the GitHub pack uses the same collector names:
+
+```yaml
+sources:
+  branch-mutations:
+    provider:
+      pack: cyberwitchery.azure-devops
+      collector: repository-mutations
+    required: true
+  approving-reviews:
+    provider:
+      pack: cyberwitchery.azure-devops
+      collector: pull-request-reviews
+    required: true
+```
+
+use an explicit interval for the first historical collection:
+
+```sh
+divinate collect --from 2025-01-01T00:00:00Z --until 2025-02-01T00:00:00Z
+divinate status
+divinate review
+```
+
+the historical claim asks whether every branch integration went through a PR
+with at least one recorded approval before integration. complete PR/review
+history alone cannot establish it without branch-mutation coverage. direct
+pushes contradict; missing populations or ambiguous associations remain
+insufficient. current configured policy remains a separate claim. see
+[historical review semantics](packs.md#historical-approving-review).
+
+the GitHub and Azure reference pack executables are built with `cargo build
+--bins` and installed by `cargo install --path .`. put the build directory on
+`PATH` when running a development checkout; no Python runtime is needed for
+these two packs.
+
 ## collect and evaluate
 
 ```sh

@@ -682,7 +682,9 @@ fn control_title(assertion: &DerivedAssertion) -> String {
                 .as_deref()
                 .unwrap_or("target branch")
         ),
-        AssertionType::EveryMainChangeReviewed => "changes received required review".into(),
+        AssertionType::EveryMainChangeReviewed => {
+            "changes received approving review before integration".into()
+        }
         AssertionType::DependencyChangeVisibility => "release dependency changes preserved".into(),
         AssertionType::ReleaseSupplyChainPolicy => "release dependency gate".into(),
         AssertionType::AdequateHumanSecurityReview => "adequate human security review".into(),

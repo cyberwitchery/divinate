@@ -5,7 +5,7 @@ packs:
   cyberwitchery.cargo-lock:
     executable: packs/cargo-lock/divinate-pack-cargo-lock
   cyberwitchery.github:
-    executable: packs/github/divinate-pack-github
+    executable: divinate-pack-github
 sources:
   cargo-lock:
     provider:
@@ -28,4 +28,14 @@ sources:
     provider:
       pack: cyberwitchery.github
       collector: commit-statuses
+    required: true
+  github-repository-mutations:
+    provider:
+      pack: cyberwitchery.github
+      collector: repository-mutations
+    required: true
+  github-pull-request-reviews:
+    provider:
+      pack: cyberwitchery.github
+      collector: pull-request-reviews
     required: true
