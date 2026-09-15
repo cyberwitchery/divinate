@@ -2,6 +2,7 @@
 name = "divinate"
 version = "0.0.1"
 edition = "2021"
+default-run = "divinate"
 rust-version = "1.95"
 license = "Apache-2.0"
 description = "Preserve technical security evidence with provenance and derive traceable typed claims from it."
@@ -22,6 +23,14 @@ name = "divinate"
 [[bin]]
 name = "divinate"
 path = "src/main.rs"
+
+[[bin]]
+name = "divinate-pack-github"
+path = "packs/github/main.rs"
+
+[[bin]]
+name = "divinate-pack-azure-devops"
+path = "packs/azure-devops/main.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

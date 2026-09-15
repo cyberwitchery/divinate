@@ -230,6 +230,17 @@ protocol negotiation.
 
 ## product scope
 
+the review-control reference capability separates current configuration from
+historical recorded approval. provider-specific activity/push, PR association,
+and review contracts feed one provider-neutral historical assertion. support
+requires complete branch mutation and associated review populations; complete
+PR enumeration is not substituted for mutation visibility. one authoritative
+direct integration or completely enumerated unapproved PR is a counterexample.
+current policy is never used as historical evidence. recorded approval before
+integration does not establish all historical stale-review/reset rules. the
+GitHub and Azure DevOps reference packs are separate Rust executables; core
+retains and verifies their sanitized composite acquisition transcripts.
+
 divinate provides repository-local evidence storage, collection and execution
 provenance, coverage assessment, typed assertions, historical evaluation, and
 file-based views.

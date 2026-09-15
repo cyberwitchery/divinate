@@ -1,13 +1,17 @@
 # in-tree packs
 
-each directory contains one executable implementing pack protocol version 1. see
+the GitHub and Azure DevOps reference packs are Rust binaries, built and installed
+with Divinate. the other directories contain executable fixtures. all implement
+pack protocol version 1. see
 [the protocol documentation](../docs/packs.md).
 
 - `cargo-lock` is the repository's dogfood source. it retains and parses the
   exact Cargo.lock dependency inventory and derives a repository-scoped claim.
-- `github` plans branch-protection, check-run, and commit-status reads. core performs the
+- `github` plans branch-protection, check-run, commit-status, branch activity,
+  PR association, and review reads. core performs the
   authenticated requests; the pack receives only retained response bytes.
-- `azure-devops` plans current branch-policy reads. core resolves the repository
+- `azure-devops` plans current branch-policy, branch-push, completed PR, and
+  vote-history reads. core resolves the repository
   ID, authenticates, and retains the exact Azure responses without exposing the
   credential to the pack.
 - `sbom-collector` collects and normalizes `sbom-diff` output.

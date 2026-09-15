@@ -24,6 +24,13 @@ divinate.yaml
 `divinate.yaml` is intended to be committed and reviewed. `.evidence/` records
 what happened and may need a different commit, retention, and access policy.
 
+historical review acquisition retains a composite transcript: the population
+pages, mutation-to-PR metadata, and review pages are one immutable acquisition
+graph. its canonical JSON is the normalizer's source document; verification
+recomputes that digest from the linked transcript. exact individual response
+bodies remain available inside it. completed collection windows accumulate and
+can be reevaluated offline without consulting current provider configuration.
+
 ## project configuration
 
 the canonical configuration is strict YAML at the repository root:

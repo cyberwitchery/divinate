@@ -48,7 +48,7 @@ fn repository_evaluation_does_not_invent_release_scope() {
 }
 
 #[test]
-fn provider_specific_core_assertions_and_limitations_apply_only_to_github() {
+fn historical_review_limitations_are_provider_neutral() {
     let corpus = corpus();
     let github =
         evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
@@ -56,7 +56,11 @@ fn provider_specific_core_assertions_and_limitations_apply_only_to_github() {
     assert!(github
         .limitations
         .iter()
-        .any(|item| item.contains("github audit events")));
+        .all(|item| !item.to_ascii_lowercase().contains("github")));
+    assert!(github
+        .limitations
+        .iter()
+        .any(|item| item.contains("stale-review or vote-reset")));
 
     let mut azure = target();
     azure.repository = "azure-devops:example-org/example-project/example-repository".into();
@@ -367,6 +371,114 @@ fn terminal_pagination_and_authoritative_scope_support_the_universal_claim() {
         .coverage
         .iter()
         .all(|decision| decision.outcome == CoverageOutcome::Complete));
+}
+
+#[test]
+fn historical_review_requires_explicit_revision_and_branch_joins() {
+    for mismatch in ["revision", "branch", "mapping", "mutation_kind"] {
+        let mut corpus = corpus();
+        if mismatch == "revision" || mismatch == "branch" {
+            let review = corpus
+                .observations
+                .iter_mut()
+                .find(|item| item.kind == ObservationKind::ReviewRecord)
+                .unwrap();
+            if mismatch == "revision" {
+                review.data["pull_requests"][0]["merge_commit_sha"] = json!("other-revision");
+            } else {
+                review
+                    .subject
+                    .qualifiers
+                    .insert("branch".into(), json!("other-branch"));
+            }
+        } else {
+            let mutation = corpus
+                .observations
+                .iter_mut()
+                .find(|item| item.kind == ObservationKind::MutationHistory)
+                .unwrap();
+            if mismatch == "mapping" {
+                mutation.data["events"][0]["pull_request"] = serde_json::Value::Null;
+            } else {
+                mutation.data["events"][0]["kind"] = json!("future-integration-kind");
+            }
+        }
+        let assertion =
+            evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
+                .unwrap();
+        assert_eq!(
+            assertion.outcome,
+            Outcome::InsufficientEvidence,
+            "{mismatch}"
+        );
+    }
+}
+
+#[test]
+fn historical_review_state_and_chronology_are_conservative() {
+    for (state, timestamp, expected) in [
+        ("approved", Some("2026-09-02T09:00:00Z"), Outcome::Supported),
+        (
+            "approved",
+            Some("2026-09-02T12:00:00Z"),
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            "approved",
+            Some("2026-09-02T13:00:00Z"),
+            Outcome::Contradicted,
+        ),
+        (
+            "commented",
+            Some("2026-09-02T09:00:00Z"),
+            Outcome::Contradicted,
+        ),
+        (
+            "changes_requested",
+            Some("2026-09-02T09:00:00Z"),
+            Outcome::Contradicted,
+        ),
+        (
+            "dismissed",
+            Some("2026-09-02T09:00:00Z"),
+            Outcome::InsufficientEvidence,
+        ),
+        ("pending", None, Outcome::InsufficientEvidence),
+        (
+            "future-state",
+            Some("2026-09-02T09:00:00Z"),
+            Outcome::InsufficientEvidence,
+        ),
+        ("approved", None, Outcome::InsufficientEvidence),
+    ] {
+        let mut corpus = corpus();
+        let review = corpus
+            .observations
+            .iter_mut()
+            .find(|item| item.kind == ObservationKind::ReviewRecord)
+            .unwrap();
+        review.data["pull_requests"][0]["approvals"] =
+            json!([{"actor":"bob","state":state,"submitted_at":timestamp}]);
+        let assertion =
+            evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
+                .unwrap();
+        assert_eq!(assertion.outcome, expected, "{state} {timestamp:?}");
+    }
+}
+
+#[test]
+fn complete_empty_reviews_are_a_concrete_counterexample() {
+    let mut corpus = corpus();
+    let review = corpus
+        .observations
+        .iter_mut()
+        .find(|item| item.kind == ObservationKind::ReviewRecord)
+        .unwrap();
+    review.data["pull_requests"][0]["approvals"] = json!([]);
+    let assertion =
+        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
+            .unwrap();
+    assert_eq!(assertion.outcome, Outcome::Contradicted);
 }
 
 #[test]

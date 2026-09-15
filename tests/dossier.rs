@@ -68,7 +68,7 @@ fn universal_gap_and_human_boundary_remain_specific() {
         .contents
         .controls
         .iter()
-        .find(|control| control.title == "changes received required review")
+        .find(|control| control.title == "changes received approving review before integration")
         .unwrap();
     assert_eq!(universal.state, "insufficient evidence");
     assert!(universal
@@ -185,7 +185,7 @@ fn regeneration_is_deterministic_and_markdown_uses_machine_states() {
         matches!(
             control.title.as_str(),
             "approval required on main"
-                | "changes received required review"
+                | "changes received approving review before integration"
                 | "release dependency changes preserved"
                 | "release dependency gate"
                 | "adequate human security review"

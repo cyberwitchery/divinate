@@ -131,8 +131,9 @@ remote plans are provider-aware and deliberately narrow:
 {"acquisition":{"provider":"azure_devops","resource":"branch_policy","max_pages":10}}
 ```
 
-GitHub resources are branch protection, check runs, and commit statuses. Azure
-DevOps currently exposes only branch policy. the pack supplies no URL, headers,
+GitHub resources are branch protection, check runs, commit statuses,
+`repository_mutations`, and `pull_request_reviews`. Azure DevOps exposes branch
+policy and the same two historical resource names. the pack supplies no URL, headers,
 or credential. core derives each API URL from verified repository context,
 scopes authentication to the provider host, disables redirects, and captures
 pagination.
@@ -148,6 +149,55 @@ for the fully qualified branch ref. both responses and every continuation page
 are retained. its contract establishes the current configuration Azure DevOps
 reported for that repository branch at acquisition time. it does not establish
 historical review or build enforcement.
+
+### historical approving review
+
+both Rust reference packs expose `repository-mutations` and
+`pull-request-reviews` collectors. enable both to evaluate the provider-neutral
+`every_main_change_reviewed` assertion over `collect --from ... --until ...`.
+intervals are half-open: `from <= integration_time < until`.
+
+the proposition is: every branch ref mutation in the interval was attributable
+to a PR with at least one recorded approval by someone other than its author
+before integration. this is not a claim that the then-applicable approval policy
+was satisfied. current policy never supplies historical review evidence.
+
+GitHub core enumerates repository activity for the branch, follows pagination,
+and retains commit-to-PR associations and each associated PR's reviews. activity
+explicitly identified as a push or force push is a counterexample. PR merges
+require a unique association whose `merge_commit_sha` matches the resulting
+branch revision. GitHub defines that field for merge, squash, and rebase merges
+in its [PR API documentation](https://docs.github.com/en/rest/pulls/pulls).
+unsupported or ambiguous associations leave a gap. the activity resource is
+queried with `time_period=year`; older requested scope is retention-limited.
+
+Azure core enumerates branch pushes for the exact interval and completed PRs
+targeting the branch. mutation association enumerates all completed PRs rather
+than applying the push interval to PR closure timestamps. each unique resulting
+revision is joined to `lastMergeCommit.commitId`. vote-update threads provide
+reviewer identity, vote, and time; final reviewer votes alone do not establish
+chronology. votes `10` and `5` record approval, `-10` and `-5` do not; zero and
+unrecognized values remain unresolved. see the
+[thread API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1).
+
+support requires complete authoritative mutation and review coverage, complete
+PR associations, and a qualifying approval for every integration. an
+authoritative direct integration or a complete PR review record without a
+pre-integration approval contradicts. incomplete enumeration, missing mapping,
+unknown states, and retention gaps remain insufficient. dismissed GitHub
+reviews cannot reconstruct their former state and remain unresolved when no
+other approval establishes the predicate. recorded approval does not prove
+stale-review or vote-reset policy satisfaction.
+
+the versioned contracts remain provider-specific:
+`github-repository-mutations/v1`, `github-pull-request-reviews/v1`,
+`azure-devops-repository-mutations/v1`, and
+`azure-devops-pull-request-reviews/v1`. core retains a composite acquisition
+transcript containing every request, exact body, pagination link, and termination.
+the normalizer receives that sanitized transcript, not credentials or network
+access. offline verification binds the normalized source to its canonical
+transcript bytes. adjacent complete windows compose; an uncovered interval does
+not disappear merely because later evidence exists.
 
 ## execution and retained configuration
 

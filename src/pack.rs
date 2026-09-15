@@ -201,6 +201,8 @@ pub enum GithubResource {
     BranchProtection,
     CheckRuns,
     CommitStatuses,
+    RepositoryMutations,
+    PullRequestReviews,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,6 +210,8 @@ pub enum GithubResource {
 /// the narrow azure devops resources core can acquire for packs.
 pub enum AzureDevopsResource {
     BranchPolicy,
+    RepositoryMutations,
+    PullRequestReviews,
 }
 
 const fn default_per_page() -> u16 {

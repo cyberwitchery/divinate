@@ -26,7 +26,7 @@ const CONFIGURED_REVIEWS_VERSION: &str = "configured-reviews/v1";
 const RELEASE_REVIEWS_VERSION: &str = "release-reviews/v1";
 const SUPPLY_CHAIN_VERSION: &str = "release-supply-chain/v1";
 const SECURITY_REVIEW_VERSION: &str = "adequate-security-review/v1";
-const MAIN_CHANGES_REVIEWED_VERSION: &str = "main-changes-reviewed/v1";
+const MAIN_CHANGES_REVIEWED_VERSION: &str = "main-changes-reviewed/v2";
 const INDEPENDENT_REVIEW_VERSION: &str = "configured-independent-review/v1";
 const DEPENDENCY_VISIBILITY_VERSION: &str = "dependency-change-visibility/v1";
 const CONFIG_FRESHNESS_DAYS: i64 = 7;
@@ -369,7 +369,7 @@ pub fn evaluate_dependency_change_visibility(
     Ok(assertion)
 }
 
-/// evaluate whether every target-branch mutation was reviewed before integration.
+/// evaluate whether every target-branch mutation received approval before integration.
 ///
 /// complete mutation and review coverage supports the claim. one direct push
 /// contradicts it with incomplete coverage.
@@ -385,7 +385,7 @@ pub fn evaluate_every_main_change_reviewed(
     let mut assertion = base_assertion(
         AssertionType::EveryMainChangeReviewed,
         &format!(
-            "every change to {} during {} .. {} was reviewed before integration",
+            "every change integrated into {} during {} .. {} received at least one approving review before integration",
             target.branch, target.from, target.until
         ),
         interval_branch_subject(target),
@@ -436,19 +436,7 @@ pub fn evaluate_every_main_change_reviewed(
         ));
     }
     assertion.coverage = vec![mutation_coverage, review_coverage];
-    if authoritative_mutation_runs.iter().any(|run_id| {
-        corpus.collections.iter().any(|run| {
-            &run.id == run_id
-                && (run.collector.name.to_ascii_lowercase().contains("github")
-                    || run
-                        .collector
-                        .collector
-                        .to_ascii_lowercase()
-                        .contains("github"))
-        })
-    }) {
-        assertion.limitations.push("github audit events are treated as authoritative for recorded repository mutations only because the collection run declares that proposition and complete scope".into());
-    }
+    assertion.limitations.push("an approval recorded before integration does not establish that every provider-specific stale-review or vote-reset condition remained satisfied".into());
     Ok(assertion)
 }
 
@@ -850,8 +838,10 @@ fn evaluate_pull_request(
         .iter()
         .filter(|approval| approval.state == "approved" && approval.actor != pull_request.author)
         .filter_map(|approval| {
-            parse_timestamp(&approval.submitted_at)
-                .ok()
+            approval
+                .submitted_at
+                .as_deref()
+                .and_then(|submitted_at| parse_timestamp(submitted_at).ok())
                 .filter(|submitted| *submitted <= merged_at)
                 .map(|_| approval.actor.as_str())
         })
@@ -961,6 +951,8 @@ fn collect_mutations<'a>(
     let interval_from = parse_timestamp(&target.from)?;
     let interval_until = parse_timestamp(&target.until)?;
     let mut merges = Vec::new();
+    let mut seen = BTreeMap::new();
+    let mut direct_integrations = 0;
     for observation in corpus.observations.iter().filter(|item| {
         item.kind == ObservationKind::MutationHistory
             && item.subject.id == target.repository
@@ -976,28 +968,42 @@ fn collect_mutations<'a>(
             if occurred_at < interval_from || occurred_at >= interval_until {
                 continue;
             }
+            if let Some(previous) = seen.insert(event.event_id.clone(), event.clone()) {
+                if previous != event {
+                    assertion.missing.push(MissingEvidence {
+                        requirement: "consistent_branch_mutation_identity".into(),
+                        subject: event.commit,
+                        reason: "retained records disagree about the same branch mutation".into(),
+                    });
+                }
+                continue;
+            }
             match event.kind.as_str() {
                 "direct_push" => {
                     assertion.contradictions.push(use_evidence(
                         observation,
                         &format!(
-                            "mutation event {} records direct push of {}",
-                            event.event_id, event.commit
+                            "a direct integration into {} was recorded at {}",
+                            target.branch, event.occurred_at
                         ),
                     ));
-                    assertion.reasoning.push(step(
-                        "direct_push_observed",
-                        "an authoritative mutation observation is a concrete counterexample",
-                        &[observation],
-                    ));
+                    direct_integrations += 1;
                 }
                 "pull_request_merge" => merges.push((observation, event)),
-                _ => assertion.considered.push(use_evidence(
-                    observation,
-                    "mutation kind was preserved but is not interpreted by this evaluator",
-                )),
+                _ => assertion.missing.push(MissingEvidence {
+                    requirement: "interpretable_branch_mutation".into(),
+                    subject: event.commit,
+                    reason: "the branch mutation has an unrecognized integration kind".into(),
+                }),
             }
         }
+    }
+    if direct_integrations > 0 {
+        assertion.reasoning.push(step(
+            "direct_push_observed",
+            &format!("{direct_integrations} direct integrations into {} were recorded; each is a counterexample to approving review through a PR", target.branch),
+            &[],
+        ));
     }
     Ok(merges)
 }
@@ -1010,7 +1016,12 @@ fn collect_reviews<'a>(
     let mut reviews = BTreeMap::new();
     for observation in corpus.observations.iter().filter(|item| {
         item.kind == ObservationKind::ReviewRecord
-            && item.subject.qualifier("repository") == Some(target.repository.as_str())
+            && (item.subject.id == target.repository
+                || item.subject.qualifier("repository") == Some(target.repository.as_str()))
+            && item
+                .subject
+                .qualifier("branch")
+                .is_none_or(|branch| branch == target.branch)
             && item
                 .collection_run_id
                 .as_ref()
@@ -1047,12 +1058,38 @@ fn evaluate_mutation_reviews(
             });
             continue;
         };
+        if pull_request.merge_commit_sha != event.commit {
+            assertion.missing.push(MissingEvidence {
+                requirement: "mutation_to_pull_request_revision_identity".into(),
+                subject: event.commit,
+                reason: format!(
+                    "pull request #{number} records integration revision {}, which does not match the branch mutation",
+                    pull_request.merge_commit_sha
+                ),
+            });
+            continue;
+        }
+        let integrated = parse_timestamp(&pull_request.merged_at)?;
+        if integrated < parse_timestamp(&target.from)?
+            || integrated >= parse_timestamp(&target.until)?
+        {
+            assertion.missing.push(MissingEvidence {
+                requirement: "pull_request_integration_interval".into(),
+                subject: format!("{}#pull/{number}", target.repository),
+                reason: "the associated PR was integrated outside the evaluated interval".into(),
+            });
+            continue;
+        }
         let occurred_at = parse_timestamp(&event.occurred_at)?;
         let reviewed = pull_request.approvals.iter().any(|approval| {
             approval.state == "approved"
                 && approval.actor != pull_request.author
-                && parse_timestamp(&approval.submitted_at)
-                    .is_ok_and(|submitted| submitted <= occurred_at)
+                && approval
+                    .submitted_at
+                    .as_deref()
+                    .is_some_and(|submitted_at| {
+                        parse_timestamp(submitted_at).is_ok_and(|submitted| submitted < occurred_at)
+                    })
         });
         assertion.identity_joins.push(join(
             mutation,
@@ -1073,12 +1110,29 @@ fn evaluate_mutation_reviews(
             ));
             assertion.support.push(use_evidence(
                 review_observation,
-                &format!("pull request #{number} had an independent approval before integration"),
+                &format!("pull request #{number} had an approving review by another recorded actor before integration"),
             ));
+        } else if !pull_request.enumeration_complete
+            || pull_request.approvals.iter().any(|approval| {
+                !matches!(
+                    approval.state.as_str(),
+                    "approved" | "changes_requested" | "commented" | "rejected"
+                ) || (approval.state == "approved"
+                    && approval.submitted_at.as_deref().is_none_or(|timestamp| {
+                        parse_timestamp(timestamp)
+                            .map_or(true, |submitted| submitted == occurred_at)
+                    }))
+            })
+        {
+            assertion.missing.push(MissingEvidence {
+                requirement: "terminal_pull_request_review_state".into(),
+                subject: format!("{}#pull/{number}", target.repository),
+                reason: "the retained review history is incomplete or contains an unknown, transitional, or undated approval state".into(),
+            });
         } else {
             assertion.contradictions.push(use_evidence(
                 review_observation,
-                &format!("pull request #{number} had no independent approval before integration"),
+                &format!("pull request #{number} had no approving review before integration"),
             ));
         }
     }
@@ -1391,8 +1445,15 @@ struct PullRequestReviewData {
 struct PullRequestData {
     number: u64,
     author: String,
+    merge_commit_sha: String,
     merged_at: String,
     approvals: Vec<ApprovalData>,
+    #[serde(default = "complete_legacy_review_record")]
+    enumeration_complete: bool,
+}
+
+const fn complete_legacy_review_record() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -1400,7 +1461,7 @@ struct MutationHistoryData {
     events: Vec<MutationEventData>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize, PartialEq, Eq)]
 struct MutationEventData {
     event_id: String,
     kind: String,
@@ -1412,7 +1473,7 @@ struct MutationEventData {
 #[derive(Deserialize)]
 struct ApprovalData {
     actor: String,
-    submitted_at: String,
+    submitted_at: Option<String>,
     state: String,
 }
 

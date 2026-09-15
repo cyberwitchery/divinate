@@ -80,12 +80,15 @@ jobs:
     permissions:
       checks: read
       contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # exercise the committed clone-and-collect configuration and its provenance.
       - run: python3 --version
+      - run: cargo build --bins
+      - run: echo "$PWD/target/debug" >> "$GITHUB_PATH"
       - run: cargo run --quiet --bin divinate -- collect
         env:
           GITHUB_TOKEN: ${{ github.token }}
