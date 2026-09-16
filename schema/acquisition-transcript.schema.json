@@ -15,7 +15,7 @@
         "collector_contract":{"type":"string"},
         "collector_version":{"type":"string"},
         "subject":{"type":"object","required":["kind","id"],"properties":{"kind":{"type":"string"},"id":{"type":"string"},"branch":{"type":"string"}}},
-        "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","supply_chain_policy_decision","declared_dependencies"]},
+        "proposition":{"enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","build_validation_results","supply_chain_policy_decision","declared_dependencies"]},
         "requested_scope":{"$ref":"#/$defs/interval"},
         "captured_at":{"type":"string","format":"date-time"},
         "initial_request":{"$ref":"#/$defs/request"},

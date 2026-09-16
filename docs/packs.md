@@ -74,6 +74,10 @@ the built-in source.
 
 ## protocol
 
+Commercial packs use this same protocol and may declare maintained compatibility
+metadata. See [commercial packs](commercial-packs.md) for the public boundary and
+the historical build-validation acquisition resources.
+
 protocol version 1 has four operations:
 
 - `describe` returns metadata, collectors, evaluators, source contracts,

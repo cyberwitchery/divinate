@@ -29,7 +29,7 @@
       "properties":{"proposition":{"$ref":"#/$defs/proposition"},"branch":{"type":"string"},"interval":{"$ref":"#/$defs/interval"}}
     },
     "proposition": {
-      "enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","supply_chain_policy_decision","declared_dependencies"]
+      "enum":["pull_request_population","pull_request_reviews","repository_mutations","commit_ancestry","branch_configuration","revision_checks","build_validation_results","supply_chain_policy_decision","declared_dependencies"]
     },
     "collection_run": {
       "type":"object","additionalProperties":false,
@@ -73,7 +73,7 @@
         "data":{"type":"object"},
         "evidence_class":{"enum":["configured_intent","observed_operation","observed_state"]},
         "id":{"type":"string","pattern":"^ev_[0-9a-f]{20}$"},
-        "kind":{"enum":["change_set","configuration_history","configuration_snapshot","mutation_history","policy_check","release_membership","review_record"]},
+        "kind":{"enum":["change_set","configuration_history","configuration_snapshot","mutation_history","policy_check","release_membership","review_record","validation_record"]},
         "observed_at":{"type":"string","format":"date-time"},
         "producer":{"$ref":"#/$defs/producer"},
         "provenance":{"type":"object","additionalProperties":false,"required":["pointer","source_id"],"properties":{"pointer":{"type":"string"},"source_id":{"type":"string","pattern":"^src_[0-9a-f]{20}$"}}},

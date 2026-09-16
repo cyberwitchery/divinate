@@ -158,14 +158,21 @@ provider-specific observations may derive provider-neutral assertions when the
 predicate is genuinely shared. the assertion keeps its stable semantic identity;
 provider details remain in its evidence, reasoning, and derivation provenance.
 
-GitHub packs select branch protection, revision check runs, or revision commit
-statuses. Azure DevOps packs currently select only current branch policy. core
+GitHub packs select branch protection, revision checks, review history, or
+historical build-validation inputs. Azure DevOps packs select branch policy,
+review history, or policy-evaluation history. core
 derives provider URLs from verified repository context, obtains a local
 credential, performs HTTPS, captures pagination, and strips credential-bearing
 metadata before persistence. packs receive exact retained response bytes, never
 credentials.
 
 ## packs
+
+The public pack protocol is also the OSS/commercial boundary. Commercial packs
+may maintain control definitions, compatibility promises, mappings, and exports,
+but receive no privileged state, credential, or acquisition access. Core remains
+responsible for exact evidence, provenance, coverage, validation, persistence,
+and offline verification. See `docs/commercial-packs.md`.
 
 ```text
 pack collector

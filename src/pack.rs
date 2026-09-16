@@ -77,6 +77,22 @@ pub struct PackMetadata {
     pub source_contracts: Vec<String>,
     #[serde(default)]
     pub configuration_schema: Value,
+    #[serde(default)]
+    pub compatibility: Option<PackCompatibility>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// independently maintained compatibility and semantic-version metadata.
+pub struct PackCompatibility {
+    pub core: String,
+    pub control_definition_version: String,
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub source_contracts: Vec<String>,
+    #[serde(default)]
+    pub control_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -203,6 +219,7 @@ pub enum GithubResource {
     CommitStatuses,
     RepositoryMutations,
     PullRequestReviews,
+    BuildValidationHistory,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -212,6 +229,7 @@ pub enum AzureDevopsResource {
     BranchPolicy,
     RepositoryMutations,
     PullRequestReviews,
+    BuildValidationHistory,
 }
 
 const fn default_per_page() -> u16 {
@@ -1342,7 +1360,70 @@ fn validate_metadata(metadata: &PackMetadata) -> Result<()> {
             "pack id and version must not be empty".into(),
         ));
     }
+    if let Some(compatibility) = &metadata.compatibility {
+        if compatibility.control_definition_version.trim().is_empty()
+            || compatibility
+                .control_ids
+                .iter()
+                .any(|id| id.trim().is_empty())
+        {
+            return Err(Error::Invalid(format!(
+                "pack {} has incomplete compatibility metadata",
+                metadata.id
+            )));
+        }
+        if !version_requirement_matches(&compatibility.core, env!("CARGO_PKG_VERSION"))? {
+            return Err(Error::Invalid(format!(
+                "pack {} requires Divinate core {}, current version is {}",
+                metadata.id,
+                compatibility.core,
+                env!("CARGO_PKG_VERSION")
+            )));
+        }
+    }
     Ok(())
+}
+
+fn version_requirement_matches(requirement: &str, version: &str) -> Result<bool> {
+    let version = parse_version(version)?;
+    requirement.split(',').try_fold(true, |matches, clause| {
+        let clause = clause.trim();
+        let (operator, expected) = [">=", "<=", ">", "<", "="]
+            .into_iter()
+            .find_map(|operator| clause.strip_prefix(operator).map(|rest| (operator, rest)))
+            .ok_or_else(|| Error::Invalid(format!("unsupported core version clause {clause:?}")))?;
+        let expected = parse_version(expected.trim())?;
+        let clause_matches = match operator {
+            ">=" => version >= expected,
+            "<=" => version <= expected,
+            ">" => version > expected,
+            "<" => version < expected,
+            "=" => version == expected,
+            _ => unreachable!(),
+        };
+        Ok(matches && clause_matches)
+    })
+}
+
+fn parse_version(value: &str) -> Result<(u64, u64, u64)> {
+    let core = value.split_once('-').map_or(value, |(core, _)| core);
+    let parts = core.split('.').collect::<Vec<_>>();
+    let [major, minor, patch] = parts.as_slice() else {
+        return Err(Error::Invalid(format!(
+            "invalid semantic version {value:?}"
+        )));
+    };
+    Ok((
+        major
+            .parse()
+            .map_err(|_| Error::Invalid(format!("invalid semantic version {value:?}")))?,
+        minor
+            .parse()
+            .map_err(|_| Error::Invalid(format!("invalid semantic version {value:?}")))?,
+        patch
+            .parse()
+            .map_err(|_| Error::Invalid(format!("invalid semantic version {value:?}")))?,
+    ))
 }
 
 fn validate_assertions(
@@ -1488,4 +1569,16 @@ fn corpus_observation_run(
             run.outcome == crate::model::CollectionOutcome::Complete
                 && run.authority.contains(&proposition)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commercial_compatibility_ranges_fail_closed() {
+        assert!(version_requirement_matches(">=0.0.1,<0.1.0", "0.0.1").unwrap());
+        assert!(!version_requirement_matches(">=0.1.0,<1.0.0", "0.0.1").unwrap());
+        assert!(version_requirement_matches("future", "0.0.1").is_err());
+    }
 }

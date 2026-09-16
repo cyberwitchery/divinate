@@ -73,6 +73,7 @@ pub enum ObservationKind {
     PolicyCheck,
     ReleaseMembership,
     ReviewRecord,
+    ValidationRecord,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -261,6 +262,7 @@ pub enum Proposition {
     CommitAncestry,
     BranchConfiguration,
     RevisionChecks,
+    BuildValidationResults,
     SupplyChainPolicyDecision,
     DeclaredDependencies,
 }

@@ -1749,6 +1749,7 @@ fn remote_collection_scope(
         transcript.contents.collector_contract.as_str(),
         acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
             | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+            | acquisition::GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
     ) {
         let requested_from = parse_timestamp(&transcript.contents.requested_scope.from)?;
         let requested_until = parse_timestamp(&transcript.contents.requested_scope.until)?;
@@ -1826,6 +1827,9 @@ fn capture_remote_plan(
                 divinate::pack::GithubResource::PullRequestReviews => {
                     acquisition::GithubRemoteResource::PullRequestReviews
                 }
+                divinate::pack::GithubResource::BuildValidationHistory => {
+                    acquisition::GithubRemoteResource::BuildValidationHistory
+                }
             };
             acquisition::capture_github_remote(&acquisition::GithubRemoteCapture {
                 repository: repository.into(),
@@ -1867,6 +1871,9 @@ fn capture_remote_plan(
                 divinate::pack::AzureDevopsResource::PullRequestReviews => {
                     acquisition::AzureDevopsRemoteResource::PullRequestReviews
                 }
+                divinate::pack::AzureDevopsResource::BuildValidationHistory => {
+                    acquisition::AzureDevopsRemoteResource::BuildValidationHistory
+                }
             };
             acquisition::capture_azure_devops_remote(&acquisition::AzureDevopsRemoteCapture {
                 organization: (*organization).into(),
@@ -1896,8 +1903,10 @@ fn normalize_remote_exchanges(
         transcript.contents.collector_contract.as_str(),
         acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
             | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+            | acquisition::GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
             | acquisition::AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT
             | acquisition::AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT
+            | acquisition::AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT
     ) {
         return normalize_remote_transcript(
             config, metadata, plan, transcript, run_id, described, planned,

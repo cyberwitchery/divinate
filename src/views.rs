@@ -377,6 +377,7 @@ const fn proposition_name(proposition: Proposition) -> &'static str {
         Proposition::CommitAncestry => "commit ancestry",
         Proposition::BranchConfiguration => "branch configuration",
         Proposition::RevisionChecks => "revision checks",
+        Proposition::BuildValidationResults => "build validation results",
         Proposition::SupplyChainPolicyDecision => "supply-chain policy decision",
         Proposition::DeclaredDependencies => "declared dependencies",
     }
