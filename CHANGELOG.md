@@ -23,3 +23,4 @@
 - render shared governance claims without duplicate provider-specific rows or gaps
 - remove the scanner-specific `collect release` compatibility command
 - allow repository-scoped evaluation without inventing a release
+- run each pack in its own working directory, removed when the run ends

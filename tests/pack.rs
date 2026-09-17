@@ -33,6 +33,44 @@ fn pack_config(executable: PathBuf, configuration: serde_json::Value) -> pack::P
 }
 
 #[test]
+fn a_pack_runs_in_a_private_directory_that_does_not_outlive_it() {
+    let scratch = std::env::temp_dir().join(format!("divinate-cwd-probe-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch).unwrap();
+    let report = scratch.join("cwd.txt");
+    let script = scratch.join("divinate-pack-cwd-probe");
+
+    // the pack reports where it was put and whether anything else was there.
+    // its environment is cleared, so the report path is baked into the script.
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\npwd > '{report}'\nls -A . | wc -l >> '{report}'\ncat > /dev/null\n             printf '%s' '{{\"ok\":true,\"result\":{{\"id\":\"probe\",\"version\":\"0.1.0\",             \"protocol_version\":1,\"collectors\":[],\"evaluators\":[],\"evaluator_inputs\":{{}},             \"evaluator_propositions\":{{}},\"source_contracts\":[],\"configuration_schema\":{{}}}}}}'\n",
+            report = report.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+    pack::describe(&pack_config(script, serde_json::Value::Null)).unwrap();
+
+    let reported = fs::read_to_string(&report).unwrap();
+    let mut lines = reported.lines();
+    // not canonicalized: by now the directory is correctly gone. `pwd` with a
+    // cleared environment reports the physical path already.
+    let cwd = PathBuf::from(lines.next().unwrap());
+    let entries: usize = lines.next().unwrap().trim().parse().unwrap();
+    let shared = fs::canonicalize(std::env::temp_dir()).unwrap();
+
+    assert_ne!(cwd, shared, "the pack ran in the shared temp directory");
+    assert_eq!(cwd.parent(), Some(shared.as_path()));
+    assert_eq!(entries, 0, "the pack started in an empty directory");
+    assert!(!cwd.exists(), "{} outlived the run", cwd.display());
+
+    let _ = fs::remove_dir_all(&scratch);
+}
+
+#[test]
 fn every_pack_shape_shares_one_protocol() {
     let open = pack::describe(&pack_config(
         example("packs/sbom-collector/divinate-pack-sbom-collector"),

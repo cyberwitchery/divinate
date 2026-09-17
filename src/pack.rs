@@ -10,12 +10,12 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration as StdDuration, Instant};
+use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -704,6 +704,60 @@ fn observation_with_provenance(
     })
 }
 
+/// a working directory holding one pack run, removed when the run ends.
+///
+/// the shared temp directory is not one: a pack writing a relative path there
+/// meets every other run's files, and on a multi-user host it is not the
+/// pack's own. each run gets a fresh directory instead.
+struct PackWorkingDir {
+    path: PathBuf,
+}
+
+impl PackWorkingDir {
+    /// `create_dir` fails when the path already exists, a symlink included, so
+    /// a name something else got to first is never adopted. the attempts cover
+    /// a collision with another run started in the same nanosecond.
+    fn create() -> Result<Self> {
+        let parent = std::env::temp_dir();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        for attempt in 0..16u32 {
+            let path = parent.join(format!(
+                "divinate-pack-{}-{stamp}-{attempt}",
+                std::process::id()
+            ));
+            let mut builder = fs::DirBuilder::new();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                // the pack's scratch is the pack's own, not the host's.
+                builder.mode(0o700);
+            }
+            match builder.create(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(source) if source.kind() == ErrorKind::AlreadyExists => (),
+                Err(source) => return Err(Error::Io { path, source }),
+            }
+        }
+        Err(Error::Invalid(
+            "cannot create a working directory for the pack".into(),
+        ))
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for PackWorkingDir {
+    fn drop(&mut self) {
+        // best effort: a scratch directory that will not go away must not fail
+        // a run that otherwise succeeded.
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 fn invoke(
     config: &PackConfig,
     metadata: Option<&PackMetadata>,
@@ -731,9 +785,11 @@ fn invoke(
         path: executable_path.clone(),
         source,
     })?;
+    // dropped when `invoke` returns, by any path, taking the directory with it.
+    let working_dir = PackWorkingDir::create()?;
     let mut child = Command::new(&executable_path)
         .env_clear()
-        .current_dir(std::env::temp_dir())
+        .current_dir(working_dir.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1574,6 +1630,40 @@ fn corpus_observation_run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_working_directory_is_private_unique_and_removed() {
+        let (first_path, mode) = {
+            let dir = PackWorkingDir::create().unwrap();
+            assert!(dir.path().is_dir());
+            assert_eq!(
+                fs::read_dir(dir.path()).unwrap().count(),
+                0,
+                "the pack starts in an empty directory"
+            );
+            assert_ne!(dir.path(), std::env::temp_dir(), "not the shared directory");
+
+            let second = PackWorkingDir::create().unwrap();
+            assert_ne!(dir.path(), second.path(), "two runs do not share one");
+
+            #[cfg(unix)]
+            let mode = {
+                use std::os::unix::fs::PermissionsExt;
+                fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777
+            };
+            #[cfg(not(unix))]
+            let mode = 0o700;
+
+            (dir.path().to_path_buf(), mode)
+        };
+
+        assert_eq!(mode, 0o700, "readable by the owner only, was {mode:o}");
+        assert!(
+            !first_path.exists(),
+            "{} outlived the run",
+            first_path.display()
+        );
+    }
 
     #[test]
     fn commercial_compatibility_ranges_fail_closed() {
