@@ -669,9 +669,12 @@ fn assertion_coverage_traces_through_runs_to_original_sources() {
                 .iter()
                 .find(|run| run.id == assessment.collection_run_id)
                 .unwrap();
-            assert!(!run.observation_ids.is_empty());
+            assert_ne!(run.observation_ids, [] as [String; 0]);
             for observation_id in &run.observation_ids {
-                assert!(!source_bytes(&corpus, observation_id).unwrap().is_empty());
+                assert_ne!(
+                    source_bytes(&corpus, observation_id).unwrap(),
+                    [] as [u8; 0]
+                );
             }
         }
     }
@@ -683,7 +686,7 @@ fn adequate_security_review_is_not_inferred_from_counts_and_gates() {
         evaluate_adequate_security_review(&corpus(), &target(), at("2026-09-05T00:00:00Z"))
             .unwrap();
     assert_eq!(assertion.outcome, Outcome::NotAutomatable);
-    assert!(!assertion.considered.is_empty());
+    assert_ne!(assertion.considered, []);
     assert_eq!(
         assertion.missing[0].requirement,
         "security_review_scope_and_content"
@@ -710,7 +713,10 @@ fn every_assertion_evidence_reference_reaches_original_source_bytes() {
                 .find(|item| item.id == evidence.observation_id)
                 .unwrap();
             assert_eq!(observation.provenance.source_id, evidence.source_id);
-            assert!(!source_bytes(&corpus, &observation.id).unwrap().is_empty());
+            assert_ne!(
+                source_bytes(&corpus, &observation.id).unwrap(),
+                [] as [u8; 0]
+            );
         }
     }
 }

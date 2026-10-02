@@ -156,8 +156,8 @@ fn historical_graph_excludes_observations_until_their_provenance_exists() {
         parse_timestamp("2026-09-09T00:00:00Z").unwrap(),
     )
     .unwrap();
-    assert!(historical.corpus.observations.is_empty());
-    assert!(historical.executions.is_empty());
+    assert_eq!(historical.corpus.observations, []);
+    assert_eq!(historical.executions, []);
     let available = workflow::as_of_with_provenance(
         &local,
         &[],
@@ -190,9 +190,9 @@ fn historical_graph_excludes_observations_until_their_provenance_exists() {
         parse_timestamp("2026-09-09T00:00:00Z").unwrap(),
     )
     .unwrap();
-    assert!(historical.corpus.collections.is_empty());
-    assert!(historical.corpus.observations.is_empty());
-    assert!(historical.acquisitions.is_empty());
+    assert_eq!(historical.corpus.collections, []);
+    assert_eq!(historical.corpus.observations, []);
+    assert_eq!(historical.acquisitions, []);
     let available = workflow::as_of_with_provenance(
         &remote,
         std::slice::from_ref(&acquisition),
@@ -288,7 +288,7 @@ fn recurring_gap_is_not_new_only_because_its_interval_advanced() {
     gap.subject.push_str(" later interval");
     gap.reason.push_str(" later interval");
     let update = views::isms_update(&assertions, &current);
-    assert!(update.new_gaps.is_empty());
+    assert_eq!(update.new_gaps, [] as [String; 0]);
 }
 
 #[test]
@@ -300,8 +300,8 @@ fn dd_view_reuses_existing_assertions_and_sources_without_acquisition() {
     )
     .unwrap();
     let response = views::dd_response(&assertions);
-    assert!(response.reuse.evidence_newly_acquired.is_empty());
-    assert!(response.reuse.new_derivations.is_empty());
+    assert_eq!(response.reuse.evidence_newly_acquired, [] as [String; 0]);
+    assert_eq!(response.reuse.new_derivations, [] as [String; 0]);
     assert_eq!(response.claims.len(), 4);
     assert!(response
         .claims

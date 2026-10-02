@@ -1442,7 +1442,7 @@ fn protocol_crash_and_malformed_response_do_not_create_canonical_evidence() {
         let error = pack::describe(&pack_config(path, serde_json::Value::Null)).unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");
         assert!(!workflow::corpus_path(state.path()).exists());
-        assert!(workflow::load_pack_invocations(state.path()).unwrap().is_empty());
+        assert_eq!(workflow::load_pack_invocations(state.path()).unwrap(), []);
     }
 }
 

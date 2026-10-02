@@ -147,7 +147,7 @@ fn every_dossier_evidence_reference_resolves_to_verified_source_bytes() {
     for control in &dossier.contents.controls {
         for evidence in control.evidence.iter().chain(&control.contradictions) {
             let bytes = source_bytes(&corpus, &evidence.observation_id).unwrap();
-            assert!(!bytes.is_empty());
+            assert_ne!(bytes, [] as [u8; 0]);
             assert!(corpus.sources.iter().any(|source| {
                 source.id == evidence.source_id && source.sha256 == evidence.source_sha256
             }));

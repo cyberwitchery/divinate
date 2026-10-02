@@ -90,7 +90,7 @@ fn truncated_transcript_does_not_turn_returned_records_into_complete_coverage() 
     .unwrap();
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
-    assert!(assessment.authority.is_empty());
+    assert_eq!(assessment.authority, []);
     assert!(assessment.reasons[0].contains("next page"));
 }
 
@@ -106,7 +106,7 @@ fn permission_change_is_preserved_as_a_failed_acquisition_attempt() {
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.integrity, IntegrityStatus::Verified);
     assert_eq!(assessment.enumeration, EnumerationStatus::PermissionDenied);
-    assert!(assessment.authority.is_empty());
+    assert_eq!(assessment.authority, []);
 }
 
 #[test]
@@ -119,7 +119,7 @@ fn response_tampering_is_detected_offline() {
     transcript.contents.exchanges[0].response.body = "[{\"sha\":\"injected\"}]".into();
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.integrity, IntegrityStatus::Failed);
-    assert!(assessment.authority.is_empty());
+    assert_eq!(assessment.authority, []);
 }
 
 #[test]
@@ -132,7 +132,7 @@ fn unsupported_transcript_schema_is_rejected() {
     transcript.schema_version = "9.0.0".into();
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.integrity, IntegrityStatus::Failed);
-    assert!(assessment.authority.is_empty());
+    assert_eq!(assessment.authority, []);
 }
 
 #[test]
@@ -189,7 +189,7 @@ fn later_contract_invalidation_changes_the_assessment_without_rewriting_the_tran
         assessment.contract,
         ContractStatus::Invalidated { .. }
     ));
-    assert!(assessment.authority.is_empty());
+    assert_eq!(assessment.authority, []);
     assert_eq!(transcript, original);
 }
 
@@ -203,7 +203,7 @@ fn unknown_contract_version_cannot_reuse_an_old_authority_decision() {
     let transcript = seal_transcript(source).unwrap();
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.contract, ContractStatus::Unsupported);
-    assert!(assessment.authority.is_empty());
+    assert_eq!(assessment.authority, []);
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn fixed_scope_reruns_expose_disappearing_source_records() {
     let comparison = compare(&left, &right);
     assert_eq!(comparison.outcome, RerunOutcome::ContentChanged);
     assert_eq!(comparison.removed_identities, vec!["one"]);
-    assert!(comparison.added_identities.is_empty());
+    assert_eq!(comparison.added_identities, [] as [String; 0]);
 }
 
 #[test]

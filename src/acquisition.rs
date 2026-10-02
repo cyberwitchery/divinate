@@ -2793,7 +2793,7 @@ mod tests {
         .unwrap();
         let assessment = assess(&transcript, &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::PermissionDenied);
-        assert!(assessment.authority.is_empty());
+        assert_eq!(assessment.authority, []);
         assert_eq!(transcript.contents.exchanges.len(), 1);
     }
 
@@ -2859,7 +2859,7 @@ mod tests {
         .unwrap();
         let assessment = assess(&transcript, &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
-        assert!(assessment.authority.is_empty());
+        assert_eq!(assessment.authority, []);
     }
 
     #[test]
@@ -2909,7 +2909,7 @@ mod tests {
         .unwrap();
         let assessment = assess(&transcript, &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
-        assert!(assessment.authority.is_empty());
+        assert_eq!(assessment.authority, []);
     }
 
     #[test]
@@ -3181,7 +3181,7 @@ mod tests {
         .unwrap();
         let assessment = assess(&transcript, &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::PermissionDenied);
-        assert!(assessment.authority.is_empty());
+        assert_eq!(assessment.authority, []);
     }
 
     #[test]
