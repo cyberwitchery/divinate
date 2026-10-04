@@ -41,6 +41,13 @@ else
     echo "skipped: cargo install cargo-deny"
 fi
 
+echo "==> unsafe budget"
+if command -v unsafe-budget >/dev/null 2>&1; then
+    unsafe-budget check
+else
+    echo "skipped: cargo install unsafe-budget"
+fi
+
 echo "==> coverage"
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
     cargo llvm-cov --all-features --summary-only --fail-under-lines 70

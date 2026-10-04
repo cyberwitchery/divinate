@@ -135,8 +135,26 @@ jobs:
           files: lcov.info
           fail_ci_if_error: false
 
+  unsafe-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: cyberwitchery/unsafe-budget@d10776ba7fe8043f31b19ec40bcff26b4da6b94e # v0.5.1
+        with:
+          mode: check
+          version: v0.5.1
+
+  sbom:
+    uses: cyberwitchery/.github/.github/workflows/sbom.yml@d8cdf87f9048c369e1ab49281da13e7e72a782fb # main
+    with:
+      mode: report
+
   success:
-    needs: [fmt, clippy, test, doc, package, schemas, dogfood, deny, coverage]
+    needs: [fmt, clippy, test, doc, package, schemas, dogfood, deny, coverage, unsafe-budget, sbom]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -150,7 +168,9 @@ jobs:
              [[ "${{ needs.schemas.result }}" != "success" ]] ||
              [[ "${{ needs.dogfood.result }}" != "success" ]] ||
              [[ "${{ needs.deny.result }}" != "success" ]] ||
-             [[ "${{ needs.coverage.result }}" != "success" ]]; then
+             [[ "${{ needs.coverage.result }}" != "success" ]] ||
+             [[ "${{ needs.unsafe-budget.result }}" != "success" ]] ||
+             [[ "${{ needs.sbom.result }}" != "success" ]]; then
             echo "one or more jobs failed"
             exit 1
           fi

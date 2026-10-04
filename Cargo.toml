@@ -14,8 +14,8 @@ keywords = ["security", "evidence", "provenance", "sbom", "audit"]
 categories = ["command-line-utilities", "development-tools"]
 
 # the example corpus exceeds the crates.io package limit. its integration test is
-# excluded with it.
-exclude = ["/dossiers/", "/tests/product.rs"]
+# excluded with it. the sbom baseline and unsafe budget are ci inputs.
+exclude = ["/dossiers/", "/tests/product.rs", "/sbom/", "/unsafe-budget.lock"]
 
 [lib]
 name = "divinate"
