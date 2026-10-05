@@ -15,9 +15,26 @@ fn target() -> EvaluationTarget {
     }
 }
 
+fn latest_capture() -> time::OffsetDateTime {
+    let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
+    corpus
+        .collections
+        .iter()
+        .map(|run| run.completed_at.as_str())
+        .chain(
+            corpus
+                .observations
+                .iter()
+                .map(|item| item.observed_at.as_str()),
+        )
+        .map(|value| parse_timestamp(value).unwrap())
+        .max()
+        .unwrap()
+}
+
 fn dossier() -> (evidence_spike::model::Corpus, Dossier) {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();
     (corpus, dossier)
@@ -26,7 +43,7 @@ fn dossier() -> (evidence_spike::model::Corpus, Dossier) {
 #[test]
 fn dossier_states_are_the_derived_assertion_states() {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();
     for control in &dossier.contents.controls {
@@ -48,7 +65,7 @@ fn dossier_states_are_the_derived_assertion_states() {
 #[test]
 fn repository_dossier_omits_release_context() {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let mut repository = target();
     repository.release = None;
     let assertions = assertions::evaluate_all(&corpus, &repository, at).unwrap();
@@ -61,7 +78,7 @@ fn repository_dossier_omits_release_context() {
 fn universal_gap_and_human_boundary_remain_specific() {
     let mut corpus = collect(Path::new("fixtures/collection.json")).unwrap();
     corpus.collections.clear();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();
     let universal = dossier
@@ -101,7 +118,7 @@ fn universal_gap_and_human_boundary_remain_specific() {
 fn distinct_uncovered_intervals_remain_distinct_in_markdown() {
     let mut corpus = collect(Path::new("fixtures/collection.json")).unwrap();
     corpus.collections.clear();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let mut assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     let historical = assertions
         .iter_mut()
@@ -125,7 +142,7 @@ fn current_and_historical_configuration_are_both_rendered() {
 #[test]
 fn configured_review_title_uses_the_assertion_branch() {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let mut assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     assertions
         .iter_mut()
@@ -204,7 +221,7 @@ fn regeneration_is_deterministic_and_markdown_uses_machine_states() {
 #[test]
 fn pack_assertions_reach_the_dossier() {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     let mut assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     let mut external = assertions[0].clone();
     external.id = "asrt_external".into();

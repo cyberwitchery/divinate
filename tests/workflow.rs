@@ -17,6 +17,23 @@ fn corpus() -> evidence_spike::model::Corpus {
     collect(Path::new("fixtures/collection.json")).unwrap()
 }
 
+fn latest_capture() -> time::OffsetDateTime {
+    let corpus = corpus();
+    corpus
+        .collections
+        .iter()
+        .map(|run| run.completed_at.as_str())
+        .chain(
+            corpus
+                .observations
+                .iter()
+                .map(|item| item.observed_at.as_str()),
+        )
+        .map(|value| parse_timestamp(value).unwrap())
+        .max()
+        .unwrap()
+}
+
 fn target() -> EvaluationTarget {
     EvaluationTarget {
         repository: "github:cyberwitchery/example".into(),
@@ -208,7 +225,7 @@ fn historical_graph_excludes_observations_until_their_provenance_exists() {
 #[test]
 fn latest_release_is_inferred_only_when_unambiguous() {
     let corpus = corpus();
-    let at = parse_timestamp("2026-09-05T00:00:00Z").unwrap();
+    let at = latest_capture();
     assert_eq!(workflow::latest_release(&corpus, at).unwrap(), "v1.4");
 
     let mut ambiguous = corpus.clone();
@@ -244,22 +261,12 @@ fn latest_release_is_inferred_only_when_unambiguous() {
 #[test]
 fn structured_isms_change_detection_notices_control_and_coverage_regression() {
     let corpus = corpus();
-    let previous = assertions::evaluate_all(
-        &corpus,
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let previous = assertions::evaluate_all(&corpus, &target(), latest_capture()).unwrap();
     let mut degraded = corpus.clone();
     degraded
         .collections
         .retain(|run| run.requested_scope.proposition != Proposition::RepositoryMutations);
-    let current = assertions::evaluate_all(
-        &degraded,
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let current = assertions::evaluate_all(&degraded, &target(), latest_capture()).unwrap();
     let update = views::isms_update(&previous, &current);
     assert!(update
         .coverage_regressions
@@ -273,12 +280,7 @@ fn structured_isms_change_detection_notices_control_and_coverage_regression() {
 
 #[test]
 fn recurring_gap_is_not_new_only_because_its_interval_advanced() {
-    let assertions = assertions::evaluate_all(
-        &corpus(),
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let assertions = assertions::evaluate_all(&corpus(), &target(), latest_capture()).unwrap();
     let mut current = assertions.clone();
     let gap = current
         .iter_mut()
@@ -293,12 +295,7 @@ fn recurring_gap_is_not_new_only_because_its_interval_advanced() {
 
 #[test]
 fn dd_view_reuses_existing_assertions_and_sources_without_acquisition() {
-    let assertions = assertions::evaluate_all(
-        &corpus(),
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let assertions = assertions::evaluate_all(&corpus(), &target(), latest_capture()).unwrap();
     let response = views::dd_response(&assertions);
     assert_eq!(response.reuse.evidence_newly_acquired, [] as [String; 0]);
     assert_eq!(response.reuse.new_derivations, [] as [String; 0]);
@@ -313,12 +310,7 @@ fn dd_view_reuses_existing_assertions_and_sources_without_acquisition() {
 fn dd_view_groups_equivalent_coverage_gaps_without_merging_requirements() {
     let mut corpus = corpus();
     corpus.collections.clear();
-    let assertions = assertions::evaluate_all(
-        &corpus,
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let assertions = assertions::evaluate_all(&corpus, &target(), latest_capture()).unwrap();
     let markdown = views::render_dd(&views::dd_response(&assertions));
     let interval = "uncovered intervals: 2026-09-01T00:00:00Z to 2026-09-05T00:00:00Z";
     assert_eq!(markdown.matches(interval).count(), 1);
@@ -327,12 +319,7 @@ fn dd_view_groups_equivalent_coverage_gaps_without_merging_requirements() {
 
 #[test]
 fn pack_assertions_reach_both_views_without_conflating_subjects() {
-    let mut previous = assertions::evaluate_all(
-        &corpus(),
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let mut previous = assertions::evaluate_all(&corpus(), &target(), latest_capture()).unwrap();
     let mut first = previous[0].clone();
     first.id = "asrt_pack_first".into();
     first.assertion_type = AssertionType::External("pack_control".into());

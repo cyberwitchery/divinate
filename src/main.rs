@@ -756,6 +756,11 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
     )?;
     let collected_at = format_timestamp(at)?;
     let until = args.until.clone().unwrap_or_else(|| collected_at.clone());
+    if parse_timestamp(&until)? > at {
+        return Err(Error::Invalid(format!(
+            "evaluation interval ends after collection starts ({until} after {collected_at}); choose an earlier --until"
+        )));
+    }
     let revision = divinate::release::head_revision(&args.repository_path)?;
     let enabled = config
         .sources
@@ -1745,16 +1750,28 @@ fn remote_collection_scope(
             acquisition_limitations(assessment),
         ));
     }
+    let requested = &transcript.contents.requested_scope;
+    let requested_from = parse_timestamp(&requested.from)?;
+    let requested_until = parse_timestamp(&requested.until)?;
+    let captured_at = parse_timestamp(&transcript.contents.captured_at)?;
+    if requested_from >= captured_at {
+        return Err(Error::Invalid(format!(
+            "remote acquisition captured at {} cannot observe {} to {}",
+            transcript.contents.captured_at, requested.from, requested.until
+        )));
+    }
+    let observed_until = if requested_until > captured_at {
+        transcript.contents.captured_at.clone()
+    } else {
+        requested.until.clone()
+    };
     if matches!(
         transcript.contents.collector_contract.as_str(),
         acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
             | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
             | acquisition::GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
     ) {
-        let requested_from = parse_timestamp(&transcript.contents.requested_scope.from)?;
-        let requested_until = parse_timestamp(&transcript.contents.requested_scope.until)?;
-        let retained_from =
-            parse_timestamp(&transcript.contents.captured_at)? - time::Duration::days(365);
+        let retained_from = captured_at - time::Duration::days(365);
         if requested_until <= retained_from {
             return Ok((
                 CollectionOutcome::RetentionLimited,
@@ -1770,7 +1787,7 @@ fn remote_collection_scope(
                 CollectionOutcome::RetentionLimited,
                 Some(divinate::model::TimeRange {
                     from: format_timestamp(retained_from)?,
-                    until: transcript.contents.requested_scope.until.clone(),
+                    until: observed_until,
                 }),
                 vec![divinate::model::CollectionLimitation {
                     kind: divinate::model::CollectionLimitationKind::RetentionBoundary,
@@ -1781,7 +1798,10 @@ fn remote_collection_scope(
     }
     Ok((
         CollectionOutcome::Complete,
-        Some(transcript.contents.requested_scope.clone()),
+        Some(divinate::model::TimeRange {
+            from: requested.from.clone(),
+            until: observed_until,
+        }),
         vec![],
     ))
 }
@@ -3175,4 +3195,128 @@ fn provenance_error(error: Error) -> Error {
     let message = error.to_string();
     drop(error);
     Error::Provenance(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transcript(
+        contract: &str,
+        from: &str,
+        until: &str,
+        captured_at: &str,
+    ) -> AcquisitionTranscript {
+        AcquisitionTranscript {
+            id: "acq_test".into(),
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            contents: acquisition::TranscriptContents {
+                collector_contract: contract.into(),
+                collector_version: "0.0.0".into(),
+                subject: divinate::model::Subject {
+                    kind: "repository".into(),
+                    id: "github:cyberwitchery/example".into(),
+                    qualifiers: BTreeMap::new(),
+                },
+                proposition: divinate::model::Proposition::RepositoryMutations,
+                requested_scope: divinate::model::TimeRange {
+                    from: from.into(),
+                    until: until.into(),
+                },
+                captured_at: captured_at.into(),
+                initial_request: acquisition::HttpRequest {
+                    method: "GET".into(),
+                    url: "https://api.github.com/".into(),
+                },
+                exchanges: vec![],
+                termination: acquisition::AcquisitionTermination::Exhausted,
+            },
+        }
+    }
+
+    fn complete() -> acquisition::AcquisitionAssessment {
+        acquisition::AcquisitionAssessment {
+            transcript_id: "acq_test".into(),
+            integrity: acquisition::IntegrityStatus::Verified,
+            contract: acquisition::ContractStatus::Accepted,
+            enumeration: acquisition::EnumerationStatus::Complete,
+            authority: vec![],
+            pages: 1,
+            items: 0,
+            reasons: vec![],
+        }
+    }
+
+    fn observed(
+        transcript: &AcquisitionTranscript,
+    ) -> (CollectionOutcome, Option<(String, String)>) {
+        let (outcome, interval, _) = remote_collection_scope(transcript, &complete()).unwrap();
+        (outcome, interval.map(|range| (range.from, range.until)))
+    }
+
+    #[test]
+    fn remote_scope_ends_at_capture() {
+        let scope = observed(&transcript(
+            acquisition::GITHUB_BRANCH_PROTECTION_CONTRACT,
+            "2026-09-04T00:00:00Z",
+            "2026-09-05T00:00:00Z",
+            "2026-09-04T10:00:00Z",
+        ));
+        assert_eq!(
+            scope,
+            (
+                CollectionOutcome::Complete,
+                Some(("2026-09-04T00:00:00Z".into(), "2026-09-04T10:00:00Z".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn remote_scope_before_capture_is_unchanged() {
+        let scope = observed(&transcript(
+            acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT,
+            "2026-09-01T00:00:00Z",
+            "2026-09-04T00:00:00Z",
+            "2026-09-04T10:00:00Z",
+        ));
+        assert_eq!(
+            scope,
+            (
+                CollectionOutcome::Complete,
+                Some(("2026-09-01T00:00:00Z".into(), "2026-09-04T00:00:00Z".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn retention_limited_remote_scope_also_ends_at_capture() {
+        let scope = observed(&transcript(
+            acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT,
+            "2025-01-01T00:00:00Z",
+            "2026-09-05T00:00:00Z",
+            "2026-09-04T10:00:00Z",
+        ));
+        assert_eq!(
+            scope,
+            (
+                CollectionOutcome::RetentionLimited,
+                Some(("2025-09-04T10:00:00Z".into(), "2026-09-04T10:00:00Z".into()))
+            )
+        );
+    }
+
+    #[test]
+    fn remote_scope_starting_at_capture_is_refused() {
+        let error = remote_collection_scope(
+            &transcript(
+                acquisition::GITHUB_BRANCH_PROTECTION_CONTRACT,
+                "2026-09-04T10:00:00Z",
+                "2026-09-05T00:00:00Z",
+                "2026-09-04T10:00:00Z",
+            ),
+            &complete(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("2026-09-04T10:00:00Z"));
+    }
 }

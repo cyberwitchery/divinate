@@ -890,6 +890,45 @@ fn required_pack_failure_is_named_and_writes_no_canonical_evidence() {
 }
 
 #[test]
+fn collection_refuses_an_interval_ending_after_it_starts() {
+    let state = tempfile::tempdir().unwrap();
+    configure_project(
+        state.path(),
+        &workflow::ProjectConfig {
+            repository: "github:cyberwitchery/example".into(),
+            branch: "main".into(),
+            sources: BTreeMap::default(),
+            packs: BTreeMap::default(),
+        },
+    )
+    .unwrap();
+    let collect = |until: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+            .args(["collect", "--state"])
+            .arg(state.path())
+            .arg("--repository-path")
+            .arg(state.path())
+            .args(["--from", "2026-09-01T00:00:00Z", "--until", until])
+            .args(["--at", "2026-09-09T00:00:00Z"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        String::from_utf8(output.stderr).unwrap()
+    };
+    let late = collect("2026-09-09T00:00:01Z");
+    assert!(
+        late.contains("2026-09-09T00:00:01Z after 2026-09-09T00:00:00Z"),
+        "{late}"
+    );
+    let boundary = collect("2026-09-09T00:00:00Z");
+    assert!(
+        boundary.contains("defines no evidence sources"),
+        "{boundary}"
+    );
+    assert!(!workflow::corpus_path(state.path()).exists());
+}
+
+#[test]
 fn status_reports_saved_incomplete_collection_without_reinterpreting_it() {
     let state = tempfile::tempdir().unwrap();
     configure_project(

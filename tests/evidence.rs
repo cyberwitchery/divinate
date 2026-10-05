@@ -35,7 +35,7 @@ fn target() -> EvaluationTarget {
 fn repository_evaluation_does_not_invent_release_scope() {
     let mut repository = target();
     repository.release = None;
-    let assertions = evaluate_all(&corpus(), &repository, at("2026-09-05T00:00:00Z")).unwrap();
+    let assertions = evaluate_all(&corpus(), &repository, latest_capture()).unwrap();
     assert!(assertions.iter().all(|assertion| {
         !matches!(
             assertion.assertion_type,
@@ -50,9 +50,7 @@ fn repository_evaluation_does_not_invent_release_scope() {
 #[test]
 fn historical_review_limitations_are_provider_neutral() {
     let corpus = corpus();
-    let github =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+    let github = evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert!(github
         .limitations
         .iter()
@@ -66,7 +64,7 @@ fn historical_review_limitations_are_provider_neutral() {
     azure.repository = "azure-devops:example-org/example-project/example-repository".into();
     azure.branch = "develop".into();
     azure.release = None;
-    let assertions = evaluate_all(&corpus, &azure, at("2026-09-05T00:00:00Z")).unwrap();
+    let assertions = evaluate_all(&corpus, &azure, latest_capture()).unwrap();
     assert_eq!(assertions.len(), 1);
     assert_eq!(
         assertions[0].assertion_type,
@@ -81,6 +79,17 @@ fn historical_review_limitations_are_provider_neutral() {
 
 fn at(value: &str) -> time::OffsetDateTime {
     parse_timestamp(value).unwrap()
+}
+
+fn latest_capture() -> time::OffsetDateTime {
+    let corpus = corpus();
+    corpus
+        .collections
+        .iter()
+        .map(|run| at(&run.completed_at))
+        .chain(corpus.observations.iter().map(|item| at(&item.observed_at)))
+        .max()
+        .unwrap()
 }
 
 fn requirement(proposition: Proposition) -> CoverageRequirement {
@@ -133,8 +142,7 @@ fn configured_intent_does_not_substitute_for_observed_operation() {
         .retain(|item| item.kind != ObservationKind::ReviewRecord);
     let configured =
         evaluate_configured_reviews(&corpus, &target(), at("2026-09-02T00:00:00Z")).unwrap();
-    let operated =
-        evaluate_release_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let operated = evaluate_release_reviews(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(configured.outcome, Outcome::Supported);
     assert_eq!(operated.outcome, Outcome::InsufficientEvidence);
     assert_eq!(
@@ -148,8 +156,7 @@ fn historical_configuration_survives_a_later_change() {
     let corpus = corpus();
     let monday =
         evaluate_configured_reviews(&corpus, &target(), at("2026-09-02T00:00:00Z")).unwrap();
-    let current =
-        evaluate_configured_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let current = evaluate_configured_reviews(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(monday.outcome, Outcome::Supported);
     assert_eq!(current.outcome, Outcome::Contradicted);
     assert_eq!(current.considered.len(), 1);
@@ -186,11 +193,9 @@ fn core_github_evaluators_ignore_newer_azure_branch_policy_observations() {
     });
     corpus.observations.push(azure);
 
-    let configured =
-        evaluate_configured_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let configured = evaluate_configured_reviews(&corpus, &target(), latest_capture()).unwrap();
     let independent =
-        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
 
     assert_eq!(configured.outcome, Outcome::Contradicted);
     assert_eq!(independent.outcome, Outcome::Supported);
@@ -202,11 +207,9 @@ fn core_github_evaluators_ignore_newer_azure_branch_policy_observations() {
     corpus
         .observations
         .retain(|item| !item.claim_key.starts_with("github:branch-protection"));
-    let configured =
-        evaluate_configured_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let configured = evaluate_configured_reviews(&corpus, &target(), latest_capture()).unwrap();
     let independent =
-        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(configured.outcome, Outcome::InsufficientEvidence);
     assert_eq!(independent.outcome, Outcome::InsufficientEvidence);
 }
@@ -226,8 +229,7 @@ fn old_support_is_stale_when_no_newer_configuration_exists() {
 
 #[test]
 fn release_reviews_use_policy_observed_for_each_merge() {
-    let assertion =
-        evaluate_release_reviews(&corpus(), &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertion = evaluate_release_reviews(&corpus(), &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Supported);
     assert!(assertion
         .reasoning
@@ -246,8 +248,7 @@ fn snapshots_do_not_substitute_for_complete_policy_history() {
     corpus
         .observations
         .retain(|item| item.kind != ObservationKind::ConfigurationHistory);
-    let assertion =
-        evaluate_release_reviews(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertion = evaluate_release_reviews(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     assert!(assertion
         .missing
@@ -257,8 +258,7 @@ fn snapshots_do_not_substitute_for_complete_policy_history() {
 
 #[test]
 fn cross_source_claim_joins_exact_release_revision_and_input_digest() {
-    let assertion =
-        evaluate_supply_chain(&corpus(), &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertion = evaluate_supply_chain(&corpus(), &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Supported);
     assert_eq!(assertion.support.len(), 2);
     let fields = &assertion.identity_joins[0].fields;
@@ -285,7 +285,7 @@ fn cross_source_claim_refuses_a_mismatched_revision() {
         "revision".into(),
         json!("cccccccccccccccccccccccccccccccccccccccc"),
     );
-    let assertion = evaluate_supply_chain(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertion = evaluate_supply_chain(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     assert_eq!(assertion.considered.len(), 1);
     assert_eq!(
@@ -300,7 +300,7 @@ fn missing_gate_is_an_explicit_coverage_gap() {
     corpus
         .observations
         .retain(|item| !item.claim_key.starts_with("supply-chain-gate:"));
-    let assertion = evaluate_supply_chain(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertion = evaluate_supply_chain(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     assert_eq!(
         assertion.missing[0].requirement,
@@ -317,7 +317,7 @@ fn newer_authoritative_gate_failure_explains_a_contradiction() {
             .as_path(),
     )
     .unwrap();
-    let assertion = evaluate_supply_chain(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertion = evaluate_supply_chain(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Contradicted);
     assert_eq!(assertion.contradictions.len(), 1);
     assert_eq!(assertion.considered.len(), 1);
@@ -342,8 +342,7 @@ fn incomplete_pagination_prevents_a_universal_claim() {
     run.enumeration.next_token_present = true;
 
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     let reviews = assertion
         .coverage
@@ -364,8 +363,7 @@ fn incomplete_pagination_prevents_a_universal_claim() {
 #[test]
 fn terminal_pagination_and_authoritative_scope_support_the_universal_claim() {
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus(), &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus(), &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Supported);
     assert!(assertion
         .coverage
@@ -404,8 +402,7 @@ fn historical_review_requires_explicit_revision_and_branch_joins() {
             }
         }
         let assertion =
-            evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-                .unwrap();
+            evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
         assert_eq!(
             assertion.outcome,
             Outcome::InsufficientEvidence,
@@ -460,8 +457,7 @@ fn historical_review_state_and_chronology_are_conservative() {
         review.data["pull_requests"][0]["approvals"] =
             json!([{"actor":"bob","state":state,"submitted_at":timestamp}]);
         let assertion =
-            evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-                .unwrap();
+            evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
         assert_eq!(assertion.outcome, expected, "{state} {timestamp:?}");
     }
 }
@@ -476,8 +472,7 @@ fn complete_empty_reviews_are_a_concrete_counterexample() {
         .unwrap();
     review.data["pull_requests"][0]["approvals"] = json!([]);
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Contradicted);
 }
 
@@ -501,8 +496,7 @@ fn permission_denial_is_an_explicit_population_gap() {
         .retain(|item| item.collection_run_id.as_deref() != Some("run-mutations-complete"));
 
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     assert!(assertion.missing.iter().any(|item| {
         item.reason.contains("permission denied") && item.reason.contains("direct pushes")
@@ -531,7 +525,7 @@ fn retention_truncation_preserves_success_and_exposes_the_uncovered_window() {
     let decision = assess(
         &corpus,
         requirement(Proposition::RepositoryMutations),
-        at("2026-09-05T00:00:00Z"),
+        latest_capture(),
     )
     .unwrap();
     assert_eq!(decision.outcome, CoverageOutcome::Incomplete);
@@ -544,6 +538,70 @@ fn retention_truncation_preserves_success_and_exposes_the_uncovered_window() {
         decision.uncovered_intervals[0].until,
         "2026-09-03T00:00:00Z"
     );
+}
+
+#[test]
+fn a_run_covers_nothing_at_or_after_its_start() {
+    let mut corpus = corpus();
+    let run = corpus
+        .collections
+        .iter_mut()
+        .find(|run| run.id == "run-mutations-complete")
+        .unwrap();
+    run.started_at = "2026-09-04T10:00:00Z".into();
+
+    let assertion =
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
+    assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
+    let mutations = assertion
+        .coverage
+        .iter()
+        .find(|decision| decision.requirement.proposition == Proposition::RepositoryMutations)
+        .unwrap();
+    assert_eq!(mutations.outcome, CoverageOutcome::Incomplete);
+    assert_eq!(
+        mutations.uncovered_intervals,
+        [TimeRange {
+            from: "2026-09-04T10:00:00Z".into(),
+            until: "2026-09-05T00:00:00Z".into(),
+        }]
+    );
+    let used = &mutations.collection_runs[0];
+    assert_eq!(used.disposition, RunDisposition::Used);
+    assert_eq!(
+        used.contributed_interval,
+        Some(TimeRange {
+            from: "2026-09-01T00:00:00Z".into(),
+            until: "2026-09-04T10:00:00Z".into(),
+        })
+    );
+    assert!(used.reason.contains("2026-09-04T10:00:00Z"));
+}
+
+#[test]
+fn a_run_that_started_before_the_required_interval_contributes_nothing() {
+    let mut corpus = corpus();
+    let run = corpus
+        .collections
+        .iter_mut()
+        .find(|run| run.id == "run-mutations-complete")
+        .unwrap();
+    run.requested_scope.interval.until = "2026-09-06T00:00:00Z".into();
+    run.observed_scope.as_mut().unwrap().interval.until = "2026-09-06T00:00:00Z".into();
+    let mut later = requirement(Proposition::RepositoryMutations);
+    later.interval = TimeRange {
+        from: "2026-09-05T12:00:00Z".into(),
+        until: "2026-09-06T00:00:00Z".into(),
+    };
+
+    let decision = assess(&corpus, later.clone(), latest_capture()).unwrap();
+    assert_eq!(decision.outcome, CoverageOutcome::Incomplete);
+    assert_eq!(decision.covered_intervals, [] as [TimeRange; 0]);
+    assert_eq!(decision.uncovered_intervals, [later.interval]);
+    let skipped = &decision.collection_runs[0];
+    assert_eq!(skipped.disposition, RunDisposition::ScopeMismatch);
+    assert_eq!(skipped.contributed_interval, None);
+    assert!(skipped.reason.contains("2026-09-05T00:00:00Z"));
 }
 
 #[test]
@@ -569,7 +627,7 @@ fn adjacent_complete_windows_compose_but_a_gap_remains_visible() {
     let complete = assess(
         &corpus,
         requirement(Proposition::RepositoryMutations),
-        at("2026-09-05T00:00:00Z"),
+        latest_capture(),
     )
     .unwrap();
     assert_eq!(complete.outcome, CoverageOutcome::Complete);
@@ -588,7 +646,7 @@ fn adjacent_complete_windows_compose_but_a_gap_remains_visible() {
     let gap = assess(
         &corpus,
         requirement(Proposition::RepositoryMutations),
-        at("2026-09-05T00:00:00Z"),
+        latest_capture(),
     )
     .unwrap();
     assert_eq!(gap.outcome, CoverageOutcome::Incomplete);
@@ -606,8 +664,7 @@ fn reviewed_pull_requests_without_mutation_visibility_are_insufficient() {
         .observations
         .retain(|item| item.kind != ObservationKind::MutationHistory);
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     assert!(assertion.missing.iter().any(|item| {
         item.requirement.contains("repository_mutations")
@@ -624,8 +681,7 @@ fn an_observed_direct_push_contradicts_even_before_absence_is_proven() {
     )
     .unwrap();
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Contradicted);
     assert!(assertion
         .reasoning
@@ -643,8 +699,7 @@ fn authority_is_assessed_per_proposition() {
         .unwrap();
     run.authority = vec![Proposition::CommitAncestry];
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
     assert_eq!(
         assertion.coverage[0].collection_runs[0].disposition,
@@ -656,8 +711,7 @@ fn authority_is_assessed_per_proposition() {
 fn assertion_coverage_traces_through_runs_to_original_sources() {
     let corpus = corpus();
     let assertion =
-        evaluate_every_main_change_reviewed(&corpus, &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     for decision in &assertion.coverage {
         for assessment in decision
             .collection_runs
@@ -683,8 +737,7 @@ fn assertion_coverage_traces_through_runs_to_original_sources() {
 #[test]
 fn adequate_security_review_is_not_inferred_from_counts_and_gates() {
     let assertion =
-        evaluate_adequate_security_review(&corpus(), &target(), at("2026-09-05T00:00:00Z"))
-            .unwrap();
+        evaluate_adequate_security_review(&corpus(), &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::NotAutomatable);
     assert_ne!(assertion.considered, []);
     assert_eq!(
@@ -699,7 +752,7 @@ fn adequate_security_review_is_not_inferred_from_counts_and_gates() {
 #[test]
 fn every_assertion_evidence_reference_reaches_original_source_bytes() {
     let corpus = corpus();
-    let assertions = evaluate_all(&corpus, &target(), at("2026-09-05T00:00:00Z")).unwrap();
+    let assertions = evaluate_all(&corpus, &target(), latest_capture()).unwrap();
     for assertion in assertions {
         for evidence in assertion
             .support
@@ -729,7 +782,7 @@ fn collection_is_deterministic() {
 #[test]
 fn assertion_derivation_is_deterministic() {
     let corpus = corpus();
-    let evaluated_at = at("2026-09-05T00:00:00Z");
+    let evaluated_at = latest_capture();
     assert_eq!(
         evaluate_all(&corpus, &target(), evaluated_at).unwrap(),
         evaluate_all(&corpus, &target(), evaluated_at).unwrap()
