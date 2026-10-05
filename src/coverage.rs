@@ -219,29 +219,23 @@ fn assess_run(
         ));
     };
     let started_at = parse_timestamp(&run.started_at)?;
-    let Some(contribution) = intersection(
+    let contribution = intersection(
         overlap,
         Interval {
             from: overlap.from,
             until: started_at,
         },
-    ) else {
-        return Ok((
-            RunDisposition::ScopeMismatch,
-            format!(
-                "observed interval overlaps the required interval only at or after the collection start, {}",
-                run.started_at
-            ),
-            None,
-        ));
-    };
-    let cut = if contribution.until < overlap.until {
-        format!(
+    );
+    let cut = match contribution {
+        None => format!(
+            "; the observed interval overlaps the required interval only at or after the collection start, {}",
+            run.started_at
+        ),
+        Some(contribution) if contribution.until < overlap.until => format!(
             "; coverage ends at the collection start, {}",
             run.started_at
-        )
-    } else {
-        String::new()
+        ),
+        Some(_) => String::new(),
     };
     if run.outcome == CollectionOutcome::RetentionLimited {
         let reason = limitation_reason(
@@ -251,14 +245,15 @@ fn assess_run(
         return Ok((
             RunDisposition::RetentionLimited,
             format!("{reason}{cut}"),
-            Some(contribution),
+            contribution,
         ));
     }
-    Ok((
-        RunDisposition::Used,
-        format!("complete authoritative enumeration contributes coverage{cut}"),
-        Some(contribution),
-    ))
+    let reason = if contribution.is_some() {
+        "complete authoritative enumeration contributes coverage"
+    } else {
+        "complete authoritative enumeration contributes no coverage"
+    };
+    Ok((RunDisposition::Used, format!("{reason}{cut}"), contribution))
 }
 
 fn limitation_reason(run: &CollectionRun, fallback: &str) -> String {

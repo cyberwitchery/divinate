@@ -48,7 +48,8 @@ repository-scoped evaluation starts at the unique root commit; histories with
 multiple roots require `--from`. later evaluations start at the previous
 current evaluation time. `until` defaults to collection start, while automatic
 evaluation occurs after source executions complete. divinate rejects empty or
-ambiguous intervals.
+ambiguous intervals. it also rejects an `--until` later than the collection
+start.
 
 normal output contains source results, claim counts, and the dossier path. it
 omits forensic identifiers. `--json` prints the product summary as JSON.

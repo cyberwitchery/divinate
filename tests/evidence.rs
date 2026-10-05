@@ -541,6 +541,57 @@ fn retention_truncation_preserves_success_and_exposes_the_uncovered_window() {
 }
 
 #[test]
+fn a_retention_limited_run_is_cut_at_its_start() {
+    let mut corpus = corpus();
+    let run = corpus
+        .collections
+        .iter_mut()
+        .find(|run| run.id == "run-mutations-complete")
+        .unwrap();
+    run.outcome = CollectionOutcome::RetentionLimited;
+    run.observed_scope.as_mut().unwrap().interval.from = "2026-09-03T00:00:00Z".into();
+    run.limitations = vec![CollectionLimitation {
+        kind: CollectionLimitationKind::RetentionBoundary,
+        detail: "source retained events only from September 3".into(),
+    }];
+    run.started_at = "2026-09-04T10:00:00Z".into();
+
+    let partly = assess(
+        &corpus,
+        requirement(Proposition::RepositoryMutations),
+        latest_capture(),
+    )
+    .unwrap();
+    let retained = TimeRange {
+        from: "2026-09-03T00:00:00Z".into(),
+        until: "2026-09-04T10:00:00Z".into(),
+    };
+    let run = &partly.collection_runs[0];
+    assert_eq!(run.disposition, RunDisposition::RetentionLimited);
+    assert_eq!(run.contributed_interval.as_ref(), Some(&retained));
+    assert!(run.reason.contains("2026-09-04T10:00:00Z"));
+    assert_eq!(partly.covered_intervals, [retained]);
+
+    corpus
+        .collections
+        .iter_mut()
+        .find(|run| run.id == "run-mutations-complete")
+        .unwrap()
+        .started_at = "2026-09-02T00:00:00Z".into();
+    let fully = assess(
+        &corpus,
+        requirement(Proposition::RepositoryMutations),
+        latest_capture(),
+    )
+    .unwrap();
+    assert_eq!(fully.covered_intervals, [] as [TimeRange; 0]);
+    let run = &fully.collection_runs[0];
+    assert_eq!(run.disposition, RunDisposition::RetentionLimited);
+    assert_eq!(run.contributed_interval, None);
+    assert!(run.reason.contains("2026-09-02T00:00:00Z"));
+}
+
+#[test]
 fn a_run_covers_nothing_at_or_after_its_start() {
     let mut corpus = corpus();
     let run = corpus
@@ -598,10 +649,31 @@ fn a_run_that_started_before_the_required_interval_contributes_nothing() {
     assert_eq!(decision.outcome, CoverageOutcome::Incomplete);
     assert_eq!(decision.covered_intervals, [] as [TimeRange; 0]);
     assert_eq!(decision.uncovered_intervals, [later.interval]);
-    let skipped = &decision.collection_runs[0];
-    assert_eq!(skipped.disposition, RunDisposition::ScopeMismatch);
-    assert_eq!(skipped.contributed_interval, None);
-    assert!(skipped.reason.contains("2026-09-05T00:00:00Z"));
+    let cut = &decision.collection_runs[0];
+    assert_eq!(cut.disposition, RunDisposition::Used);
+    assert_eq!(cut.contributed_interval, None);
+    assert!(cut.reason.contains("2026-09-05T00:00:00Z"));
+}
+
+#[test]
+fn a_run_cut_to_nothing_is_named_in_the_coverage_gap() {
+    let mut corpus = corpus();
+    corpus
+        .collections
+        .iter_mut()
+        .find(|run| run.id == "run-mutations-complete")
+        .unwrap()
+        .started_at = "2026-09-01T00:00:00Z".into();
+
+    let assertion =
+        evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
+    assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
+    assert!(assertion.missing.iter().any(|item| {
+        item.requirement.contains("repository_mutations")
+            && item
+                .reason
+                .contains("run-mutations-complete: complete authoritative enumeration contributes no coverage")
+    }));
 }
 
 #[test]
@@ -687,6 +759,50 @@ fn an_observed_direct_push_contradicts_even_before_absence_is_proven() {
         .reasoning
         .iter()
         .any(|step| step.code == "direct_push_observed"));
+}
+
+#[test]
+fn a_run_cut_to_nothing_still_supplies_its_counterexamples() {
+    let mut corpus = collect(
+        Path::new(FIXTURES)
+            .join("collection-direct-push.json")
+            .as_path(),
+    )
+    .unwrap();
+    corpus
+        .collections
+        .iter_mut()
+        .find(|run| run.id == "run-mutations-complete")
+        .unwrap()
+        .started_at = "2026-09-03T12:00:00Z".into();
+    let mut target = target();
+    target.from = "2026-09-03T13:00:00Z".into();
+
+    let assertion =
+        evaluate_every_main_change_reviewed(&corpus, &target, latest_capture()).unwrap();
+    assert_eq!(assertion.outcome, Outcome::Contradicted);
+    assert_eq!(assertion.contradictions.len(), 1);
+    assert!(assertion
+        .reasoning
+        .iter()
+        .any(|step| step.code == "direct_push_observed"));
+    let mutations = assertion
+        .coverage
+        .iter()
+        .find(|decision| decision.requirement.proposition == Proposition::RepositoryMutations)
+        .unwrap();
+    assert_eq!(mutations.outcome, CoverageOutcome::Incomplete);
+    assert_eq!(
+        mutations.uncovered_intervals,
+        [TimeRange {
+            from: "2026-09-03T13:00:00Z".into(),
+            until: "2026-09-05T00:00:00Z".into(),
+        }]
+    );
+    let cut = &mutations.collection_runs[0];
+    assert_eq!(cut.disposition, RunDisposition::Used);
+    assert_eq!(cut.contributed_interval, None);
+    assert!(cut.reason.contains("2026-09-03T12:00:00Z"));
 }
 
 #[test]
