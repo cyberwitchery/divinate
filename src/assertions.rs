@@ -1181,7 +1181,9 @@ fn add_coverage_gap(assertion: &mut DerivedAssertion, decision: &CoverageDecisio
         decision
             .collection_runs
             .iter()
-            .filter(|run| run.disposition != RunDisposition::Used)
+            .filter(|run| {
+                run.disposition != RunDisposition::Used || run.contributed_interval.is_none()
+            })
             .map(|run| format!("{}: {}", run.collection_run_id, run.reason))
             .collect::<Vec<_>>()
             .join("; ")

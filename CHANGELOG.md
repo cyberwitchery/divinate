@@ -24,3 +24,6 @@
 - remove the scanner-specific `collect release` compatibility command
 - allow repository-scoped evaluation without inventing a release
 - run each pack in its own working directory, removed when the run ends
+- never credit a collection run with coverage at or after its own start; remote
+  acquisitions observe only up to their capture time
+- reject a `collect --until` later than the collection time

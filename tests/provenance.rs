@@ -117,6 +117,23 @@ fn target() -> EvaluationTarget {
     }
 }
 
+fn latest_capture() -> time::OffsetDateTime {
+    let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
+    corpus
+        .collections
+        .iter()
+        .map(|run| run.completed_at.as_str())
+        .chain(
+            corpus
+                .observations
+                .iter()
+                .map(|item| item.observed_at.as_str()),
+        )
+        .map(|value| parse_timestamp(value).unwrap())
+        .max()
+        .unwrap()
+}
+
 #[test]
 fn collection_resolves_verified_transcript_and_exact_source() {
     let (corpus, transcript) = linked();
@@ -175,12 +192,9 @@ fn assertion_traverses_collection_transcript_and_source_bytes() {
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
     };
-    let assertion = assertions::evaluate_configured_independent_review(
-        &corpus,
-        &target,
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let assertion =
+        assertions::evaluate_configured_independent_review(&corpus, &target, latest_capture())
+            .unwrap();
     let observation_id = &assertion.support[0].observation_id;
     let observation = corpus
         .observations
@@ -225,18 +239,15 @@ fn contract_invalidation_withdraws_authority_without_rewriting_history() {
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
     };
-    let historical = assertions::evaluate_configured_independent_review(
-        &corpus,
-        &target,
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let historical =
+        assertions::evaluate_configured_independent_review(&corpus, &target, latest_capture())
+            .unwrap();
     let current_corpus =
         with_current_authority(&corpus, std::slice::from_ref(&transcript), &registry).unwrap();
     let current = assertions::evaluate_configured_independent_review(
         &current_corpus,
         &target,
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
+        latest_capture(),
     )
     .unwrap();
     assert_eq!(historical.outcome, Outcome::Supported);
@@ -312,12 +323,8 @@ fn release_gate_assertion_traces_to_diff_and_gate_executions() {
         .iter()
         .flat_map(|capture| capture.blobs.clone())
         .collect::<BTreeMap<_, _>>();
-    let assertion = assertions::evaluate_supply_chain(
-        &corpus,
-        &target(),
-        parse_timestamp("2026-09-05T00:00:00Z").unwrap(),
-    )
-    .unwrap();
+    let assertion =
+        assertions::evaluate_supply_chain(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Supported);
     assert_eq!(assertion.support.len(), 2);
     let links = verify_execution_links(&corpus, &transcripts, &blobs).unwrap();

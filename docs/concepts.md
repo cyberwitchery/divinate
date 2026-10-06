@@ -31,7 +31,9 @@ outcome distinguishes complete, partial, permission-denied, retention-limited,
 interrupted, failed, and not-attempted runs.
 
 an empty complete collection can support an absence claim. an empty response
-without complete authoritative collection cannot.
+without complete authoritative collection cannot. a run covers nothing at or
+after its own start, even when its observed interval reaches further, but
+records it returned for that time still count as counterexamples.
 
 authority is local to a proposition, subject, and interval. there is no global
 source ranking. a source contract supplies the rule that lets core decide whether

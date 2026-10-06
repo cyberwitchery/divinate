@@ -2,7 +2,8 @@
 //!
 //! [`assess`] composes authoritative collection runs and returns uncovered
 //! intervals. complete runs require terminal pagination. retention-limited runs
-//! contribute only their observed intervals.
+//! contribute only their observed intervals. no run covers time at or after its
+//! own start.
 
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -69,7 +70,8 @@ pub struct CoverageDecision {
 /// assess whether authoritative collection runs cover a required population and interval.
 ///
 /// intervals are half-open. complete adjacent or overlapping runs may compose. a
-/// retention-limited run contributes only its explicitly observed interval.
+/// retention-limited run contributes only its explicitly observed interval. a run
+/// contributes nothing at or after its `started_at`.
 ///
 /// # Errors
 ///
@@ -134,6 +136,7 @@ pub fn assess(
     })
 }
 
+#[allow(clippy::too_many_lines)]
 fn assess_run(
     run: &CollectionRun,
     requirement: &CoverageRequirement,
@@ -215,21 +218,42 @@ fn assess_run(
             None,
         ));
     };
+    let started_at = parse_timestamp(&run.started_at)?;
+    let contribution = intersection(
+        overlap,
+        Interval {
+            from: overlap.from,
+            until: started_at,
+        },
+    );
+    let cut = match contribution {
+        None => format!(
+            "; the observed interval overlaps the required interval only at or after the collection start, {}",
+            run.started_at
+        ),
+        Some(contribution) if contribution.until < overlap.until => format!(
+            "; coverage ends at the collection start, {}",
+            run.started_at
+        ),
+        Some(_) => String::new(),
+    };
     if run.outcome == CollectionOutcome::RetentionLimited {
+        let reason = limitation_reason(
+            run,
+            "source retention limited the observed interval; only that interval contributes coverage",
+        );
         return Ok((
             RunDisposition::RetentionLimited,
-            limitation_reason(
-                run,
-                "source retention limited the observed interval; only that interval contributes coverage",
-            ),
-            Some(overlap),
+            format!("{reason}{cut}"),
+            contribution,
         ));
     }
-    Ok((
-        RunDisposition::Used,
-        "complete authoritative enumeration contributes coverage".into(),
-        Some(overlap),
-    ))
+    let reason = if contribution.is_some() {
+        "complete authoritative enumeration contributes coverage"
+    } else {
+        "complete authoritative enumeration contributes no coverage"
+    };
+    Ok((RunDisposition::Used, format!("{reason}{cut}"), contribution))
 }
 
 fn limitation_reason(run: &CollectionRun, fallback: &str) -> String {
