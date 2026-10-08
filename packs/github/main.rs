@@ -419,6 +419,7 @@ fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
             item.get("claim_key").and_then(Value::as_str) == Some(key)
                 && item.pointer("/subject/id") == target.get("repository")
                 && item.pointer("/subject/branch") == target.get("branch")
+                && established(evaluation, item)
         })
         .collect::<Vec<_>>();
     let observed_at = matching
@@ -427,6 +428,56 @@ fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
         .max();
     matching.retain(|item| item.get("observed_at").and_then(Value::as_str) == observed_at);
     matching
+}
+
+/// whether the observation's collection run established anything: a failed, denied,
+/// or unattempted run did not, and neither did a declared mirror.
+fn established(evaluation: &Value, observation: &Value) -> bool {
+    let Some(run_id) = observation.get("collection_run_id").and_then(Value::as_str) else {
+        return !withheld_by_mirror(evaluation, observation);
+    };
+    evaluation
+        .pointer("/corpus/collections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|run| run.get("id").and_then(Value::as_str) == Some(run_id))
+        .is_some_and(|run| {
+            !matches!(
+                run.get("outcome").and_then(Value::as_str),
+                Some("failed" | "permission_denied" | "not_attempted")
+            ) && !run
+                .get("limitations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .any(|item| {
+                    item.get("kind").and_then(Value::as_str) == Some("not_system_of_record")
+                })
+        })
+}
+
+/// whether a run-less process observation comes from a declared mirror. core applies
+/// the same rule and rejects assertions that use it.
+fn withheld_by_mirror(evaluation: &Value, observation: &Value) -> bool {
+    let target = evaluation.get("target").unwrap_or(&Value::Null);
+    let repository = target.get("repository");
+    target
+        .get("mirror_of")
+        .is_some_and(|mirror| !mirror.is_null())
+        && (observation.pointer("/subject/id") == repository
+            || observation.pointer("/subject/repository") == repository)
+        && matches!(
+            observation.get("kind").and_then(Value::as_str),
+            Some(
+                "configuration_snapshot"
+                    | "configuration_history"
+                    | "mutation_history"
+                    | "review_record"
+                    | "release_membership"
+                    | "validation_record"
+            )
+        )
 }
 
 fn use_evidence(observation: &Value, reason: &str) -> Value {
@@ -488,20 +539,23 @@ fn evaluate_required_checks(evaluation: &Value) -> Value {
         observation,
         "GitHub reported the branch's required status checks",
     );
-    if observation
+    let Some(checks) = observation
         .pointer("/data/required_status_checks")
         .and_then(Value::as_array)
-        .is_some_and(|checks| !checks.is_empty())
-    {
+    else {
+        result["missing"] = json!([{"requirement":"current github branch protection configuration","subject":evaluation.pointer("/target/repository"),"reason":"the branch protection snapshot does not report required status checks"}]);
+        return result;
+    };
+    if checks.is_empty() {
+        result["outcome"] = json!("contradicted");
+        result["contradictions"] = json!([use_item]);
+    } else {
         result["outcome"] = json!(if complete(evaluation, &observations) {
             "supported"
         } else {
             "insufficient_evidence"
         });
         result["support"] = json!([use_item]);
-    } else {
-        result["outcome"] = json!("contradicted");
-        result["contradictions"] = json!([use_item]);
     }
     result
 }

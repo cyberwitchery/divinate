@@ -13,7 +13,9 @@ use crate::acquisition::{
 };
 use crate::error::{Error, Result};
 use crate::execution::{self, ExecutionTranscript, Integrity as ExecutionIntegrity};
-use crate::model::{CollectionOutcome, Corpus};
+use crate::model::{
+    CollectionLimitation, CollectionLimitationKind, CollectionOutcome, Corpus, Proposition,
+};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 /// one collection resolved to its acquisition, with current authority.
@@ -259,6 +261,94 @@ pub fn verify_collection_links(
         links.extend(run_links);
     }
     Ok(links)
+}
+
+/// withdraw a declared mirror's authority for the propositions it cannot establish.
+///
+/// a mirror reproduces content but not the process that produced it, so its
+/// integration, review, branch-configuration, and ci records say nothing about the
+/// system of record. content propositions (ancestry, dependencies, supply-chain
+/// decisions) keep their authority.
+#[must_use]
+pub fn with_declared_mirror(corpus: &Corpus, repository: &str, upstream: &str) -> Corpus {
+    let mut current = corpus.clone();
+    for run in current.collections.iter_mut().filter(|run| {
+        run.subject.id == repository && mirror_withholds(run.requested_scope.proposition)
+    }) {
+        let proposition = run.requested_scope.proposition;
+        run.authority.retain(|item| item != &proposition);
+        run.limitations.insert(
+            0,
+            CollectionLimitation {
+                kind: CollectionLimitationKind::NotSystemOfRecord,
+                detail: mirror_detail(repository, upstream, proposition),
+            },
+        );
+    }
+    current
+}
+
+const fn proposition_label(proposition: Proposition) -> &'static str {
+    match proposition {
+        Proposition::PullRequestPopulation => "the pull request population",
+        Proposition::PullRequestReviews => "pull request reviews",
+        Proposition::RepositoryMutations => "repository mutations",
+        Proposition::CommitAncestry => "commit ancestry",
+        Proposition::BranchConfiguration => "branch configuration",
+        Proposition::RevisionChecks => "revision checks",
+        Proposition::BuildValidationResults => "build validation results",
+        Proposition::SupplyChainPolicyDecision => "supply-chain policy decisions",
+        Proposition::DeclaredDependencies => "declared dependencies",
+    }
+}
+
+/// why a run-less observation has no authority on a declared mirror, if it has none.
+///
+/// observations collected through a run are handled by [`with_declared_mirror`].
+/// without a run, the observation kind names what it is evidence of: configuration,
+/// mutation, review, release-membership, and validation records describe process,
+/// while change sets and policy checks describe content.
+#[must_use]
+pub fn mirror_gap(
+    repository: &str,
+    mirror_of: Option<&str>,
+    observation: &crate::model::Observation,
+) -> Option<String> {
+    use crate::model::ObservationKind;
+    let upstream = mirror_of?;
+    if observation.collection_run_id.is_some()
+        || (observation.subject.id != repository
+            && observation.subject.qualifier("repository") != Some(repository))
+    {
+        return None;
+    }
+    let proposition = match observation.kind {
+        ObservationKind::ConfigurationSnapshot | ObservationKind::ConfigurationHistory => {
+            Proposition::BranchConfiguration
+        }
+        ObservationKind::MutationHistory => Proposition::RepositoryMutations,
+        ObservationKind::ReviewRecord => Proposition::PullRequestReviews,
+        ObservationKind::ReleaseMembership => Proposition::PullRequestPopulation,
+        ObservationKind::ValidationRecord => Proposition::BuildValidationResults,
+        ObservationKind::ChangeSet | ObservationKind::PolicyCheck => return None,
+    };
+    mirror_withholds(proposition).then(|| mirror_detail(repository, upstream, proposition))
+}
+
+const fn mirror_withholds(proposition: Proposition) -> bool {
+    !matches!(
+        proposition,
+        Proposition::CommitAncestry
+            | Proposition::DeclaredDependencies
+            | Proposition::SupplyChainPolicyDecision
+    )
+}
+
+fn mirror_detail(repository: &str, upstream: &str, proposition: Proposition) -> String {
+    format!(
+        "{repository} is declared a mirror of {upstream}; it is not the system of record for {}",
+        proposition_label(proposition)
+    )
 }
 
 /// apply the current contract registry to a copied corpus.

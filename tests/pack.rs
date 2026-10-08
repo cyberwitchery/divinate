@@ -694,6 +694,7 @@ fn open_sbom_integration_collects_through_the_pack_boundary() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             sources: BTreeMap::default(),
             packs: BTreeMap::from([(
                 "example.sbom-release-diff".into(),
@@ -763,6 +764,7 @@ fn configured_pack_collector_runs_and_evaluates_in_normal_collect() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             sources: BTreeMap::from([
                 (
                     "release-diff".into(),
@@ -854,6 +856,7 @@ fn required_pack_failure_is_named_and_writes_no_canonical_evidence() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             sources: BTreeMap::from([(
                 "crash".into(),
                 workflow::SourceConfig {
@@ -897,6 +900,7 @@ fn collection_refuses_an_interval_ending_after_it_starts() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             sources: BTreeMap::default(),
             packs: BTreeMap::default(),
         },
@@ -936,6 +940,7 @@ fn status_reports_saved_incomplete_collection_without_reinterpreting_it() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             sources: BTreeMap::default(),
             packs: BTreeMap::default(),
         },
@@ -1020,6 +1025,7 @@ print(json.dumps({"ok":True,"result":x},separators=(",",":")))
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             packs: BTreeMap::from([(
                 "example.context".into(),
                 pack_config(context_pack, serde_json::json!({})),
@@ -1082,6 +1088,7 @@ print(json.dumps({"ok":True,"result":x},separators=(",",":")))
 }
 
 #[test]
+#[allow(clippy::too_many_lines)]
 fn pack_collection_and_external_assertion_keep_core_provenance() {
     let state = tempfile::tempdir().unwrap();
     let evaluator_path = state.path().join("evaluator-pack");
@@ -1105,6 +1112,7 @@ fn pack_collection_and_external_assertion_keep_core_provenance() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             sources: BTreeMap::default(),
             packs: BTreeMap::from([
                 ("example.backup-control".into(), collector),
@@ -1249,6 +1257,7 @@ fn evaluator_receives_declared_zero_result_coverage_but_not_unrelated_runs() {
         release: Some("v1".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-09T00:00:00Z".into(),
+        mirror_of: None,
     };
     let (_, capture) = pack::evaluate(
         &config,
@@ -1426,6 +1435,206 @@ fn core_assigns_assertion_identity_and_rejects_false_or_missing_coverage() {
 }
 
 #[test]
+fn core_rejects_pack_evidence_from_a_run_without_authority() {
+    let state = tempfile::tempdir().unwrap();
+    let mut failed = collection_run("failed-config", Proposition::BranchConfiguration);
+    failed.outcome = CollectionOutcome::Failed;
+    failed.authority = vec![];
+    failed.observation_ids = vec!["ev_00000000000000000001".into()];
+    let observation: divinate::model::Observation = serde_json::from_value(serde_json::json!({
+        "claim_key": "github:branch-protection",
+        "collection_run_id": "failed-config",
+        "data": {"branch": "main", "protected": true},
+        "evidence_class": "configured_intent",
+        "id": "ev_00000000000000000001",
+        "kind": "configuration_snapshot",
+        "observed_at": "2026-09-09T00:00:00Z",
+        "producer": {"name": "fixture", "version": "1", "collector": "fixture"},
+        "provenance": {"pointer": "", "source_id": "src_fixture"},
+        "subject": {"kind": "repository", "id": "github:cyberwitchery/example", "branch": "main"}
+    }))
+    .unwrap();
+    let corpus = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![failed],
+        observations: vec![observation],
+        sources: vec![],
+    };
+    let target = pack_target();
+    let mut assertion = pack_assertion(&target, &serde_json::json!([]));
+    assertion["outcome"] = serde_json::json!("contradicted");
+    assertion["contradictions"] = serde_json::json!([{
+        "observation_id": "ev_00000000000000000001",
+        "source_id": "src_fixture",
+        "reason": "the branch requires no status checks"
+    }]);
+    let path = state.path().join("unauthoritative-evidence-pack");
+    assertion_pack(&path, &assertion);
+    let config = pack_config(path, serde_json::Value::Null);
+    let (metadata, _) = pack::describe(&config).unwrap();
+    let error = pack::evaluate(
+        &config,
+        &metadata,
+        "check",
+        &corpus,
+        &target,
+        "2026-09-09T00:01:00Z",
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("evidence from collection run failed-config, which established nothing"),
+        "{error}"
+    );
+}
+
+#[test]
+fn core_rejects_pack_evidence_withheld_from_a_declared_mirror() {
+    let state = tempfile::tempdir().unwrap();
+    let observation: divinate::model::Observation = serde_json::from_value(serde_json::json!({
+        "claim_key": "github:branch-protection:main",
+        "data": {"required_status_checks": []},
+        "evidence_class": "configured_intent",
+        "id": "ev_00000000000000000002",
+        "kind": "configuration_snapshot",
+        "observed_at": "2026-09-09T00:00:00Z",
+        "producer": {"name": "fixture", "version": "1", "collector": "fixture"},
+        "provenance": {"pointer": "", "source_id": "src_fixture"},
+        "subject": {"kind": "repository", "id": "github:cyberwitchery/example", "branch": "main"}
+    }))
+    .unwrap();
+    let corpus = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![],
+        observations: vec![observation],
+        sources: vec![],
+    };
+    let mut target = pack_target();
+    let mut assertion = pack_assertion(&target, &serde_json::json!([]));
+    assertion["outcome"] = serde_json::json!("contradicted");
+    assertion["contradictions"] = serde_json::json!([{
+        "observation_id": "ev_00000000000000000002",
+        "source_id": "src_fixture",
+        "reason": "the branch requires no status checks"
+    }]);
+    let path = state.path().join("mirror-evidence-pack");
+    assertion_pack(&path, &assertion);
+    let config = pack_config(path, serde_json::Value::Null);
+    let (metadata, _) = pack::describe(&config).unwrap();
+    let evaluate = |target: &divinate::assertions::EvaluationTarget| {
+        pack::evaluate(
+            &config,
+            &metadata,
+            "check",
+            &corpus,
+            target,
+            "2026-09-09T00:01:00Z",
+        )
+    };
+    assert!(evaluate(&target).is_ok());
+    target.mirror_of = Some("an internal forge".into());
+    let error = evaluate(&target).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("is declared a mirror of an internal forge"),
+        "{error}"
+    );
+}
+
+#[test]
+fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
+    let request = |mirror_of: serde_json::Value| {
+        serde_json::json!({
+            "protocol_version": 1,
+            "operation": "evaluate",
+            "configuration": null,
+            "input": {
+                "evaluator": "required-status-checks",
+                "target": {
+                    "repository": "github:cyberwitchery/divinate",
+                    "branch": "main",
+                    "release": null,
+                    "from": "2026-09-11T00:00:00Z",
+                    "until": "2026-09-12T00:00:00Z",
+                    "mirror_of": mirror_of
+                },
+                "evaluated_at": "2026-09-12T00:00:00Z",
+                "coverage": [],
+                "corpus": {
+                    "collections": [],
+                    "observations": [{
+                        "id": "protection",
+                        "claim_key": "github:branch-protection",
+                        "kind": "configuration_snapshot",
+                        "observed_at": "2026-09-12T00:00:00Z",
+                        "subject": {"id": "github:cyberwitchery/divinate", "branch": "main"},
+                        "data": {"required_status_checks": []},
+                        "provenance": {"source_id": "src_protection"}
+                    }]
+                }
+            }
+        })
+    };
+    let response = github_pack_result(&request(serde_json::Value::Null));
+    assert_eq!(response["result"][0]["outcome"], "contradicted");
+    let response = github_pack_result(&request(serde_json::json!("an internal forge")));
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    assert_eq!(
+        response["result"][0]["contradictions"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn github_required_checks_are_not_contradicted_by_a_failed_collection() {
+    let response = github_pack_result(&serde_json::json!({
+        "protocol_version": 1,
+        "operation": "evaluate",
+        "configuration": null,
+        "input": {
+            "evaluator": "required-status-checks",
+            "target": {
+                "repository": "github:cyberwitchery/divinate",
+                "branch": "main",
+                "release": null,
+                "from": "2026-09-11T00:00:00Z",
+                "until": "2026-09-12T00:00:00Z"
+            },
+            "evaluated_at": "2026-09-12T00:00:00Z",
+            "coverage": [],
+            "corpus": {
+                "collections": [{
+                    "id": "failed",
+                    "outcome": "failed",
+                    "authority": [],
+                    "enumeration": {"terminal_page_reached": true, "next_token_present": false}
+                }],
+                "observations": [{
+                    "id": "protection",
+                    "claim_key": "github:branch-protection",
+                    "collection_run_id": "failed",
+                    "observed_at": "2026-09-12T00:00:00Z",
+                    "subject": {"id": "github:cyberwitchery/divinate", "branch": "main"},
+                    "data": {"branch": "main", "protected": true},
+                    "provenance": {"source_id": "src_protection"}
+                }]
+            }
+        }
+    }));
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    assert_eq!(
+        response["result"][0]["contradictions"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        response["result"][0]["missing"][0]["requirement"],
+        "current github branch protection configuration"
+    );
+}
+
+#[test]
 fn pack_timeout_is_bounded() {
     let state = tempfile::tempdir().unwrap();
     let path = state.path().join("hung-pack");
@@ -1595,6 +1804,7 @@ fn pack_target() -> divinate::assertions::EvaluationTarget {
         release: Some("v1".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-09T00:00:00Z".into(),
+        mirror_of: None,
     }
 }
 

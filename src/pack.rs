@@ -528,6 +528,7 @@ pub fn evaluate(
                 "release": target.release,
                 "from": target.from,
                 "until": target.until,
+                "mirror_of": target.mirror_of,
             },
             "evaluated_at": evaluated_at,
             "coverage": coverage,
@@ -539,7 +540,14 @@ pub fn evaluate(
         .into_iter()
         .map(|assertion| derived_assertion(assertion, &metadata.id, &metadata.version, evaluator))
         .collect::<Result<Vec<_>>>()?;
-    validate_assertions(&assertions, corpus, metadata, evaluator, evaluated_at)?;
+    validate_assertions(
+        &assertions,
+        corpus,
+        target,
+        metadata,
+        evaluator,
+        evaluated_at,
+    )?;
     for assertion in &mut assertions {
         assertion.derivation.pack_invocation_id = Some(capture.invocation.id.clone());
     }
@@ -1485,6 +1493,7 @@ fn parse_version(value: &str) -> Result<(u64, u64, u64)> {
 fn validate_assertions(
     assertions: &[DerivedAssertion],
     corpus: &crate::model::Corpus,
+    target: &EvaluationTarget,
     metadata: &PackMetadata,
     evaluator: &str,
     evaluated_at: &str,
@@ -1549,8 +1558,73 @@ fn validate_assertions(
                 )));
             }
         }
+        for evidence in assertion.support.iter().chain(&assertion.contradictions) {
+            let Some(observation) = corpus
+                .observations
+                .iter()
+                .find(|item| item.id == evidence.observation_id)
+            else {
+                continue;
+            };
+            if let Some(reason) = crate::provenance::mirror_gap(
+                &target.repository,
+                target.mirror_of.as_deref(),
+                observation,
+            ) {
+                return Err(Error::Invalid(format!(
+                    "pack {} used evidence {} without authority: {reason}",
+                    metadata.id, observation.id
+                )));
+            }
+            let Some(run_id) = observation.collection_run_id.as_ref() else {
+                continue;
+            };
+            let run = corpus
+                .collections
+                .iter()
+                .find(|run| &run.id == run_id)
+                .ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "pack assertion references observation {} from missing collection run {run_id}",
+                        evidence.observation_id
+                    ))
+                })?;
+            if let Some(reason) = unestablished(run) {
+                return Err(Error::Invalid(format!(
+                    "pack {} used evidence from collection run {run_id}, which established nothing: {reason}",
+                    metadata.id
+                )));
+            }
+        }
     }
     Ok(())
+}
+
+/// why a collection run's observations cannot support or contradict a claim, if they cannot.
+///
+/// a failed, denied, or unattempted run established nothing, and a declared mirror
+/// is not the system of record. a partial run still observed what it returned.
+fn unestablished(run: &crate::model::CollectionRun) -> Option<String> {
+    use crate::model::{CollectionLimitationKind, CollectionOutcome};
+    if let Some(limitation) = run
+        .limitations
+        .iter()
+        .find(|item| item.kind == CollectionLimitationKind::NotSystemOfRecord)
+    {
+        return Some(limitation.detail.clone());
+    }
+    match run.outcome {
+        CollectionOutcome::Failed
+        | CollectionOutcome::PermissionDenied
+        | CollectionOutcome::NotAttempted => Some(run.limitations.first().map_or_else(
+            || format!("collection ended {:?}", run.outcome),
+            |item| item.detail.clone(),
+        )),
+        CollectionOutcome::Complete
+        | CollectionOutcome::Partial
+        | CollectionOutcome::RetentionLimited
+        | CollectionOutcome::Interrupted => None,
+    }
 }
 
 fn validate_supported_coverage(

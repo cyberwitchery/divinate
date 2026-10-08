@@ -670,39 +670,39 @@ fn git_text(repository: &Path, args: &[&str], error: &str) -> Result<String> {
     }
 }
 
-fn github_identity(origin: &str) -> Option<String> {
-    let path = origin
-        .strip_prefix("git@github.com:")
-        .or_else(|| origin.strip_prefix("https://github.com/"))
-        .or_else(|| origin.strip_prefix("ssh://git@github.com/"))?;
-    let path = path.strip_suffix(".git").unwrap_or(path).trim_matches('/');
-    (path.split('/').count() == 2).then(|| format!("github:{path}"))
-}
-
 fn repository_identity_from_origin(origin: &str) -> Option<String> {
-    github_identity(origin).or_else(|| azure_devops_identity(origin))
+    let url = gix_url::parse(origin).ok()?;
+    if !matches!(url.scheme, gix_url::Scheme::Ssh | gix_url::Scheme::Https) {
+        return None;
+    }
+    let path = std::str::from_utf8(&url.path).ok()?.trim_matches('/');
+    match url.host()? {
+        "github.com" => github_identity(path),
+        "ssh.dev.azure.com" => {
+            let mut parts = path.strip_prefix("v3/")?.split('/');
+            let identity =
+                azure_devops_identity_parts(parts.next()?, parts.next()?, parts.next()?)?;
+            parts.next().is_none().then_some(identity)
+        }
+        "dev.azure.com" => {
+            let (organization, remainder) = path.split_once('/')?;
+            let (project, repository) = remainder.split_once("/_git/")?;
+            azure_devops_identity_parts(organization, project, repository)
+        }
+        host => {
+            let organization = host.strip_suffix(".visualstudio.com")?;
+            let (project, repository) = path.split_once("/_git/")?;
+            azure_devops_identity_parts(organization, project, repository)
+        }
+    }
 }
 
-fn azure_devops_identity(origin: &str) -> Option<String> {
-    if let Some(path) = origin
-        .strip_prefix("git@ssh.dev.azure.com:v3/")
-        .or_else(|| origin.strip_prefix("ssh://git@ssh.dev.azure.com/v3/"))
-    {
-        let mut parts = path.trim_matches('/').split('/');
-        let identity = azure_devops_identity_parts(parts.next()?, parts.next()?, parts.next()?)?;
-        return parts.next().is_none().then_some(identity);
-    }
-    if let Some(path) = origin.strip_prefix("https://dev.azure.com/") {
-        let (organization, remainder) = path.split_once('/')?;
-        let (project, repository) = remainder.split_once("/_git/")?;
-        return azure_devops_identity_parts(organization, project, repository);
-    }
-    if let Some(path) = origin.strip_prefix("https://") {
-        let (organization, remainder) = path.split_once(".visualstudio.com/")?;
-        let (project, repository) = remainder.split_once("/_git/")?;
-        return azure_devops_identity_parts(organization, project, repository);
-    }
-    None
+fn github_identity(path: &str) -> Option<String> {
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/');
+    let (owner, name) = (parts.next()?, parts.next()?);
+    (parts.next().is_none() && !owner.is_empty() && !name.is_empty())
+        .then(|| format!("github:{owner}/{name}"))
 }
 
 fn azure_devops_identity_parts(
@@ -915,6 +915,10 @@ mod tests {
             "git@github.com:cyberwitchery/divinate.git",
             "https://github.com/cyberwitchery/divinate.git",
             "ssh://git@github.com/cyberwitchery/divinate.git",
+            "ssh://git@github.com:/cyberwitchery/divinate.git",
+            "ssh://git@github.com:22/cyberwitchery/divinate",
+            "git+ssh://git@GitHub.com/cyberwitchery/divinate.git",
+            "github.com:cyberwitchery/divinate",
         ] {
             assert_eq!(
                 repository_identity_from_origin(origin).as_deref(),
@@ -926,6 +930,7 @@ mod tests {
             "ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repository",
             "https://dev.azure.com/example-org/example-project/_git/example-repository",
             "https://example-org.visualstudio.com/example-project/_git/example-repository",
+            "https://example-org@dev.azure.com/example-org/example-project/_git/example-repository",
         ] {
             assert_eq!(
                 repository_identity_from_origin(origin).as_deref(),
@@ -943,6 +948,12 @@ mod tests {
             "git@ssh.dev.azure.com:v3/example-org/example-project/one/extra",
             "https://example.invalid/example-org/example-project/_git/example-repository",
             "azure-devops:example-org/example-project/example-repository",
+            "https://github.com/cyberwitchery",
+            "https://github.com/cyberwitchery/divinate/extra",
+            "http://github.com/cyberwitchery/divinate.git",
+            "ssh://git@github.com:x/cyberwitchery/divinate.git",
+            "/srv/git/github.com:cyberwitchery/divinate",
+            "https://github.com.example.invalid/cyberwitchery/divinate",
         ] {
             assert_eq!(repository_identity_from_origin(origin), None, "{origin}");
         }

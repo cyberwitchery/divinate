@@ -204,10 +204,11 @@ normal collection:
 5. evaluates the current scope; and
 6. writes `.evidence/dossiers/current.md`.
 
-the first release evaluation starts at the preceding release's commit time. a
-first repository-scoped evaluation starts at the unique Git root commit; a
-multiple-root history requires `--from`. later evaluations start at the former
-current evaluation time. the evaluation ends at collection time.
+a release evaluation starts at the preceding release's commit time. a
+repository-scoped evaluation starts at the unique Git root commit; a
+multiple-root history requires `--from`. every collection re-evaluates the
+whole interval over all retained evidence. the evaluation ends at collection
+time.
 
 when a release value is not unique, collection stops before committing the
 prepared increment:

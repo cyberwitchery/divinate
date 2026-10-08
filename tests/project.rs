@@ -102,6 +102,30 @@ fn azure_devops_checkout_initializes_and_rejects_identity_drift() {
 }
 
 #[test]
+fn a_declared_mirror_is_loaded_and_must_name_its_upstream() {
+    let repository = Repository::new();
+    let path = repository.path.join(project::PROJECT_FILE);
+    fs::write(
+        &path,
+        "repository:\n  identity: github:cyberwitchery/example\n  branch: main\n  mirror_of: an internal forge\n",
+    )
+    .unwrap();
+    let loaded = project::load(&repository.path).unwrap();
+    assert_eq!(
+        loaded.config.mirror_of.as_deref(),
+        Some("an internal forge")
+    );
+
+    fs::write(
+        &path,
+        "repository:\n  identity: github:cyberwitchery/example\n  branch: main\n  mirror_of: ' '\n",
+    )
+    .unwrap();
+    let error = project::load(&repository.path).unwrap_err().to_string();
+    assert!(error.contains("repository.mirror_of"), "{error}");
+}
+
+#[test]
 fn duplicate_source_ids_are_rejected() {
     let repository = Repository::new();
     fs::write(
@@ -134,6 +158,7 @@ fn init_migrates_legacy_live_configuration_to_yaml() {
         &divinate::workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "main".into(),
+            mirror_of: None,
             packs: BTreeMap::new(),
             sources: BTreeMap::new(),
         },
@@ -179,6 +204,7 @@ print(json.dumps({"ok":True,"result":x},separators=(",",":")))
             repository: RepositoryConfig {
                 identity: "github:cyberwitchery/example".into(),
                 branch: "main".into(),
+                mirror_of: None,
             },
             packs: BTreeMap::from([(
                 "example.fixture".into(),
@@ -285,6 +311,7 @@ fn pack_identity_mismatch_is_rejected_from_yaml() {
             repository: RepositoryConfig {
                 identity: "github:cyberwitchery/example".into(),
                 branch: "main".into(),
+                mirror_of: None,
             },
             packs: BTreeMap::from([(
                 "expected".into(),
@@ -328,6 +355,7 @@ fn invalid_builtin_configuration_names_its_yaml_path() {
             repository: RepositoryConfig {
                 identity: "github:cyberwitchery/example".into(),
                 branch: "main".into(),
+                mirror_of: None,
             },
             packs: BTreeMap::new(),
             sources: BTreeMap::from([(

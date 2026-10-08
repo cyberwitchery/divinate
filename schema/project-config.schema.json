@@ -11,7 +11,8 @@
       "required": ["identity", "branch"],
       "properties": {
         "identity": {"type": "string", "minLength": 1},
-        "branch": {"type": "string", "minLength": 1}
+        "branch": {"type": "string", "minLength": 1},
+        "mirror_of": {"type": "string", "minLength": 1}
       }
     },
     "packs": {

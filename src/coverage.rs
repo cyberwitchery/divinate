@@ -145,9 +145,12 @@ fn assess_run(
     if !run.authority.contains(&requirement.proposition) {
         return Ok((
             RunDisposition::NotAuthoritative,
-            format!(
-                "collector did not claim authority for {:?}",
-                requirement.proposition
+            limitation_reason(
+                run,
+                &format!(
+                    "collector did not claim authority for {:?}",
+                    requirement.proposition
+                ),
             ),
             None,
         ));

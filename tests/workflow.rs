@@ -41,6 +41,7 @@ fn target() -> EvaluationTarget {
         release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
+        mirror_of: None,
     }
 }
 
@@ -279,6 +280,33 @@ fn structured_isms_change_detection_notices_control_and_coverage_regression() {
 }
 
 #[test]
+fn review_pairs_claims_whose_interval_end_advanced() {
+    let corpus = corpus();
+    let previous = assertions::evaluate_all(&corpus, &target(), latest_capture()).unwrap();
+    let mut degraded = corpus.clone();
+    degraded
+        .collections
+        .retain(|run| run.requested_scope.proposition != Proposition::RepositoryMutations);
+    let mut later = target();
+    later.until = "2026-09-06T00:00:00Z".into();
+    let current = assertions::evaluate_all(
+        &degraded,
+        &later,
+        latest_capture() + time::Duration::days(1),
+    )
+    .unwrap();
+    let update = views::isms_update(&previous, &current);
+    assert!(
+        update
+            .changes
+            .iter()
+            .any(|change| change.assertion_type == AssertionType::EveryMainChangeReviewed),
+        "{:?}",
+        update.changes
+    );
+}
+
+#[test]
 fn recurring_gap_is_not_new_only_because_its_interval_advanced() {
     let assertions = assertions::evaluate_all(&corpus(), &target(), latest_capture()).unwrap();
     let mut current = assertions.clone();
@@ -327,6 +355,7 @@ fn pack_assertions_reach_both_views_without_conflating_subjects() {
     let mut second = first.clone();
     second.id = "asrt_pack_second".into();
     second.claim = "second pack claim".into();
+    second.subject.branch = Some("release".into());
     previous.extend([first, second]);
     let mut current = previous.clone();
     let changed = current

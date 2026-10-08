@@ -43,13 +43,15 @@ tag at `HEAD`. the base defaults to the unique nearest ancestor, preferring
 releases represented in retained state. explicit release options override this
 shared context for all relevant sources; they do not select one source.
 
-the first release evaluation starts at the base release commit time. a first
+a release evaluation starts at the base release commit time. a
 repository-scoped evaluation starts at the unique root commit; histories with
-multiple roots require `--from`. later evaluations start at the previous
-current evaluation time. `until` defaults to collection start, while automatic
-evaluation occurs after source executions complete. divinate rejects empty or
-ambiguous intervals. it also rejects an `--until` later than the collection
-start.
+multiple roots require `--from`. every collection re-evaluates that whole
+interval over all retained evidence, so a later evaluation never covers only
+the time since the previous one. `until` defaults to collection start, while
+automatic evaluation occurs after source executions complete. divinate rejects
+empty or ambiguous intervals. it also rejects an `--until` later than the
+collection start. `review` pairs claims by type and subject, not by the
+interval end, which advances with every collection.
 
 normal output contains source results, claim counts, and the dossier path. it
 omits forensic identifiers. `--json` prints the product summary as JSON.

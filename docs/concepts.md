@@ -39,6 +39,12 @@ authority is local to a proposition, subject, and interval. there is no global
 source ranking. a source contract supplies the rule that lets core decide whether
 a captured exchange covers the requested population.
 
+a run that failed, was denied, or was not attempted established nothing, so
+none of its observations may support or contradict a claim, from core or from a
+pack. a partial run still observed what it returned. a repository declared as a
+mirror (`repository.mirror_of`) is not authoritative for how changes were
+integrated, reviewed, or checked, only for their content.
+
 ## observations
 
 an observation is a typed interpretation of retained source bytes. it names its

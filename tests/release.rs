@@ -310,6 +310,7 @@ fn configured_collect_infers_release_inputs_evaluates_and_deduplicates() {
         .filter_map(|assertion| assertion.subject.branch.as_deref())
         .all(|branch| branch == configured_branch));
 
+    let base_start = release::release_time(&fixture.repository, "v1.0.0").unwrap();
     let mut explicit_request = fixture.request();
     explicit_request.reported_version = None;
     let explicit = release::collect(&explicit_request, &[], &BTreeMap::default()).unwrap();
@@ -319,8 +320,9 @@ fn configured_collect_infers_release_inputs_evaluates_and_deduplicates() {
             repository: "github:cyberwitchery/example".into(),
             branch: configured_branch.clone(),
             release: Some("v1.1.0".into()),
-            from: "2030-01-01T00:00:00Z".into(),
+            from: base_start.clone(),
             until: "2030-01-02T00:00:00Z".into(),
+            mirror_of: None,
         },
         parse_timestamp("2030-01-02T00:00:00Z").unwrap(),
     )
@@ -345,7 +347,7 @@ fn configured_collect_infers_release_inputs_evaluates_and_deduplicates() {
         "--release",
         "v1.1.0",
         "--from",
-        "2030-01-01T00:00:00Z",
+        &base_start,
         "--until",
         "2030-01-02T00:00:00Z",
         "--at",
@@ -452,6 +454,7 @@ fn configured_collect_reports_a_missing_executable_before_writing_evidence() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "master".into(),
+            mirror_of: None,
             packs: BTreeMap::default(),
             sources: BTreeMap::from([(
                 "release-sbom".into(),
@@ -520,6 +523,7 @@ fn normal_collect_without_any_configured_source_fails_clearly() {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: "master".into(),
+            mirror_of: None,
             packs: BTreeMap::default(),
             sources: BTreeMap::default(),
         },
@@ -695,6 +699,7 @@ fn configure_release(fixture: &Fixture, state: &Path, sbom_path: &str) {
         &workflow::ProjectConfig {
             repository: "github:cyberwitchery/example".into(),
             branch: release::current_branch(&fixture.repository).unwrap(),
+            mirror_of: None,
             packs: BTreeMap::new(),
             sources: BTreeMap::from([(
                 "release-sbom".into(),
@@ -765,6 +770,7 @@ fn target() -> EvaluationTarget {
         release: Some("v1.1.0".into()),
         from: "2026-01-01T00:00:00Z".into(),
         until: "2026-12-31T00:00:00Z".into(),
+        mirror_of: None,
     }
 }
 

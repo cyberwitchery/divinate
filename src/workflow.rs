@@ -87,6 +87,9 @@ pub struct ProjectConfig {
     pub repository: String,
     #[serde(default = "default_branch")]
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// the system of record this repository mirrors, when it is a mirror.
+    pub mirror_of: Option<String>,
     #[serde(default)]
     pub packs: BTreeMap<String, crate::pack::PackConfig>,
     #[serde(default)]

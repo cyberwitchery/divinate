@@ -50,7 +50,7 @@
         "outcome":{"enum":["complete","partial","permission_denied","retention_limited","interrupted","failed","not_attempted"]},
         "limitations": {"type":"array","items":{
           "type":"object","additionalProperties":false,"required":["kind","detail"],
-          "properties":{"kind":{"enum":["pagination_incomplete","permission_denied","retention_boundary","interrupted","source_error","not_attempted"]},"detail":{"type":"string"}}
+          "properties":{"kind":{"enum":["pagination_incomplete","permission_denied","retention_boundary","interrupted","source_error","not_attempted","not_system_of_record"]},"detail":{"type":"string"}}
         }},
         "authority":{"type":"array","items":{"$ref":"#/$defs/proposition"},"uniqueItems":true},
         "observation_ids":{"type":"array","items":{"type":"string","pattern":"^ev_[0-9a-f]{20}$"},"uniqueItems":true},

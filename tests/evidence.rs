@@ -28,6 +28,7 @@ fn target() -> EvaluationTarget {
         release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
+        mirror_of: None,
     }
 }
 
@@ -803,6 +804,142 @@ fn a_run_cut_to_nothing_still_supplies_its_counterexamples() {
     assert_eq!(cut.disposition, RunDisposition::Used);
     assert_eq!(cut.contributed_interval, None);
     assert!(cut.reason.contains("2026-09-03T12:00:00Z"));
+}
+
+#[test]
+fn a_declared_mirror_cannot_contradict_review_with_its_own_pushes() {
+    let corpus = collect(
+        Path::new(FIXTURES)
+            .join("collection-direct-push.json")
+            .as_path(),
+    )
+    .unwrap();
+    let mirrored = divinate::provenance::with_declared_mirror(
+        &corpus,
+        "github:cyberwitchery/example",
+        "an internal forge",
+    );
+    let assertion =
+        evaluate_every_main_change_reviewed(&mirrored, &target(), latest_capture()).unwrap();
+    assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
+    assert_eq!(assertion.contradictions, []);
+    assert!(assertion.missing.iter().any(|item| {
+        item.requirement.contains("repository_mutations")
+            && item
+                .reason
+                .contains("declared a mirror of an internal forge")
+    }));
+    assert!(assertion.coverage.iter().all(|decision| decision
+        .collection_runs
+        .iter()
+        .all(|run| run.disposition == RunDisposition::NotAuthoritative)));
+}
+
+#[test]
+fn a_declared_mirror_names_itself_as_the_branch_configuration_gap() {
+    let mut corpus = corpus();
+    let mut run = corpus.collections[0].clone();
+    run.id = "run-branch-configuration".into();
+    run.requested_scope.proposition = Proposition::BranchConfiguration;
+    run.observed_scope = Some(run.requested_scope.clone());
+    run.authority = vec![Proposition::BranchConfiguration];
+    for observation in corpus.observations.iter_mut().filter(|item| {
+        item.kind == ObservationKind::ConfigurationSnapshot
+            && item.claim_key.starts_with("github:branch-protection")
+    }) {
+        observation.collection_run_id = Some(run.id.clone());
+        run.observation_ids.push(observation.id.clone());
+    }
+    corpus.collections.push(run);
+    let assertion =
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
+    assert_eq!(assertion.outcome, Outcome::Supported);
+
+    let mirrored = divinate::provenance::with_declared_mirror(
+        &corpus,
+        "github:cyberwitchery/example",
+        "an internal forge",
+    );
+    let assertion =
+        evaluate_configured_independent_review(&mirrored, &target(), latest_capture()).unwrap();
+    assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
+    assert!(
+        assertion.missing.iter().any(|item| item.reason.contains(
+            "is declared a mirror of an internal forge; it is not the system of record for branch configuration"
+        )),
+        "{:?}",
+        assertion.missing
+    );
+}
+
+#[test]
+fn a_declared_mirror_withholds_imported_process_evidence() {
+    let corpus = corpus();
+    let mut mirrored = target();
+    mirrored.mirror_of = Some("an internal forge".into());
+    let at = latest_capture();
+
+    let branch = evaluate_configured_independent_review(&corpus, &mirrored, at).unwrap();
+    assert_eq!(branch.outcome, Outcome::InsufficientEvidence);
+    assert!(branch.missing.iter().any(|item| item
+        .reason
+        .contains("declared a mirror of an internal forge; it is not the system of record for branch configuration")));
+
+    let release = evaluate_release_reviews(&corpus, &mirrored, at).unwrap();
+    assert_eq!(release.outcome, Outcome::InsufficientEvidence);
+    assert_eq!(release.support, []);
+    assert!(release.missing.iter().any(|item| item
+        .reason
+        .contains("declared a mirror of an internal forge")));
+
+    let supply = evaluate_supply_chain(&corpus, &mirrored, at).unwrap();
+    assert_eq!(
+        supply.outcome,
+        evaluate_supply_chain(&corpus, &target(), at)
+            .unwrap()
+            .outcome
+    );
+}
+
+#[test]
+fn a_declared_mirror_keeps_authority_only_for_its_own_repository_and_content() {
+    let corpus = corpus();
+    let mirrored = divinate::provenance::with_declared_mirror(
+        &corpus,
+        "github:cyberwitchery/other",
+        "an internal forge",
+    );
+    assert_eq!(mirrored, corpus);
+    let mirrored = divinate::provenance::with_declared_mirror(
+        &corpus,
+        "github:cyberwitchery/example",
+        "an internal forge",
+    );
+    for run in mirrored
+        .collections
+        .iter()
+        .filter(|run| run.subject.id == "github:cyberwitchery/example")
+    {
+        let content = matches!(
+            run.requested_scope.proposition,
+            Proposition::CommitAncestry
+                | Proposition::DeclaredDependencies
+                | Proposition::SupplyChainPolicyDecision
+        );
+        assert_eq!(
+            run.authority.contains(&run.requested_scope.proposition),
+            content
+                && corpus
+                    .collections
+                    .iter()
+                    .any(|original| original.id == run.id
+                        && original
+                            .authority
+                            .contains(&run.requested_scope.proposition)),
+            "{}",
+            run.id
+        );
+    }
 }
 
 #[test]

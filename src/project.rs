@@ -39,6 +39,9 @@ pub struct ProjectFile {
 pub struct RepositoryConfig {
     pub identity: String,
     pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// the system of record this repository mirrors, when it is a mirror.
+    pub mirror_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -152,6 +155,7 @@ pub fn initialize(repository_root: &Path, repository: &str, branch: &str) -> Res
         repository: RepositoryConfig {
             identity: repository.into(),
             branch: branch.into(),
+            mirror_of: None,
         },
         packs: BTreeMap::new(),
         sources: BTreeMap::new(),
@@ -226,6 +230,7 @@ pub fn from_legacy(config: &ProjectConfig) -> ProjectFile {
         repository: RepositoryConfig {
             identity: config.repository.clone(),
             branch: config.branch.clone(),
+            mirror_of: None,
         },
         packs,
         sources,
@@ -318,6 +323,7 @@ fn resolve(repository_root: &Path, file: ProjectFile) -> Result<ProjectConfig> {
     Ok(ProjectConfig {
         repository: file.repository.identity,
         branch: file.repository.branch,
+        mirror_of: file.repository.mirror_of,
         packs,
         sources,
     })
@@ -331,6 +337,15 @@ fn validate_repository(repository: &RepositoryConfig) -> Result<()> {
     }
     if repository.branch.trim().is_empty() {
         return Err(Error::Invalid("repository.branch must not be empty".into()));
+    }
+    if repository
+        .mirror_of
+        .as_ref()
+        .is_some_and(|upstream| upstream.trim().is_empty())
+    {
+        return Err(Error::Invalid(
+            "repository.mirror_of must not be empty".into(),
+        ));
     }
     Ok(())
 }

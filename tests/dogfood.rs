@@ -94,8 +94,24 @@ fn configured_clone_collects_statuses_and_reviews_without_init() {
     assert!(status.contains("cargo-lock"));
     assert!(status.contains("current"));
 
+    let starts = |assertions: &[DerivedAssertion]| {
+        assertions
+            .iter()
+            .filter_map(|assertion| assertion.subject.from.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let first_starts = starts(&assertions);
+    assert!(!first_starts.is_empty());
+
     let second = cli(&root, &["collect"]);
     assert!(second.status.success(), "{}", stderr(&second));
+    let reevaluated: Vec<DerivedAssertion> =
+        read_json(&root.join(".evidence/assertions/current.json")).unwrap();
+    assert_eq!(
+        starts(&reevaluated),
+        first_starts,
+        "a later collection re-evaluates the whole history"
+    );
     let review = cli(&root, &["review"]);
     assert!(review.status.success(), "{}", stderr(&review));
     let verify = cli(&root, &["verify"]);

@@ -20,6 +20,7 @@ use crate::error::{Error, Result};
 use crate::model::{
     Corpus, EvidenceClass, Observation, ObservationKind, Proposition, Status, TimeRange,
 };
+use crate::provenance::mirror_gap;
 use crate::{hex_digest, parse_timestamp};
 
 const CONFIGURED_REVIEWS_VERSION: &str = "configured-reviews/v1";
@@ -39,6 +40,8 @@ pub struct EvaluationTarget {
     pub release: Option<String>,
     pub from: String,
     pub until: String,
+    /// the declared system of record when the repository is a mirror.
+    pub mirror_of: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -266,26 +269,43 @@ pub fn evaluate_configured_independent_review(
         ValidityBasis::PointInTime,
     )?;
     let Some((latest, observed_at)) = branch_configurations(corpus, target, at)?.pop() else {
-        let authority_withdrawn = corpus.observations.iter().any(|item| {
+        let unauthoritative = corpus.observations.iter().find(|item| {
             is_github_branch_protection(item, &target.branch)
                 && item.kind == ObservationKind::ConfigurationSnapshot
                 && item.subject.id == target.repository
                 && item.subject.qualifier("branch") == Some(target.branch.as_str())
-                && !observation_authoritative(corpus, item, Proposition::BranchConfiguration)
+                && !observation_authoritative(
+                    corpus,
+                    target,
+                    item,
+                    Proposition::BranchConfiguration,
+                )
         });
-        let reason = if authority_withdrawn {
-            "matching branch-protection evidence exists, but its linked acquisition contract has no current authority"
-        } else {
-            "current configured review intent was not observed"
+        let reason = match unauthoritative {
+            Some(item) => format!(
+                "matching branch-protection evidence exists, but it is not authoritative: {}",
+                mirror_gap(&target.repository, target.mirror_of.as_deref(), item).unwrap_or_else(
+                    || corpus
+                        .collections
+                        .iter()
+                        .find(|run| item.collection_run_id.as_ref() == Some(&run.id))
+                        .and_then(|run| run.limitations.first())
+                        .map_or_else(
+                            || "its linked acquisition contract has no current authority".into(),
+                            |item| item.detail.clone()
+                        )
+                )
+            ),
+            None => "current configured review intent was not observed".into(),
         };
         assertion.missing.push(MissingEvidence {
             requirement: "branch_protection_snapshot".into(),
             subject: format!("{}#{}", target.repository, target.branch),
-            reason: reason.into(),
+            reason: reason.clone(),
         });
         assertion.reasoning.push(ReasonStep {
             code: "branch_configuration_unavailable".into(),
-            conclusion: reason.into(),
+            conclusion: reason,
             evidence_ids: vec![],
         });
         return Ok(assertion);
@@ -343,7 +363,7 @@ pub fn evaluate_dependency_change_visibility(
         DEPENDENCY_VISIBILITY_VERSION,
         ValidityBasis::HistoricalRelease,
     )?;
-    let Some((diff, _)) = latest_matching(corpus, at, |item| {
+    let Some((diff, _)) = latest_matching(corpus, target, at, |item| {
         item.kind == ObservationKind::ChangeSet && matches_release(item, target)
     })?
     else {
@@ -526,15 +546,18 @@ pub fn evaluate_release_reviews(
         RELEASE_REVIEWS_VERSION,
         ValidityBasis::HistoricalRelease,
     )?;
-    let membership = latest_matching(corpus, at, |item| {
+    let is_membership = |item: &Observation| {
         item.kind == ObservationKind::ReleaseMembership && matches_release(item, target)
-    })?;
+    };
+    let membership = latest_matching(corpus, target, at, is_membership)?;
     let Some((membership, _)) = membership else {
         assertion.outcome = Outcome::InsufficientEvidence;
         assertion.missing.push(missing(
             "release_membership",
             target,
-            "the evaluator cannot determine which pull requests belong to the release",
+            &mirror_withheld(corpus, target, is_membership).unwrap_or_else(|| {
+                "the evaluator cannot determine which pull requests belong to the release".into()
+            }),
         ));
         assertion.reasoning.push(step(
             "release_membership_missing",
@@ -550,18 +573,21 @@ pub fn evaluate_release_reviews(
     ));
     assertion.validity.through = Some(membership_data.published_at.clone());
 
-    let review = latest_matching(corpus, at, |item| {
+    let is_review = |item: &Observation| {
         item.kind == ObservationKind::ReviewRecord
             && item.evidence_class == EvidenceClass::ObservedOperation
             && matches_release(item, target)
             && item.subject.qualifier("revision") == Some(membership_data.target_revision.as_str())
-    })?;
+    };
+    let review = latest_matching(corpus, target, at, is_review)?;
     let Some((review, _)) = review else {
         assertion.outcome = Outcome::InsufficientEvidence;
         assertion.missing.push(missing(
             "pull_request_review_records",
             target,
-            "release membership alone does not establish what happened before merge",
+            &mirror_withheld(corpus, target, is_review).unwrap_or_else(|| {
+                "release membership alone does not establish what happened before merge".into()
+            }),
         ));
         assertion.reasoning.push(step(
             "review_records_missing",
@@ -627,7 +653,7 @@ pub fn evaluate_supply_chain(
         SUPPLY_CHAIN_VERSION,
         ValidityBasis::HistoricalRelease,
     )?;
-    let diff = latest_matching(corpus, at, |item| {
+    let diff = latest_matching(corpus, target, at, |item| {
         item.kind == ObservationKind::ChangeSet && matches_release(item, target)
     })?;
     let Some((diff, _)) = diff else {
@@ -861,7 +887,7 @@ fn policy_history_at<'a>(
     effective_at: OffsetDateTime,
     known_at: OffsetDateTime,
 ) -> Result<Option<(&'a Observation, u64)>> {
-    let history = latest_matching(corpus, known_at, |item| {
+    let history = latest_matching(corpus, target, known_at, |item| {
         item.kind == ObservationKind::ConfigurationHistory
             && item.evidence_class == EvidenceClass::ConfiguredIntent
             && item.subject.id == target.repository
@@ -1242,7 +1268,7 @@ fn branch_configurations<'a>(
                 && item.evidence_class == EvidenceClass::ConfiguredIntent
                 && item.subject.id == target.repository
                 && item.subject.qualifier("branch") == Some(target.branch.as_str())
-                && observation_authoritative(corpus, item, Proposition::BranchConfiguration)
+                && observation_authoritative(corpus, target, item, Proposition::BranchConfiguration)
         })
         .map(|item| Ok((item, parse_timestamp(&item.observed_at)?)))
         .collect::<Result<Vec<_>>>()?;
@@ -1261,35 +1287,53 @@ fn is_github_branch_protection(observation: &Observation, branch: &str) -> bool 
 
 fn observation_authoritative(
     corpus: &Corpus,
+    target: &EvaluationTarget,
     observation: &Observation,
     proposition: Proposition,
 ) -> bool {
-    observation.collection_run_id.as_ref().is_none_or(|run_id| {
-        corpus
-            .collections
-            .iter()
-            .find(|run| &run.id == run_id)
-            .is_some_and(|run| run.authority.contains(&proposition))
-    })
+    mirror_gap(&target.repository, target.mirror_of.as_deref(), observation).is_none()
+        && observation.collection_run_id.as_ref().is_none_or(|run_id| {
+            corpus
+                .collections
+                .iter()
+                .find(|run| &run.id == run_id)
+                .is_some_and(|run| run.authority.contains(&proposition))
+        })
 }
 
-fn latest_matching<F>(
-    corpus: &Corpus,
+fn latest_matching<'a, F>(
+    corpus: &'a Corpus,
+    target: &EvaluationTarget,
     at: OffsetDateTime,
     predicate: F,
-) -> Result<Option<(&Observation, OffsetDateTime)>>
+) -> Result<Option<(&'a Observation, OffsetDateTime)>>
 where
     F: Fn(&Observation) -> bool,
 {
     let mut matches = corpus
         .observations
         .iter()
-        .filter(|item| predicate(item))
+        .filter(|item| {
+            predicate(item)
+                && mirror_gap(&target.repository, target.mirror_of.as_deref(), item).is_none()
+        })
         .map(|item| Ok((item, parse_timestamp(&item.observed_at)?)))
         .collect::<Result<Vec<_>>>()?;
     matches.retain(|(_, observed_at)| *observed_at <= at);
     matches.sort_by_key(|(observation, observed_at)| (*observed_at, &observation.id));
     Ok(matches.pop())
+}
+
+/// why matching evidence was withheld from a declared mirror, if any was.
+fn mirror_withheld<F>(corpus: &Corpus, target: &EvaluationTarget, predicate: F) -> Option<String>
+where
+    F: Fn(&Observation) -> bool,
+{
+    corpus
+        .observations
+        .iter()
+        .filter(|item| predicate(item))
+        .find_map(|item| mirror_gap(&target.repository, target.mirror_of.as_deref(), item))
 }
 
 fn matches_release(observation: &Observation, target: &EvaluationTarget) -> bool {

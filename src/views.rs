@@ -58,11 +58,11 @@ pub fn isms_update(previous: &[DerivedAssertion], current: &[DerivedAssertion]) 
     let current = review_assertions(current);
     let previous_by_type = previous
         .iter()
-        .map(|assertion| (assertion.id.clone(), assertion))
+        .map(|assertion| (review_key(assertion), assertion))
         .collect::<BTreeMap<_, _>>();
     let current_by_type = current
         .iter()
-        .map(|assertion| (assertion.id.clone(), assertion))
+        .map(|assertion| (review_key(assertion), assertion))
         .collect::<BTreeMap<_, _>>();
     let changes = current_by_type
         .iter()
@@ -119,6 +119,26 @@ pub fn isms_update(previous: &[DerivedAssertion], current: &[DerivedAssertion]) 
             ],
         },
     }
+}
+
+type ReviewKey = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// the same claim across two evaluations: its type and subject without the interval
+/// end, which advances with every collection.
+fn review_key(assertion: &DerivedAssertion) -> ReviewKey {
+    (
+        assertion.assertion_type.as_str().into(),
+        assertion.subject.repository.clone(),
+        assertion.subject.branch.clone(),
+        assertion.subject.release.clone(),
+        assertion.subject.from.clone(),
+    )
 }
 
 fn review_assertions(assertions: &[DerivedAssertion]) -> Vec<DerivedAssertion> {

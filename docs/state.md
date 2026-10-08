@@ -79,6 +79,31 @@ init infers it from Git once, and later commands verify it against the checkout.
 supported canonical forms are `github:owner/repository` and
 `azure-devops:organization/project/repository`.
 
+a repository that only mirrors another system of record declares it:
+
+```yaml
+repository:
+  identity: github:example/acme
+  branch: main
+  mirror_of: the vendor's internal gitlab
+```
+
+`mirror_of` names the upstream in free text, because the upstream is usually
+something divinate cannot reach. divinate cannot detect a mirror from the
+mirror itself, so this is declared, reviewable intent. evaluation then
+withdraws the repository's authority for the pull request population, pull
+request reviews, repository mutations, branch configuration, revision checks,
+and build validation results, and records why on each affected collection run.
+claims that need those propositions become insufficient evidence that names the
+mirror, instead of being supported or contradicted by the mirror's own pushes.
+commit ancestry, declared dependencies, and supply-chain decisions keep their
+authority, since a mirror reproduces content. evidence imported without a
+collection run follows the same rule by observation kind: configuration,
+mutation, review, release-membership, and validation records from the mirror
+lose authority; change sets and policy checks keep it. packs receive the
+declaration as `target.mirror_of`, and core rejects pack assertions that use
+withheld evidence.
+
 there is no `divinate.local.yaml` in this version. PATH covers the current need
 for machine-local executable selection without allowing an unreviewed file to
 change evidence semantics.

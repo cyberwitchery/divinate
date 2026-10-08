@@ -582,15 +582,20 @@ where
     F: FnMut(&str) -> Result<HttpExchange>,
 {
     let captured_at = format_time(options.captured_at)?;
-    let initial_url = format!(
-        "{GITHUB_API_ORIGIN}/repos/{}/activity?ref={}&time_period=year&per_page={}",
-        options.repository,
-        percent_encode(&options.branch),
-        options.per_page,
-    );
+    let initial_url = format!("{GITHUB_API_ORIGIN}/repos/{}", options.repository);
     let mut exchanges = Vec::new();
-    let mut termination =
-        fetch_github_pages(&initial_url, options.max_pages, fetch, &mut exchanges)?;
+    let (mut termination, alias) =
+        github_repository_lookup(&initial_url, &options.repository, fetch, &mut exchanges)?;
+    let alias = alias.as_deref().map(|alias| (initial_url.as_str(), alias));
+    if termination.is_none() {
+        let url = format!(
+            "{GITHUB_API_ORIGIN}/repos/{}/activity?ref={}&time_period=year&per_page={}",
+            options.repository,
+            percent_encode(&options.branch),
+            options.per_page,
+        );
+        termination = fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
+    }
     if termination.is_none() {
         let heads = github_activity_heads(&exchanges, options)?;
         for head in heads {
@@ -600,7 +605,8 @@ where
                 percent_encode(&head),
                 options.per_page,
             );
-            termination = fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges)?;
+            termination =
+                fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
             if termination.is_some() {
                 break;
             }
@@ -612,7 +618,8 @@ where
                 "{GITHUB_API_ORIGIN}/repos/{}/pulls/{number}/reviews?per_page={}",
                 options.repository, options.per_page,
             );
-            termination = fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges)?;
+            termination =
+                fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
             if termination.is_some() {
                 break;
             }
@@ -627,7 +634,8 @@ where
                     percent_encode(&revision),
                     options.per_page,
                 );
-                termination = fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges)?;
+                termination =
+                    fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
                 if termination.is_some() {
                     break;
                 }
@@ -668,11 +676,17 @@ where
     })
 }
 
+/// fetch every page of one github resource.
+///
+/// `alias` pairs the `/repos/{owner}/{name}` prefix with the `/repositories/{id}`
+/// prefix a retained repository lookup proved equivalent; github pagination links
+/// may use either.
 fn fetch_github_pages<F>(
     initial_url: &str,
     max_pages: u16,
     fetch: &mut F,
     exchanges: &mut Vec<HttpExchange>,
+    alias: Option<(&str, &str)>,
 ) -> Result<Option<AcquisitionTermination>>
 where
     F: FnMut(&str) -> Result<HttpExchange>,
@@ -693,7 +707,8 @@ where
             return Ok(None);
         };
         ensure_github_url(&next_url)?;
-        if next_url.split('?').next() != initial_url.split('?').next() {
+        let path = |url: &str| canonical_github_path(url.split('?').next().unwrap_or(""), alias);
+        if path(&next_url) != path(initial_url) {
             return Err(Error::Provenance(
                 "github pagination changed the requested resource".into(),
             ));
@@ -704,6 +719,61 @@ where
         url = next_url;
     }
     unreachable!()
+}
+
+/// fetch and retain the repository lookup that proves its numeric id.
+fn github_repository_lookup<F>(
+    url: &str,
+    repository: &str,
+    fetch: &mut F,
+    exchanges: &mut Vec<HttpExchange>,
+) -> Result<(Option<AcquisitionTermination>, Option<String>)>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    ensure_github_url(url)?;
+    let lookup = fetch(url)?;
+    let status = lookup.response.status;
+    let failure = (status != 200)
+        .then(|| classify_github_failure(status, &lookup.response.body, &lookup.response.headers));
+    exchanges.push(lookup);
+    if failure.is_some() {
+        return Ok((failure, None));
+    }
+    let alias = github_repository_alias(exchanges, repository).ok_or_else(|| {
+        Error::Provenance(format!(
+            "github did not identify repository {repository} by id"
+        ))
+    })?;
+    Ok((None, Some(alias)))
+}
+
+/// the `/repositories/{id}` prefix a retained, successful repository lookup proves
+/// equivalent to `/repos/{repository}`.
+fn github_repository_alias(exchanges: &[HttpExchange], repository: &str) -> Option<String> {
+    let lookup = exchanges.first()?;
+    if lookup.request.url != format!("{GITHUB_API_ORIGIN}/repos/{repository}")
+        || lookup.response.status != 200
+    {
+        return None;
+    }
+    let body = serde_json::from_str::<serde_json::Value>(&lookup.response.body).ok()?;
+    let id = body.get("id").and_then(serde_json::Value::as_u64)?;
+    body.get("full_name")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+        .then(|| format!("{GITHUB_API_ORIGIN}/repositories/{id}"))
+}
+
+/// rewrite an aliased `/repositories/{id}` path onto its `/repos/{owner}/{name}` form.
+fn canonical_github_path(path: &str, alias: Option<(&str, &str)>) -> String {
+    alias
+        .and_then(|(canonical, alias)| {
+            path.strip_prefix(alias)
+                .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+                .map(|rest| format!("{canonical}{rest}"))
+        })
+        .unwrap_or_else(|| path.into())
 }
 
 fn github_activity_heads(
@@ -851,8 +921,11 @@ fn github_get(agent: &ureq::Agent, url: &str, token: &str) -> Result<HttpExchang
         )
         .header("x-github-api-version", "2022-11-28")
         .call()
-        .map_err(|_| {
-            Error::Collection("github request failed before receiving a response".into())
+        .map_err(|error| {
+            Error::Collection(format!(
+                "github request failed before receiving a response: {}",
+                sanitize_diagnostic(&error.to_string())
+            ))
         })?;
     let status = response.status().as_u16();
     let headers = retained_github_headers(response.headers());
@@ -1500,8 +1573,11 @@ fn azure_devops_get(
             concat!("divinate/", env!("CARGO_PKG_VERSION")),
         )
         .call()
-        .map_err(|_| {
-            Error::Collection("azure devops request failed before receiving a response".into())
+        .map_err(|error| {
+            Error::Collection(format!(
+                "azure devops request failed before receiving a response: {}",
+                sanitize_diagnostic(&error.to_string())
+            ))
         })?;
     let status = response.status().as_u16();
     let headers = retained_azure_devops_headers(response.headers());
@@ -2058,6 +2134,43 @@ fn invalid_composite_sequence(transcript: &AcquisitionTranscript) -> Option<Stri
     None
 }
 
+fn github_request_allowed(
+    contents: &TranscriptContents,
+    repository: &str,
+    branch: &str,
+    request: &HttpRequest,
+    path: &str,
+) -> bool {
+    let prefix = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
+    if path == prefix {
+        return request == &contents.initial_request;
+    }
+    let alias = github_repository_alias(&contents.exchanges, repository);
+    let path = canonical_github_path(path, alias.as_deref().map(|alias| (prefix.as_str(), alias)));
+    let path = path.as_str();
+    if path == format!("{prefix}/activity") {
+        return query_parameter(&request.url, "ref") == Some(percent_encode(branch).as_str())
+            && query_parameter(&request.url, "time_period") == Some("year");
+    }
+    if let Some(suffix) = path.strip_prefix(&format!("{prefix}/commits/")) {
+        return ["/pulls", "/check-runs", "/status"].iter().any(|ending| {
+            suffix.strip_suffix(ending).is_some_and(|revision| {
+                !revision.is_empty()
+                    && !revision.contains('/')
+                    && (*ending == "/pulls"
+                        || contents.collector_contract == GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT)
+            })
+        });
+    }
+    if let Some(suffix) = path.strip_prefix(&format!("{prefix}/pulls/")) {
+        return contents.collector_contract == GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+            && suffix
+                .strip_suffix("/reviews")
+                .is_some_and(|number| number.parse::<u64>().is_ok());
+    }
+    false
+}
+
 fn historical_request_allowed(transcript: &AcquisitionTranscript, request: &HttpRequest) -> bool {
     if request.method != "GET" {
         return false;
@@ -2068,29 +2181,7 @@ fn historical_request_allowed(transcript: &AcquisitionTranscript, request: &Http
     };
     let path = request.url.split('?').next().unwrap_or("");
     if let Some(repository) = contents.subject.id.strip_prefix("github:") {
-        let prefix = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
-        if path == format!("{prefix}/activity") {
-            return query_parameter(&request.url, "ref") == Some(percent_encode(branch).as_str())
-                && query_parameter(&request.url, "time_period") == Some("year");
-        }
-        if let Some(suffix) = path.strip_prefix(&format!("{prefix}/commits/")) {
-            return ["/pulls", "/check-runs", "/status"].iter().any(|ending| {
-                suffix.strip_suffix(ending).is_some_and(|revision| {
-                    !revision.is_empty()
-                        && !revision.contains('/')
-                        && (*ending == "/pulls"
-                            || contents.collector_contract
-                                == GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT)
-                })
-            });
-        }
-        if let Some(suffix) = path.strip_prefix(&format!("{prefix}/pulls/")) {
-            return contents.collector_contract == GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
-                && suffix
-                    .strip_suffix("/reviews")
-                    .is_some_and(|number| number.parse::<u64>().is_ok());
-        }
-        return false;
+        return github_request_allowed(contents, repository, branch, request, path);
     }
     let Some(identity) = contents.subject.id.strip_prefix("azure-devops:") else {
         return false;
@@ -2205,7 +2296,15 @@ fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Optio
     let repository = contents.subject.id.strip_prefix("github:")?;
     let branch = contents.subject.qualifier("branch")?;
     let activity_path = format!("{GITHUB_API_ORIGIN}/repos/{repository}/activity");
-    if contents.initial_request.url.split('?').next() != Some(activity_path.as_str()) {
+    let lookup = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
+    let activity_request = if contents.initial_request.url == lookup {
+        contents.exchanges.get(1).map(|exchange| &exchange.request)
+    } else {
+        Some(&contents.initial_request)
+    };
+    if activity_request.and_then(|request| request.url.split('?').next())
+        != Some(activity_path.as_str())
+    {
         return Some(
             "github history initial request does not match the repository activity resource".into(),
         );
@@ -2731,6 +2830,17 @@ mod tests {
         }
     }
 
+    fn github_lookup(url: &str) -> Option<HttpExchange> {
+        (url == "https://api.github.com/repos/cyberwitchery/divinate").then(|| {
+            exchange(
+                url,
+                200,
+                r#"{"id":123,"full_name":"cyberwitchery/divinate"}"#,
+                BTreeMap::new(),
+            )
+        })
+    }
+
     #[test]
     fn next_link_is_extracted() {
         let headers = BTreeMap::from([(
@@ -2983,6 +3093,9 @@ mod tests {
             GithubRemoteResource::BuildValidationHistory,
         ] {
             let transcript = capture_github_remote_with(&remote(resource), |url| {
+                if let Some(lookup) = github_lookup(url) {
+                    return Ok(lookup);
+                }
                 Ok(exchange(url, 200, "[]", retained.clone()))
             })
             .unwrap();
@@ -3044,6 +3157,9 @@ mod tests {
     fn github_build_validation_history_requires_both_status_mechanisms() {
         let options = remote(GithubRemoteResource::BuildValidationHistory);
         let transcript = capture_github_remote_with(&options, |url| {
+            if let Some(lookup) = github_lookup(url) {
+                return Ok(lookup);
+            }
             let body = if url.contains("/activity?") {
                 r#"[{"id":"a","activity_type":"pr_merge","timestamp":"2026-09-11T12:00:00Z","ref":"refs/heads/main","after":"merge"}]"#
             } else if url.contains("/pulls?") {
@@ -3062,7 +3178,7 @@ mod tests {
             assessment.authority,
             vec![Proposition::BuildValidationResults]
         );
-        assert_eq!(transcript.contents.exchanges.len(), 6);
+        assert_eq!(transcript.contents.exchanges.len(), 7);
         assert!(transcript
             .contents
             .exchanges
@@ -3185,9 +3301,54 @@ mod tests {
     }
 
     #[test]
+    fn github_history_follows_pagination_onto_the_numeric_repository_path() {
+        let options = remote(GithubRemoteResource::RepositoryMutations);
+        let fetch = |repository_id: u64| {
+            move |url: &str| {
+                let mut headers = BTreeMap::new();
+                let body = if url == "https://api.github.com/repos/cyberwitchery/divinate" {
+                    format!(r#"{{"id":{repository_id},"full_name":"cyberwitchery/divinate"}}"#)
+                } else if url.contains("/repos/cyberwitchery/divinate/activity?") {
+                    headers.insert(
+                        "link".into(),
+                        "<https://api.github.com/repositories/123/activity?ref=main&time_period=year&per_page=100&after=cursor>; rel=\"next\"".into(),
+                    );
+                    r#"[{"id":1,"activity_type":"push","ref":"refs/heads/main","timestamp":"2026-09-11T12:00:00Z","after":"one"}]"#.into()
+                } else if url.starts_with("https://api.github.com/repositories/123/activity?") {
+                    r#"[{"id":2,"activity_type":"push","ref":"refs/heads/main","timestamp":"2026-09-11T11:00:00Z","after":"two"}]"#.into()
+                } else {
+                    assert!(url.contains("/pulls?"), "{url}");
+                    "[]".into()
+                };
+                Ok(exchange(url, 200, &body, headers))
+            }
+        };
+        let transcript = capture_github_remote_with(&options, fetch(123)).unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.authority, vec![Proposition::RepositoryMutations]);
+        assert!(transcript
+            .contents
+            .exchanges
+            .iter()
+            .any(|exchange| exchange.request.url.contains("/repositories/123/activity?")));
+
+        let error = capture_github_remote_with(&options, fetch(999)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("github pagination changed the requested resource"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn github_history_retains_mutation_association_and_review_requests() {
         let options = remote(GithubRemoteResource::PullRequestReviews);
         let transcript = capture_github_remote_with(&options, |url| {
+            if let Some(lookup) = github_lookup(url) {
+                return Ok(lookup);
+            }
             let body = if url.contains("/activity?") {
                 r#"[{"id":1,"ref":"refs/heads/main","timestamp":"2026-09-11T12:00:00Z","after":"integrated"}]"#
             } else if url.contains("/commits/integrated/pulls?") {
@@ -3201,7 +3362,7 @@ mod tests {
         let assessment = assess(&transcript, &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
         assert_eq!(assessment.authority, vec![Proposition::PullRequestReviews]);
-        assert_eq!(transcript.contents.exchanges.len(), 3);
+        assert_eq!(transcript.contents.exchanges.len(), 4);
         let mut missing = transcript.contents.clone();
         missing.exchanges.pop();
         let missing = seal_transcript(missing).unwrap();
@@ -3249,6 +3410,9 @@ mod tests {
         let mut options = remote(GithubRemoteResource::RepositoryMutations);
         options.max_pages = 1;
         let transcript = capture_github_remote_with(&options, |url| {
+            if let Some(lookup) = github_lookup(url) {
+                return Ok(lookup);
+            }
             Ok(exchange(
                 url,
                 200,

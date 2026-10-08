@@ -250,6 +250,8 @@ pub enum CollectionLimitationKind {
     Interrupted,
     SourceError,
     NotAttempted,
+    /// the repository is declared a mirror and is not the system of record.
+    NotSystemOfRecord,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

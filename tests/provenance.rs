@@ -114,6 +114,7 @@ fn target() -> EvaluationTarget {
         release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
+        mirror_of: None,
     }
 }
 
@@ -191,6 +192,7 @@ fn assertion_traverses_collection_transcript_and_source_bytes() {
         release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
+        mirror_of: None,
     };
     let assertion =
         assertions::evaluate_configured_independent_review(&corpus, &target, latest_capture())
@@ -238,6 +240,7 @@ fn contract_invalidation_withdraws_authority_without_rewriting_history() {
         release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
+        mirror_of: None,
     };
     let historical =
         assertions::evaluate_configured_independent_review(&corpus, &target, latest_capture())

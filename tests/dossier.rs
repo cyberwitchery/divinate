@@ -12,6 +12,7 @@ fn target() -> EvaluationTarget {
         release: Some("v1.4".into()),
         from: "2026-09-01T00:00:00Z".into(),
         until: "2026-09-05T00:00:00Z".into(),
+        mirror_of: None,
     }
 }
 

@@ -778,11 +778,7 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
     let release_context = needs_release
         .then(|| resolve_release_context(&config, &base, args))
         .transpose()?;
-    let from = infer_evaluation_start(
-        args,
-        release_context.as_ref(),
-        current_evaluated_at(&args.state)?,
-    )?;
+    let from = infer_evaluation_start(args, release_context.as_ref())?;
     if parse_timestamp(&from)? >= parse_timestamp(&until)? {
         return Err(Error::Invalid(format!(
             "automatic evaluation interval is empty ({from} to {until}); choose --from and --until"
@@ -991,16 +987,16 @@ fn validate_recorded_revision(corpus: &Corpus, release: &str, revision: &str) ->
     Ok(())
 }
 
+/// the start of the interval every collection re-evaluates: an explicit `--from`,
+/// the base release, or the start of repository history. a later collection
+/// re-evaluates the whole interval over all retained evidence, never just the time
+/// since the previous one.
 fn infer_evaluation_start(
     args: &ProductCollectArgs,
     release: Option<&ReleaseContext>,
-    current: Option<String>,
 ) -> Result<String> {
     if let Some(from) = &args.from {
         return Ok(from.clone());
-    }
-    if let Some(current) = current {
-        return Ok(current);
     }
     release.map_or_else(
         || divinate::release::history_start_time(&args.repository_path),
@@ -1135,15 +1131,6 @@ fn format_timestamp(value: time::OffsetDateTime) -> Result<String> {
     value
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))
-}
-
-fn current_evaluated_at(state: &std::path::Path) -> Result<Option<String>> {
-    let path = state.join("assertions/current.json");
-    if !path.exists() {
-        return Ok(None);
-    }
-    let assertions: Vec<DerivedAssertion> = read_json(&path)?;
-    Ok(assertions.first().map(|item| item.evaluated_at.clone()))
 }
 
 fn load_evaluation(state: &std::path::Path, label: &str) -> Result<Vec<DerivedAssertion>> {
@@ -2210,6 +2197,12 @@ fn evaluate_state_with_skips(
         &registry,
     )
     .map_err(provenance_error)?;
+    let current = match &project.mirror_of {
+        Some(upstream) => {
+            divinate::provenance::with_declared_mirror(&current, &project.repository, upstream)
+        }
+        None => current,
+    };
     let mut assertions = assertions::evaluate_all(&current, &target, at)?;
     let evaluated_at = assertions
         .first()
@@ -2763,6 +2756,7 @@ fn evaluation(args: TargetArgs) -> Result<(EvaluationTarget, time::OffsetDateTim
             release: args.release,
             from: args.from,
             until: args.until,
+            mirror_of: None,
         },
         at,
     ))
@@ -2772,8 +2766,12 @@ fn evaluation_in_project(
     config: &divinate::workflow::ProjectConfig,
     args: TargetArgs,
 ) -> EvaluationTarget {
+    let repository = args.repository.unwrap_or_else(|| config.repository.clone());
     EvaluationTarget {
-        repository: args.repository.unwrap_or_else(|| config.repository.clone()),
+        mirror_of: (repository == config.repository)
+            .then(|| config.mirror_of.clone())
+            .flatten(),
+        repository,
         branch: args.branch.unwrap_or_else(|| config.branch.clone()),
         release: args.release,
         from: args.from,
