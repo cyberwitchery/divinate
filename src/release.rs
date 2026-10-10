@@ -718,7 +718,7 @@ fn github_identity(path: &str) -> Option<String> {
     let owner_valid = !owner.is_empty()
         && owner
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
     let name_valid = !name.is_empty()
         && !matches!(name, "." | "..")
         && name
@@ -954,6 +954,10 @@ mod tests {
                 .as_deref(),
             Some("github:example-org/example-repo_2.0")
         );
+        assert_eq!(
+            repository_identity_from_origin("git@github.com:mona_octocorp/tools.git").as_deref(),
+            Some("github:mona_octocorp/tools")
+        );
         for origin in [
             "git@ssh.dev.azure.com:v3/example-org/example-project/example-repository",
             "ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repository",
@@ -1008,7 +1012,6 @@ mod tests {
             "https://github.com/./divinate",
             "git@github.com:~cyberwitchery/divinate.git",
             "https://github.com/%7Ecyberwitchery/divinate",
-            "https://github.com/cyber_witchery/divinate",
             "https://github.com/cyberwitchery/divin\u{e9}te",
         ] {
             assert_eq!(repository_identity_from_origin(origin), None, "{origin}");
