@@ -42,3 +42,7 @@
   since the previous evaluation, and pair review claims without the interval end
 - report the transport error when a github or azure devops request fails before
   a response
+- derive one repository identity from every origin form: a `*.visualstudio.com`
+  origin keeps its organization's case as the `dev.azure.com` and ssh forms do,
+  github's `ssh.github.com` ssh origin is accepted, and a github origin whose
+  owner or repository name github would not allow yields no identity
