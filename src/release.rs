@@ -678,6 +678,7 @@ fn repository_identity_from_origin(origin: &str) -> Option<String> {
     let path = std::str::from_utf8(&url.path).ok()?.trim_matches('/');
     match url.host()? {
         "github.com" => github_identity(path),
+        "ssh.github.com" if matches!(url.scheme, gix_url::Scheme::Ssh) => github_identity(path),
         "ssh.dev.azure.com" => {
             let mut parts = path.strip_prefix("v3/")?.split('/');
             let identity =
@@ -690,19 +691,40 @@ fn repository_identity_from_origin(origin: &str) -> Option<String> {
             azure_devops_identity_parts(organization, project, repository)
         }
         host => {
-            let organization = host.strip_suffix(".visualstudio.com")?;
+            let label = host.strip_suffix(".visualstudio.com")?.len();
+            let organization = original_host(origin, host)?.get(..label)?;
             let (project, repository) = path.split_once("/_git/")?;
             azure_devops_identity_parts(organization, project, repository)
         }
     }
 }
 
+/// return `host` as spelled in `origin`; gix-url lowercases the parsed host.
+fn original_host<'a>(origin: &'a str, host: &str) -> Option<&'a str> {
+    let rest = origin.split_once("://").map_or(origin, |(_, rest)| rest);
+    let authority = rest.split('/').next()?;
+    let spelled = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, rest)| rest);
+    spelled
+        .get(..host.len())
+        .filter(|spelled| spelled.eq_ignore_ascii_case(host))
+}
+
 fn github_identity(path: &str) -> Option<String> {
     let path = path.strip_suffix(".git").unwrap_or(path);
     let mut parts = path.split('/');
     let (owner, name) = (parts.next()?, parts.next()?);
-    (parts.next().is_none() && !owner.is_empty() && !name.is_empty())
-        .then(|| format!("github:{owner}/{name}"))
+    let owner_valid = !owner.is_empty()
+        && owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    let name_valid = !name.is_empty()
+        && !matches!(name, "." | "..")
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
+    (parts.next().is_none() && owner_valid && name_valid).then(|| format!("github:{owner}/{name}"))
 }
 
 fn azure_devops_identity_parts(
@@ -907,7 +929,7 @@ fn provenance<T>(message: impl Into<String>) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::repository_identity_from_origin;
+    use super::{original_host, repository_identity_from_origin};
 
     #[test]
     fn repository_origins_have_stable_provider_specific_identities() {
@@ -919,12 +941,23 @@ mod tests {
             "ssh://git@github.com:22/cyberwitchery/divinate",
             "git+ssh://git@GitHub.com/cyberwitchery/divinate.git",
             "github.com:cyberwitchery/divinate",
+            "ssh://git@ssh.github.com:443/cyberwitchery/divinate.git",
+            "git@ssh.github.com:cyberwitchery/divinate.git",
         ] {
             assert_eq!(
                 repository_identity_from_origin(origin).as_deref(),
                 Some("github:cyberwitchery/divinate")
             );
         }
+        assert_eq!(
+            repository_identity_from_origin("git@github.com:example-org/example-repo_2.0.git")
+                .as_deref(),
+            Some("github:example-org/example-repo_2.0")
+        );
+        assert_eq!(
+            repository_identity_from_origin("git@github.com:mona_octocorp/tools.git").as_deref(),
+            Some("github:mona_octocorp/tools")
+        );
         for origin in [
             "git@ssh.dev.azure.com:v3/example-org/example-project/example-repository",
             "ssh://git@ssh.dev.azure.com/v3/example-org/example-project/example-repository",
@@ -935,6 +968,19 @@ mod tests {
             assert_eq!(
                 repository_identity_from_origin(origin).as_deref(),
                 Some("azure-devops:example-org/example-project/example-repository")
+            );
+        }
+        for origin in [
+            "git@ssh.dev.azure.com:v3/MyOrg/Proj/Repo",
+            "https://dev.azure.com/MyOrg/Proj/_git/Repo",
+            "https://MyOrg.visualstudio.com/Proj/_git/Repo",
+            "https://user@MyOrg.VisualStudio.com:443/Proj/_git/Repo",
+            "git@MyOrg.visualstudio.com:Proj/_git/Repo",
+        ] {
+            assert_eq!(
+                repository_identity_from_origin(origin).as_deref(),
+                Some("azure-devops:MyOrg/Proj/Repo"),
+                "{origin}"
             );
         }
     }
@@ -954,8 +1000,39 @@ mod tests {
             "ssh://git@github.com:x/cyberwitchery/divinate.git",
             "/srv/git/github.com:cyberwitchery/divinate",
             "https://github.com.example.invalid/cyberwitchery/divinate",
+            "https://ssh.github.com/cyberwitchery/divinate.git",
+            "https://github.com/cyberwitchery/divinate?tab=readme",
+            "https://github.com/cyberwitchery/divinate.git#main",
+            "ssh://git@github.com/cyberwitchery/divinate?x",
+            "https://github.com/cyberwitchery/divinate%3Fx",
+            "https://github.com/cyberwitchery/..",
+            "https://github.com/cyberwitchery/%2E%2E",
+            "https://github.com/cyberwitchery/.",
+            "https://github.com/cyberwitchery/.git",
+            "https://github.com/./divinate",
+            "git@github.com:~cyberwitchery/divinate.git",
+            "https://github.com/%7Ecyberwitchery/divinate",
+            "https://github.com/cyberwitchery/divin\u{e9}te",
         ] {
             assert_eq!(repository_identity_from_origin(origin), None, "{origin}");
         }
+    }
+
+    #[test]
+    fn original_host_is_the_authority_host_as_spelled() {
+        assert_eq!(
+            original_host(
+                "https://u@MyOrg.visualstudio.com:443/P/_git/R@x",
+                "myorg.visualstudio.com"
+            ),
+            Some("MyOrg.visualstudio.com")
+        );
+        assert_eq!(
+            original_host(
+                "https://MyOrg.visualstudio.com/P/_git/R",
+                "other.visualstudio.com"
+            ),
+            None
+        );
     }
 }

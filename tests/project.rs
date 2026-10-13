@@ -102,6 +102,23 @@ fn azure_devops_checkout_initializes_and_rejects_identity_drift() {
 }
 
 #[test]
+fn azure_devops_organization_keeps_its_case_across_origin_forms() {
+    let repository = Repository::new();
+    let state = repository.directory.path().join("state");
+    for origin in [
+        "https://dev.azure.com/MyOrg/Proj/_git/Repo",
+        "https://MyOrg.visualstudio.com/Proj/_git/Repo",
+        "git@ssh.dev.azure.com:v3/MyOrg/Proj/Repo",
+    ] {
+        git(&repository.path, &["remote", "set-url", "origin", origin]);
+        let output = cli(&repository.path, &state, &["init"]);
+        assert!(output.status.success(), "{origin}: {}", stderr(&output));
+        let loaded = project::load(&repository.path).unwrap();
+        assert_eq!(loaded.config.repository, "azure-devops:MyOrg/Proj/Repo");
+    }
+}
+
+#[test]
 fn a_declared_mirror_is_loaded_and_must_name_its_upstream() {
     let repository = Repository::new();
     let path = repository.path.join(project::PROJECT_FILE);
