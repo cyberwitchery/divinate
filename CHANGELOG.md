@@ -46,3 +46,6 @@
   origin keeps its organization's case as the `dev.azure.com` and ssh forms do,
   github's `ssh.github.com` ssh origin is accepted, and a github origin whose
   owner or repository name github would not allow yields no identity
+- reject an acquisition transcript linked to a collection run about another kind
+  of subject or other qualifiers, such as another branch, or recorded for a
+  branch other than the one the run requested

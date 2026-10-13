@@ -183,6 +183,62 @@ fn broken_and_tampered_transcript_links_are_detected() {
     );
 }
 
+fn link_error(corpus: &mut evidence_spike::model::Corpus, contents: TranscriptContents) -> String {
+    let transcript = seal_transcript(contents).unwrap();
+    corpus
+        .collections
+        .last_mut()
+        .unwrap()
+        .acquisition_transcript_ids = vec![transcript.id.clone()];
+    verify_collection_links(corpus, &[transcript], &ContractRegistry::default())
+        .unwrap_err()
+        .to_string()
+}
+
+#[test]
+fn transcript_for_another_kind_of_subject_is_rejected() {
+    let (mut corpus, transcript) = linked();
+    let mut contents = transcript.contents;
+    contents.subject.kind = "organization".into();
+    let error = link_error(&mut corpus, contents);
+    assert!(
+        error.contains(r#"is about {"kind":"repository","#),
+        "{error}"
+    );
+    assert!(
+        error.contains(r#"is about {"kind":"organization","#),
+        "{error}"
+    );
+}
+
+#[test]
+fn transcript_with_other_subject_qualifiers_is_rejected() {
+    let (mut corpus, transcript) = linked();
+    let mut contents = transcript.contents;
+    contents
+        .subject
+        .qualifiers
+        .insert("branch".into(), serde_json::json!("dev"));
+    let error = link_error(&mut corpus, contents);
+    assert!(error.contains(r#""branch":"main""#), "{error}");
+    assert!(error.contains(r#""branch":"dev""#), "{error}");
+
+    let (mut corpus, transcript) = linked();
+    let mut contents = transcript.contents;
+    contents.subject.qualifiers.remove("revision");
+    let error = link_error(&mut corpus, contents);
+    assert!(error.contains(r#""revision":"2222"#), "{error}");
+}
+
+#[test]
+fn run_requesting_another_branch_than_its_transcript_is_rejected() {
+    let (mut corpus, transcript) = linked();
+    let run = corpus.collections.last_mut().unwrap();
+    run.requested_scope.branch = Some("dev".into());
+    run.observed_scope.as_mut().unwrap().branch = Some("dev".into());
+    assert!(link_error(&mut corpus, transcript.contents).contains("different proposition, branch"));
+}
+
 #[test]
 fn assertion_traverses_collection_transcript_and_source_bytes() {
     let (corpus, transcript) = linked();
