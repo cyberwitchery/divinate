@@ -612,7 +612,7 @@ fn declarative_source_configuration_controls_release_collection() {
     assert!(source.configuration.get("sbom_path").is_some());
 
     let yaml = fs::read(fixture.repository.join(project::PROJECT_FILE)).unwrap();
-    let mut file: project::ProjectFile = serde_yaml_ng::from_slice(&yaml).unwrap();
+    let mut file: project::ProjectFile = serde_saphyr::from_slice(&yaml).unwrap();
     let release_source = file.sources.remove("release-sbom").unwrap();
     project::store(&fixture.repository, &file).unwrap();
     let collect = product_collect(&fixture, state.path(), "2030-01-01T00:00:00Z");
@@ -638,7 +638,7 @@ fn declarative_source_configuration_controls_release_collection() {
         divinate::read_json(&state.path().join("assertions/current.configuration.json")).unwrap();
     assert_eq!(evaluation.project_config_sha256, first_config);
 
-    let mut file: project::ProjectFile = serde_yaml_ng::from_slice(
+    let mut file: project::ProjectFile = serde_saphyr::from_slice(
         &fs::read(fixture.repository.join(project::PROJECT_FILE)).unwrap(),
     )
     .unwrap();

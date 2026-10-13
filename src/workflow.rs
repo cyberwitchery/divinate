@@ -345,8 +345,12 @@ fn verify_project_configuration(root: &Path, sha256: &str) -> Result<()> {
             "project configuration digest mismatch: {sha256}"
         )));
     }
-    serde_yaml_ng::from_slice::<crate::project::ProjectFile>(&bytes)
-        .map_err(|source| Error::Yaml { path, source })?;
+    serde_saphyr::from_slice::<crate::project::ProjectFile>(&bytes).map_err(|source| {
+        Error::Yaml {
+            path,
+            source: Box::new(source),
+        }
+    })?;
     Ok(())
 }
 
