@@ -166,7 +166,7 @@ fn normalized_gate_matches(
 /// # Errors
 ///
 /// returns an error for duplicate or missing transcripts, broken integrity,
-/// mismatched scope, or source bytes absent from the linked acquisition.
+/// mismatched subject or scope, or source bytes absent from the linked acquisition.
 pub fn verify_collection_links(
     corpus: &Corpus,
     transcripts: &[AcquisitionTranscript],
@@ -197,12 +197,22 @@ pub fn verify_collection_links(
                     run.id
                 ))
             })?;
-            if transcript.contents.subject.id != run.subject.id
-                || transcript.contents.proposition != run.requested_scope.proposition
+            if transcript.contents.subject != run.subject {
+                return Err(Error::Invalid(format!(
+                    "collection {} is about {} but acquisition {transcript_id} is about {}",
+                    run.id,
+                    serde_json::to_string(&run.subject).map_err(Error::Serialize)?,
+                    serde_json::to_string(&transcript.contents.subject)
+                        .map_err(Error::Serialize)?
+                )));
+            }
+            if transcript.contents.proposition != run.requested_scope.proposition
+                || transcript.contents.subject.qualifier("branch")
+                    != run.requested_scope.branch.as_deref()
                 || transcript.contents.requested_scope != run.requested_scope.interval
             {
                 return Err(Error::Invalid(format!(
-                    "collection {} and acquisition {transcript_id} have different subject, proposition, or scope",
+                    "collection {} and acquisition {transcript_id} have different proposition, branch, or interval",
                     run.id
                 )));
             }
