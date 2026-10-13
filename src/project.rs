@@ -120,10 +120,7 @@ pub fn load(repository_root: &Path) -> Result<LoadedProject> {
         path: path.clone(),
         source,
     })?;
-    let file: ProjectFile = serde_saphyr::from_slice(&bytes).map_err(|source| Error::Yaml {
-        path: path.clone(),
-        source: Box::new(source),
-    })?;
+    let file = parse(&path, &bytes)?;
     validate_repository(&file.repository)?;
     let actual = crate::release::repository_identity(repository_root)?;
     if actual != file.repository.identity {
@@ -138,6 +135,31 @@ pub fn load(repository_root: &Path) -> Result<LoadedProject> {
         sha256: crate::hex_digest(&bytes),
         bytes,
     })
+}
+
+/// parse the bytes of one project configuration document.
+///
+/// serde-saphyr's single-document reader stops at an indented root node and
+/// drops the rest of the input without an error, so every document is read and
+/// exactly one is required.
+///
+/// # Errors
+///
+/// returns an error for malformed yaml or more than one document.
+pub(crate) fn parse(path: &Path, bytes: &[u8]) -> Result<ProjectFile> {
+    let yaml = |source| Error::Yaml {
+        path: path.to_path_buf(),
+        source: Box::new(source),
+    };
+    let mut documents = serde_saphyr::from_slice_multiple(bytes).map_err(yaml)?;
+    match documents.len() {
+        0 => serde_saphyr::from_slice(bytes).map_err(yaml),
+        1 => Ok(documents.remove(0)),
+        count => Err(Error::Invalid(format!(
+            "{}: invalid yaml: expected one document, found {count}",
+            path.display()
+        ))),
+    }
 }
 
 /// write a starter project configuration unless one already exists.
