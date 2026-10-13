@@ -394,6 +394,18 @@ fn invalid_builtin_configuration_names_its_yaml_path() {
     assert!(error.to_string().contains("sbom_path"));
 }
 
+#[test]
+fn configuration_after_an_indented_root_is_not_silently_dropped() {
+    let repository = Repository::new();
+    fs::write(
+        repository.path.join(project::PROJECT_FILE),
+        "  repository:\n    identity: github:cyberwitchery/example\n    branch: main\nunknown: true\n",
+    )
+    .unwrap();
+    let error = project::load(&repository.path).unwrap_err();
+    assert!(error.to_string().contains("invalid yaml"), "{error}");
+}
+
 fn cli(repository: &Path, state: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_divinate"))
         .current_dir(repository)
