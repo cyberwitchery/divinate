@@ -57,7 +57,7 @@ fn repository() -> (tempfile::TempDir, PathBuf) {
 fn repository_configuration_is_a_real_collectable_source() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let source = fs::read(root.join("divinate.yaml")).unwrap();
-    let configured: serde_yaml_ng::Value = serde_yaml_ng::from_slice(&source).unwrap();
+    let configured: serde_json::Value = serde_saphyr::from_slice(&source).unwrap();
     assert_eq!(
         configured["repository"]["identity"],
         "github:cyberwitchery/divinate"

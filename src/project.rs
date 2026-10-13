@@ -120,9 +120,9 @@ pub fn load(repository_root: &Path) -> Result<LoadedProject> {
         path: path.clone(),
         source,
     })?;
-    let file: ProjectFile = serde_yaml_ng::from_slice(&bytes).map_err(|source| Error::Yaml {
+    let file: ProjectFile = serde_saphyr::from_slice(&bytes).map_err(|source| Error::Yaml {
         path: path.clone(),
-        source,
+        source: Box::new(source),
     })?;
     validate_repository(&file.repository)?;
     let actual = crate::release::repository_identity(repository_root)?;
@@ -171,11 +171,8 @@ pub fn initialize(repository_root: &Path, repository: &str, branch: &str) -> Res
 /// returns an error when serialization or writing fails.
 pub fn store(repository_root: &Path, file: &ProjectFile) -> Result<()> {
     let path = repository_root.join(PROJECT_FILE);
-    let bytes = serde_yaml_ng::to_string(file)
-        .map_err(|source| Error::Yaml {
-            path: path.clone(),
-            source,
-        })?
+    let bytes = serde_saphyr::to_string(file)
+        .map_err(Error::SerializeYaml)?
         .into_bytes();
     fs::write(&path, bytes).map_err(|source| Error::Io { path, source })?;
     Ok(())

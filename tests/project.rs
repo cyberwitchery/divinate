@@ -51,7 +51,7 @@ fn init_creates_strict_minimal_yaml() {
     assert!(output.status.success(), "{}", stderr(&output));
     let path = repository.path.join(project::PROJECT_FILE);
     let bytes = fs::read(&path).unwrap();
-    let file: ProjectFile = serde_yaml_ng::from_slice(&bytes).unwrap();
+    let file: ProjectFile = serde_saphyr::from_slice(&bytes).unwrap();
     assert_eq!(file.repository.identity, "github:cyberwitchery/example");
     assert!(file.sources.is_empty());
     assert!(state.join("repository.json").is_file());
@@ -84,7 +84,7 @@ fn azure_devops_checkout_initializes_and_rejects_identity_drift() {
     let output = cli(&repository.path, &state, &["init", "--branch", "develop"]);
     assert!(output.status.success(), "{}", stderr(&output));
     let file: ProjectFile =
-        serde_yaml_ng::from_slice(&fs::read(repository.path.join(project::PROJECT_FILE)).unwrap())
+        serde_saphyr::from_slice(&fs::read(repository.path.join(project::PROJECT_FILE)).unwrap())
             .unwrap();
     assert_eq!(
         file.repository.identity,

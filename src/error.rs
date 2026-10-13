@@ -21,7 +21,7 @@ pub enum Error {
     #[error("{path}: invalid yaml: {source}")]
     Yaml {
         path: PathBuf,
-        source: serde_yaml_ng::Error,
+        source: Box<serde_saphyr::Error>,
     },
     #[error("{path}: source is not utf-8: {source}")]
     Utf8 {
@@ -41,6 +41,8 @@ pub enum Error {
     Provenance(String),
     #[error("cannot serialize json: {0}")]
     Serialize(serde_json::Error),
+    #[error("cannot serialize yaml: {0}")]
+    SerializeYaml(serde_saphyr::SerializeError),
 }
 
 /// the crate's result type.
