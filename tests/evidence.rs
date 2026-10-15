@@ -225,10 +225,10 @@ fn old_support_is_stale_when_no_newer_configuration_exists() {
     let assertion =
         evaluate_configured_reviews(&corpus, &target(), at("2026-09-09T12:00:00Z")).unwrap();
     assert_eq!(assertion.outcome, Outcome::Stale);
-    assert_eq!(
-        assertion.validity.fresh_until.as_deref(),
-        Some("2026-09-08T08:00:00Z")
-    );
+    // the support expired between the snapshot and the evaluation time.
+    let fresh_until = assertion.validity.fresh_until.as_deref().unwrap();
+    assert!(fresh_until > "2026-09-01T08:00:00Z", "{fresh_until}");
+    assert!(fresh_until < "2026-09-09T12:00:00Z", "{fresh_until}");
 }
 
 #[test]

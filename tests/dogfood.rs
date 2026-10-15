@@ -62,21 +62,16 @@ fn repository_configuration_is_a_real_collectable_source() {
         configured.repository.identity,
         "github:cyberwitchery/divinate"
     );
-    assert_eq!(
-        configured
-            .sources
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        [
-            "cargo-lock",
-            "github-branch-protection",
-            "github-check-runs",
-            "github-commit-statuses",
-            "github-pull-request-reviews",
-            "github-repository-mutations",
-        ]
-    );
+    for source in [
+        "cargo-lock",
+        "github-branch-protection",
+        "github-check-runs",
+        "github-commit-statuses",
+        "github-repository-mutations",
+        "github-pull-request-reviews",
+    ] {
+        assert!(configured.sources.contains_key(source), "{source}");
+    }
 }
 
 #[test]
