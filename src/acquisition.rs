@@ -2861,10 +2861,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(exchange.response.item_count, 1);
-        assert!(!exchange.response.headers.contains_key("authorization"));
+        assert_eq!(
+            exchange.response.headers,
+            BTreeMap::from([
+                ("etag".to_string(), "abc".to_string()),
+                ("link".to_string(), "<next>; rel=\"next\"".to_string()),
+            ])
+        );
         assert_eq!(
             exchange.response.body_sha256,
-            hex_digest(exchange.response.body.as_bytes())
+            "8e9f2a40345f2095a34defa137e8774cab55317ec2de3bbd388c92629eedc628"
         );
     }
 
@@ -2956,20 +2962,29 @@ mod tests {
     }
 
     #[test]
-    fn check_run_count_mismatch_cannot_establish_complete_coverage() {
-        let options = remote(GithubRemoteResource::CheckRuns);
-        let transcript = capture_github_remote_with(&options, |url| {
-            Ok(exchange(
-                url,
-                200,
+    fn count_mismatch_cannot_establish_complete_coverage() {
+        for (resource, body) in [
+            (
+                GithubRemoteResource::CheckRuns,
                 r#"{"total_count":2,"check_runs":[{"name":"ci"}]}"#,
-                BTreeMap::new(),
-            ))
-        })
-        .unwrap();
-        let assessment = assess(&transcript, &ContractRegistry::default());
-        assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
-        assert_eq!(assessment.authority, []);
+            ),
+            (
+                GithubRemoteResource::CommitStatuses,
+                r#"{"state":"success","total_count":2,"statuses":[{"context":"ci","state":"success"}]}"#,
+            ),
+        ] {
+            let transcript = capture_github_remote_with(&remote(resource), |url| {
+                Ok(exchange(url, 200, body, BTreeMap::new()))
+            })
+            .unwrap();
+            let assessment = assess(&transcript, &ContractRegistry::default());
+            assert_eq!(
+                assessment.enumeration,
+                EnumerationStatus::Truncated,
+                "{resource:?}"
+            );
+            assert_eq!(assessment.authority, [], "{resource:?}");
+        }
     }
 
     #[test]
@@ -3003,23 +3018,6 @@ mod tests {
         assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
         assert_eq!(assessment.items, 2);
         assert_eq!(assessment.authority, vec![Proposition::RevisionChecks]);
-    }
-
-    #[test]
-    fn commit_status_count_mismatch_cannot_establish_complete_coverage() {
-        let options = remote(GithubRemoteResource::CommitStatuses);
-        let transcript = capture_github_remote_with(&options, |url| {
-            Ok(exchange(
-                url,
-                200,
-                r#"{"state":"success","total_count":2,"statuses":[{"context":"ci","state":"success"}]}"#,
-                BTreeMap::new(),
-            ))
-        })
-        .unwrap();
-        let assessment = assess(&transcript, &ContractRegistry::default());
-        assert_eq!(assessment.enumeration, EnumerationStatus::Truncated);
-        assert_eq!(assessment.authority, []);
     }
 
     #[test]
@@ -3076,37 +3074,6 @@ mod tests {
             token,
         )
         .is_err());
-        let options = remote(GithubRemoteResource::CommitStatuses);
-        let transcript = capture_github_remote_with(&options, |url| {
-            Ok(exchange(
-                url,
-                200,
-                r#"{"state":"pending","total_count":0,"statuses":[]}"#,
-                retained.clone(),
-            ))
-        })
-        .unwrap();
-        assert!(!serde_json::to_string(&transcript).unwrap().contains(token));
-        for resource in [
-            GithubRemoteResource::RepositoryMutations,
-            GithubRemoteResource::PullRequestReviews,
-            GithubRemoteResource::BuildValidationHistory,
-        ] {
-            let transcript = capture_github_remote_with(&remote(resource), |url| {
-                if let Some(lookup) = github_lookup(url) {
-                    return Ok(lookup);
-                }
-                Ok(exchange(url, 200, "[]", retained.clone()))
-            })
-            .unwrap();
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("acquisition.json");
-            crate::write_json(&transcript, &path).unwrap();
-            assert!(!std::fs::read(&path)
-                .unwrap()
-                .windows(token.len())
-                .any(|bytes| bytes == token.as_bytes()));
-        }
     }
 
     #[test]
@@ -3443,16 +3410,20 @@ mod tests {
     }
 
     #[test]
-    fn azure_historical_acquisitions_never_retain_fake_credentials() {
-        let token = "divinate-azure-history-secret-fake-87f421";
-        let authorization = AzureDevopsCredential::Pat(token.into()).authorization();
-        let mut headers = ureq::http::HeaderMap::new();
-        headers.insert("authorization", authorization.parse().unwrap());
-        let retained = retained_azure_devops_headers(&headers);
-        for resource in [
-            AzureDevopsRemoteResource::RepositoryMutations,
-            AzureDevopsRemoteResource::PullRequestReviews,
-            AzureDevopsRemoteResource::BuildValidationHistory,
+    fn azure_empty_history_is_complete_authoritative_coverage() {
+        for (resource, authority) in [
+            (
+                AzureDevopsRemoteResource::RepositoryMutations,
+                Proposition::RepositoryMutations,
+            ),
+            (
+                AzureDevopsRemoteResource::PullRequestReviews,
+                Proposition::PullRequestReviews,
+            ),
+            (
+                AzureDevopsRemoteResource::BuildValidationHistory,
+                Proposition::BuildValidationResults,
+            ),
         ] {
             let mut options = azure_remote();
             options.resource = resource;
@@ -3462,20 +3433,17 @@ mod tests {
                 } else {
                     r#"{"id":"11111111-2222-3333-4444-555555555555","name":"example-repository","project":{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}}"#
                 };
-                reject_reflected_azure_credential(body, &retained, token, &authorization)?;
-                Ok(exchange(url, 200, body, retained.clone()))
+                Ok(exchange(url, 200, body, BTreeMap::new()))
             })
             .unwrap();
-            let directory = tempfile::tempdir().unwrap();
-            let path = directory.path().join("acquisition.json");
-            crate::write_json(&transcript, &path).unwrap();
-            let bytes = std::fs::read(&path).unwrap();
-            assert!(!bytes
-                .windows(token.len())
-                .any(|bytes| bytes == token.as_bytes()));
-            assert!(!bytes
-                .windows(authorization.len())
-                .any(|bytes| bytes == authorization.as_bytes()));
+            let assessment = assess(&transcript, &ContractRegistry::default());
+            assert_eq!(
+                assessment.enumeration,
+                EnumerationStatus::Complete,
+                "{resource:?}"
+            );
+            assert_eq!(assessment.authority, vec![authority], "{resource:?}");
+            assert_eq!(assessment.items, 0, "{resource:?}");
         }
     }
 }

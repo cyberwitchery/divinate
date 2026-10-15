@@ -37,15 +37,17 @@ fn repository_evaluation_does_not_invent_release_scope() {
     let mut repository = target();
     repository.release = None;
     let assertions = evaluate_all(&corpus(), &repository, latest_capture()).unwrap();
-    assert!(assertions.iter().all(|assertion| {
-        !matches!(
-            assertion.assertion_type,
-            divinate::assertions::AssertionType::ReleaseReviewOperation
-                | divinate::assertions::AssertionType::ReleaseSupplyChainPolicy
-                | divinate::assertions::AssertionType::AdequateHumanSecurityReview
-                | divinate::assertions::AssertionType::DependencyChangeVisibility
-        )
-    }));
+    assert_eq!(
+        assertions
+            .iter()
+            .map(|assertion| assertion.assertion_type.clone())
+            .collect::<Vec<_>>(),
+        [
+            divinate::assertions::AssertionType::ConfiguredReviewRequirement,
+            divinate::assertions::AssertionType::EveryMainChangeReviewed,
+            divinate::assertions::AssertionType::ConfiguredIndependentReview,
+        ]
+    );
 }
 
 #[test]
@@ -225,7 +227,10 @@ fn old_support_is_stale_when_no_newer_configuration_exists() {
     let assertion =
         evaluate_configured_reviews(&corpus, &target(), at("2026-09-09T12:00:00Z")).unwrap();
     assert_eq!(assertion.outcome, Outcome::Stale);
-    assert!(assertion.validity.fresh_until.is_some());
+    assert_eq!(
+        assertion.validity.fresh_until.as_deref(),
+        Some("2026-09-08T08:00:00Z")
+    );
 }
 
 #[test]
@@ -509,87 +514,67 @@ fn permission_denial_is_an_explicit_population_gap() {
 }
 
 #[test]
-fn retention_truncation_preserves_success_and_exposes_the_uncovered_window() {
-    let mut corpus = corpus();
-    let run = corpus
-        .collections
-        .iter_mut()
-        .find(|run| run.id == "run-mutations-complete")
-        .unwrap();
-    run.outcome = CollectionOutcome::RetentionLimited;
-    run.observed_scope.as_mut().unwrap().interval.from = "2026-09-03T00:00:00Z".into();
-    run.limitations = vec![CollectionLimitation {
-        kind: CollectionLimitationKind::RetentionBoundary,
-        detail: "source retained events only from September 3".into(),
-    }];
-
-    let decision = assess(
-        &corpus,
-        requirement(Proposition::RepositoryMutations),
-        latest_capture(),
-    )
-    .unwrap();
-    assert_eq!(decision.outcome, CoverageOutcome::Incomplete);
-    assert_eq!(
-        decision.collection_runs[0].disposition,
-        RunDisposition::RetentionLimited
-    );
-    assert_eq!(decision.covered_intervals[0].from, "2026-09-03T00:00:00Z");
-    assert_eq!(
-        decision.uncovered_intervals[0].until,
-        "2026-09-03T00:00:00Z"
-    );
-}
-
-#[test]
-fn a_retention_limited_run_is_cut_at_its_start() {
-    let mut corpus = corpus();
-    let run = corpus
-        .collections
-        .iter_mut()
-        .find(|run| run.id == "run-mutations-complete")
-        .unwrap();
-    run.outcome = CollectionOutcome::RetentionLimited;
-    run.observed_scope.as_mut().unwrap().interval.from = "2026-09-03T00:00:00Z".into();
-    run.limitations = vec![CollectionLimitation {
-        kind: CollectionLimitationKind::RetentionBoundary,
-        detail: "source retained events only from September 3".into(),
-    }];
-    run.started_at = "2026-09-04T10:00:00Z".into();
-
-    let partly = assess(
-        &corpus,
-        requirement(Proposition::RepositoryMutations),
-        latest_capture(),
-    )
-    .unwrap();
-    let retained = TimeRange {
-        from: "2026-09-03T00:00:00Z".into(),
-        until: "2026-09-04T10:00:00Z".into(),
+fn retention_limited_runs_cover_only_the_retained_window_before_their_start() {
+    let range = |from: &str, until: &str| TimeRange {
+        from: from.into(),
+        until: until.into(),
     };
-    let run = &partly.collection_runs[0];
-    assert_eq!(run.disposition, RunDisposition::RetentionLimited);
-    assert_eq!(run.contributed_interval.as_ref(), Some(&retained));
-    assert!(run.reason.contains("2026-09-04T10:00:00Z"));
-    assert_eq!(partly.covered_intervals, [retained]);
+    for (started_at, covered, uncovered) in [
+        (
+            None,
+            vec![range("2026-09-03T00:00:00Z", "2026-09-05T00:00:00Z")],
+            vec![range("2026-09-01T00:00:00Z", "2026-09-03T00:00:00Z")],
+        ),
+        (
+            Some("2026-09-04T10:00:00Z"),
+            vec![range("2026-09-03T00:00:00Z", "2026-09-04T10:00:00Z")],
+            vec![
+                range("2026-09-01T00:00:00Z", "2026-09-03T00:00:00Z"),
+                range("2026-09-04T10:00:00Z", "2026-09-05T00:00:00Z"),
+            ],
+        ),
+        (
+            Some("2026-09-02T00:00:00Z"),
+            vec![],
+            vec![range("2026-09-01T00:00:00Z", "2026-09-05T00:00:00Z")],
+        ),
+    ] {
+        let mut corpus = corpus();
+        let run = corpus
+            .collections
+            .iter_mut()
+            .find(|run| run.id == "run-mutations-complete")
+            .unwrap();
+        run.outcome = CollectionOutcome::RetentionLimited;
+        run.observed_scope.as_mut().unwrap().interval.from = "2026-09-03T00:00:00Z".into();
+        run.limitations = vec![CollectionLimitation {
+            kind: CollectionLimitationKind::RetentionBoundary,
+            detail: "source retained events only from September 3".into(),
+        }];
+        if let Some(started_at) = started_at {
+            run.started_at = started_at.into();
+        }
 
-    corpus
-        .collections
-        .iter_mut()
-        .find(|run| run.id == "run-mutations-complete")
-        .unwrap()
-        .started_at = "2026-09-02T00:00:00Z".into();
-    let fully = assess(
-        &corpus,
-        requirement(Proposition::RepositoryMutations),
-        latest_capture(),
-    )
-    .unwrap();
-    assert_eq!(fully.covered_intervals, [] as [TimeRange; 0]);
-    let run = &fully.collection_runs[0];
-    assert_eq!(run.disposition, RunDisposition::RetentionLimited);
-    assert_eq!(run.contributed_interval, None);
-    assert!(run.reason.contains("2026-09-02T00:00:00Z"));
+        let decision = assess(
+            &corpus,
+            requirement(Proposition::RepositoryMutations),
+            latest_capture(),
+        )
+        .unwrap();
+        assert_eq!(
+            decision.outcome,
+            CoverageOutcome::Incomplete,
+            "{started_at:?}"
+        );
+        assert_eq!(decision.covered_intervals, covered, "{started_at:?}");
+        assert_eq!(decision.uncovered_intervals, uncovered, "{started_at:?}");
+        let run = &decision.collection_runs[0];
+        assert_eq!(run.disposition, RunDisposition::RetentionLimited);
+        assert_eq!(run.contributed_interval.as_ref(), covered.first());
+        if let Some(started_at) = started_at {
+            assert!(run.reason.contains(started_at), "{}", run.reason);
+        }
+    }
 }
 
 #[test]

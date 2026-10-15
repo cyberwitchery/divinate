@@ -63,20 +63,25 @@ fn contents(
 
 #[test]
 fn terminal_link_chain_replays_as_complete_authoritative_coverage() {
-    let transcript = seal_transcript(contents(
-        vec![
-            response("page-1", "[{\"sha\":\"one\"}]", Some("page-2")),
-            response("page-2", "[{\"sha\":\"two\"}]", None),
-        ],
-        AcquisitionTermination::Exhausted,
-    ))
-    .unwrap();
-    let assessment = assess(&transcript, &ContractRegistry::default());
-    assert_eq!(assessment.integrity, IntegrityStatus::Verified);
-    assert_eq!(assessment.contract, ContractStatus::Accepted);
-    assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
-    assert_eq!(assessment.authority, vec![Proposition::CommitAncestry]);
-    assert_eq!(assessment.items, 2);
+    for (exchanges, items) in [
+        (
+            vec![
+                response("page-1", "[{\"sha\":\"one\"}]", Some("page-2")),
+                response("page-2", "[{\"sha\":\"two\"}]", None),
+            ],
+            2,
+        ),
+        (vec![response("page-1", "[]", None)], 0),
+    ] {
+        let transcript =
+            seal_transcript(contents(exchanges, AcquisitionTermination::Exhausted)).unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.integrity, IntegrityStatus::Verified);
+        assert_eq!(assessment.contract, ContractStatus::Accepted);
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.authority, vec![Proposition::CommitAncestry]);
+        assert_eq!(assessment.items, items);
+    }
 }
 
 #[test]
@@ -204,20 +209,6 @@ fn unknown_contract_version_cannot_reuse_an_old_authority_decision() {
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.contract, ContractStatus::Unsupported);
     assert_eq!(assessment.authority, []);
-}
-
-#[test]
-fn commit_enumeration_is_not_authoritative_for_repository_mutations() {
-    let transcript = seal_transcript(contents(
-        vec![response("page-1", "[]", None)],
-        AcquisitionTermination::Exhausted,
-    ))
-    .unwrap();
-    let assessment = assess(&transcript, &ContractRegistry::default());
-    assert!(assessment.authority.contains(&Proposition::CommitAncestry));
-    assert!(!assessment
-        .authority
-        .contains(&Proposition::RepositoryMutations));
 }
 
 #[test]

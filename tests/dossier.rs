@@ -134,10 +134,35 @@ fn distinct_uncovered_intervals_remain_distinct_in_markdown() {
 
 #[test]
 fn current_and_historical_configuration_are_both_rendered() {
-    let (_, dossier) = dossier();
-    let markdown = dossier::render_markdown(&dossier);
-    assert!(markdown.contains("branch protection required 2 approving review(s)"));
-    assert!(markdown.contains("branch protection required 1 approving review(s)"));
+    let (corpus, dossier) = dossier();
+    let snapshot = |observed_at: &str, required: u64| dossier::HistoricalContext {
+        observed_at: observed_at.into(),
+        subject: "github:cyberwitchery/example".into(),
+        summary: format!("branch protection required {required} approving review(s)"),
+        observation_id: corpus
+            .observations
+            .iter()
+            .find(|item| {
+                item.kind == evidence_spike::model::ObservationKind::ConfigurationSnapshot
+                    && item.observed_at == observed_at
+            })
+            .unwrap()
+            .id
+            .clone(),
+    };
+    assert_eq!(
+        dossier
+            .contents
+            .historical_context
+            .iter()
+            .filter(|item| item.summary.starts_with("branch protection"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [
+            snapshot("2026-09-01T08:00:00Z", 2),
+            snapshot("2026-09-03T08:00:00Z", 1),
+        ]
+    );
 }
 
 #[test]
