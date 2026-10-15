@@ -134,6 +134,14 @@ fn distinct_uncovered_intervals_remain_distinct_in_markdown() {
 
 #[test]
 fn current_and_historical_configuration_are_both_rendered() {
+    let (_, dossier) = dossier();
+    let markdown = dossier::render_markdown(&dossier);
+    assert!(markdown.contains("branch protection required 2 approving review(s)"));
+    assert!(markdown.contains("branch protection required 1 approving review(s)"));
+}
+
+#[test]
+fn current_and_historical_configuration_are_both_in_the_historical_context() {
     let (corpus, dossier) = dossier();
     let snapshot = |observed_at: &str, required: u64| dossier::HistoricalContext {
         observed_at: observed_at.into(),

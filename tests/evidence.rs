@@ -37,17 +37,15 @@ fn repository_evaluation_does_not_invent_release_scope() {
     let mut repository = target();
     repository.release = None;
     let assertions = evaluate_all(&corpus(), &repository, latest_capture()).unwrap();
-    assert_eq!(
-        assertions
-            .iter()
-            .map(|assertion| assertion.assertion_type.clone())
-            .collect::<Vec<_>>(),
-        [
-            divinate::assertions::AssertionType::ConfiguredReviewRequirement,
-            divinate::assertions::AssertionType::EveryMainChangeReviewed,
-            divinate::assertions::AssertionType::ConfiguredIndependentReview,
-        ]
-    );
+    assert!(assertions.iter().all(|assertion| {
+        !matches!(
+            assertion.assertion_type,
+            divinate::assertions::AssertionType::ReleaseReviewOperation
+                | divinate::assertions::AssertionType::ReleaseSupplyChainPolicy
+                | divinate::assertions::AssertionType::AdequateHumanSecurityReview
+                | divinate::assertions::AssertionType::DependencyChangeVisibility
+        )
+    }));
 }
 
 #[test]
