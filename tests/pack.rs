@@ -71,6 +71,34 @@ fn a_pack_runs_in_a_private_directory_that_does_not_outlive_it() {
 }
 
 #[test]
+fn every_pack_shape_shares_one_protocol() {
+    let open = pack::describe(&pack_config(
+        example("packs/sbom-collector/divinate-pack-sbom-collector"),
+        serde_json::Value::Null,
+    ))
+    .unwrap()
+    .0;
+    let collector = pack::describe(&pack_config(
+        example("packs/config-collector/divinate-pack-config-collector"),
+        serde_json::Value::Null,
+    ))
+    .unwrap()
+    .0;
+    let evaluator = pack::describe(&pack_config(
+        example("packs/external-evaluator/divinate-pack-external-evaluator"),
+        serde_json::Value::Null,
+    ))
+    .unwrap()
+    .0;
+    assert_eq!(open.protocol_version, pack::PROTOCOL_VERSION);
+    assert_eq!(collector.protocol_version, pack::PROTOCOL_VERSION);
+    assert_eq!(evaluator.protocol_version, pack::PROTOCOL_VERSION);
+    assert_eq!(open.collectors, ["release-diff"]);
+    assert_eq!(collector.collectors, ["backup-encryption"]);
+    assert_eq!(evaluator.evaluators, ["backup-encryption"]);
+}
+
+#[test]
 fn github_pack_plans_remote_reads_without_receiving_credentials() {
     let config = pack_config(github_pack(), serde_json::Value::Null);
     let (metadata, _) = pack::describe(&config).unwrap();
