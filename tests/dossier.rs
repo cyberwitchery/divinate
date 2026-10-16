@@ -141,6 +141,39 @@ fn current_and_historical_configuration_are_both_rendered() {
 }
 
 #[test]
+fn current_and_historical_configuration_are_both_in_the_historical_context() {
+    let (corpus, dossier) = dossier();
+    let snapshot = |observed_at: &str, required: u64| dossier::HistoricalContext {
+        observed_at: observed_at.into(),
+        subject: "github:cyberwitchery/example".into(),
+        summary: format!("branch protection required {required} approving review(s)"),
+        observation_id: corpus
+            .observations
+            .iter()
+            .find(|item| {
+                item.kind == evidence_spike::model::ObservationKind::ConfigurationSnapshot
+                    && item.observed_at == observed_at
+            })
+            .unwrap()
+            .id
+            .clone(),
+    };
+    assert_eq!(
+        dossier
+            .contents
+            .historical_context
+            .iter()
+            .filter(|item| item.summary.starts_with("branch protection"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [
+            snapshot("2026-09-01T08:00:00Z", 2),
+            snapshot("2026-09-03T08:00:00Z", 1),
+        ]
+    );
+}
+
+#[test]
 fn configured_review_title_uses_the_assertion_branch() {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
     let at = latest_capture();

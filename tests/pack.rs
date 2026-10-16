@@ -378,117 +378,95 @@ fn azure_devops_review_assertion_rejects_incomplete_or_nonqualifying_policy() {
 
 #[test]
 fn github_ci_assertion_requires_both_status_mechanisms() {
-    let success_check = serde_json::json!({
-        "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
-    });
-    let success_status = serde_json::json!({"context": "legacy", "state": "success"});
-    assert_eq!(
-        github_ci_outcome(
-            &[
+    let check = |name: &str, status: &str, conclusion: serde_json::Value| {
+        serde_json::json!({
+            "name": name, "status": status, "conclusion": conclusion, "head_sha": "abc123"
+        })
+    };
+    let status =
+        |context: &str, state: &str| serde_json::json!({"context": context, "state": state});
+    let success_check = check("test", "completed", serde_json::json!("success"));
+    let success_status = status("legacy", "success");
+    for (checks, statuses, checks_complete, statuses_complete, expected) in [
+        (
+            vec![
                 success_check.clone(),
-                serde_json::json!({
-                    "name": "advisory", "status": "completed", "conclusion": "neutral", "head_sha": "abc123"
-                }),
-                serde_json::json!({
-                    "name": "optional", "status": "completed", "conclusion": "skipped", "head_sha": "abc123"
-                }),
+                check("advisory", "completed", serde_json::json!("neutral")),
+                check("optional", "completed", serde_json::json!("skipped")),
             ],
-            std::slice::from_ref(&success_status),
+            vec![success_status.clone()],
             true,
-            true
+            true,
+            "supported",
         ),
-        "supported"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            &[serde_json::json!({
-                "name": "test", "status": "completed", "conclusion": "failure", "head_sha": "abc123"
-            })],
-            std::slice::from_ref(&success_status),
+        (
+            vec![check("test", "completed", serde_json::json!("failure"))],
+            vec![success_status.clone()],
             true,
             true,
+            "contradicted",
         ),
-        "contradicted"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            std::slice::from_ref(&success_check),
-            &[serde_json::json!({"context": "legacy", "state": "error"})],
+        (
+            vec![success_check.clone()],
+            vec![status("legacy", "error")],
             true,
             true,
+            "contradicted",
         ),
-        "contradicted"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            std::slice::from_ref(&success_check),
-            &[serde_json::json!({"context": "legacy", "state": "pending"})],
+        (
+            vec![success_check.clone()],
+            vec![status("legacy", "pending")],
             true,
             true,
+            "insufficient_evidence",
         ),
-        "insufficient_evidence"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            &[serde_json::json!({
-                "name": "test", "status": "queued", "conclusion": null, "head_sha": "abc123"
-            })],
-            std::slice::from_ref(&success_status),
+        (
+            vec![check("test", "queued", serde_json::Value::Null)],
+            vec![success_status.clone()],
             true,
             true,
+            "insufficient_evidence",
         ),
-        "insufficient_evidence"
-    );
-    assert_eq!(
-        github_ci_outcome(&[], &[], true, true),
-        "insufficient_evidence"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            std::slice::from_ref(&success_check),
-            std::slice::from_ref(&success_status),
+        (vec![], vec![], true, true, "insufficient_evidence"),
+        (
+            vec![success_check.clone()],
+            vec![success_status.clone()],
             false,
-            true
+            true,
+            "insufficient_evidence",
         ),
-        "insufficient_evidence"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            std::slice::from_ref(&success_check),
-            std::slice::from_ref(&success_status),
+        (
+            vec![success_check.clone()],
+            vec![success_status.clone()],
             true,
             false,
+            "insufficient_evidence",
         ),
-        "insufficient_evidence"
-    );
-}
-
-#[test]
-fn github_ci_unknown_results_are_insufficient() {
-    let success_check = serde_json::json!({
-        "name": "test", "status": "completed", "conclusion": "success", "head_sha": "abc123"
-    });
-    let success_status = serde_json::json!({"context": "legacy", "state": "success"});
-    assert_eq!(
-        github_ci_outcome(
-            &[serde_json::json!({
-                "name": "future", "status": "completed", "conclusion": "new_conclusion", "head_sha": "abc123"
-            })],
-            std::slice::from_ref(&success_status),
+        (
+            vec![check(
+                "future",
+                "completed",
+                serde_json::json!("new_conclusion"),
+            )],
+            vec![success_status.clone()],
             true,
             true,
+            "insufficient_evidence",
         ),
-        "insufficient_evidence"
-    );
-    assert_eq!(
-        github_ci_outcome(
-            std::slice::from_ref(&success_check),
-            &[serde_json::json!({"context": "future", "state": "new_state"})],
+        (
+            vec![success_check.clone()],
+            vec![status("future", "new_state")],
             true,
             true,
+            "insufficient_evidence",
         ),
-        "insufficient_evidence"
-    );
+    ] {
+        assert_eq!(
+            github_ci_outcome(&checks, &statuses, checks_complete, statuses_complete),
+            expected,
+            "{checks:?} {statuses:?} {checks_complete} {statuses_complete}"
+        );
+    }
 }
 
 #[test]

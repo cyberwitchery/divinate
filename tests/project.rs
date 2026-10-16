@@ -151,11 +151,11 @@ fn duplicate_source_ids_are_rejected() {
   identity: github:cyberwitchery/example
   branch: main
 sources:
-  duplicate:
+  release:
     provider:
       builtin: release-sbom
     config: {}
-  duplicate:
+  release:
     provider:
       builtin: release-sbom
     config: {}
@@ -163,7 +163,11 @@ sources:
     )
     .unwrap();
     let error = project::load(&repository.path).unwrap_err();
-    assert!(error.to_string().contains("duplicate"), "{error}");
+    assert!(
+        matches!(error, divinate::error::Error::Yaml { .. })
+            && error.to_string().contains("duplicate mapping key: release"),
+        "{error}"
+    );
 }
 
 #[test]

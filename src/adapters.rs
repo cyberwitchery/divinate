@@ -433,7 +433,10 @@ mod tests {
     #[test]
     fn malformed_gate_output_is_rejected() {
         let error = adapt("unsafe-budget", &json!({"passed": true}), &subject()).unwrap_err();
-        assert!(error.to_string().contains("missing field `scan`"));
+        assert!(
+            matches!(&error, Error::Invalid(message) if message.starts_with("invalid unsafe-budget output: ")),
+            "{error}"
+        );
     }
 
     #[test]

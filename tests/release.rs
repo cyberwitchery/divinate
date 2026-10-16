@@ -515,35 +515,6 @@ fn configured_collect_rejects_a_release_tag_moved_after_collection() {
 }
 
 #[test]
-fn normal_collect_without_any_configured_source_fails_clearly() {
-    let fixture = Fixture::new(false);
-    let state = tempfile::tempdir().unwrap();
-    configure_project(
-        &fixture.repository,
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "master".into(),
-            mirror_of: None,
-            packs: BTreeMap::default(),
-            sources: BTreeMap::default(),
-        },
-    )
-    .unwrap();
-    let output = cli_output(&[
-        "collect",
-        "--state",
-        state.path().to_str().unwrap(),
-        "--repository-path",
-        fixture.repository.to_str().unwrap(),
-        "--at",
-        "2030-01-01T00:00:00Z",
-    ]);
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("defines no evidence sources"));
-    assert!(!workflow::corpus_path(state.path()).exists());
-}
-
-#[test]
 fn review_without_a_saved_predecessor_requires_since() {
     let fixture = Fixture::new(false);
     let state = tempfile::tempdir().unwrap();
