@@ -76,8 +76,9 @@ configuration keys fail validation. plain executable names resolve through
 repository identity is explicit in YAML because it is security-relevant intent.
 init infers it from Git once, and later commands verify it against the checkout.
 `.evidence/repository.json` binds local historical state to the same identity.
-supported canonical forms are `github:owner/repository` and
-`azure-devops:organization/project/repository`.
+supported canonical forms are `github:owner/repository`,
+`azure-devops:organization/project/repository`, and
+`gitlab:host/namespace/project`.
 
 a repository that only mirrors another system of record declares it:
 

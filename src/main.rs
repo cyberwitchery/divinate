@@ -694,11 +694,17 @@ fn init_repository(
     branch: Option<String>,
     json: bool,
 ) -> Result<()> {
-    let repository = divinate::release::repository_identity(repository_path)?;
+    let project_path = repository_path.join(divinate::project::PROJECT_FILE);
+    // a committed configuration declares the identity, which is how a
+    // self-hosted gitlab origin is recognised; load verifies it against origin.
+    let repository = if project_path.exists() {
+        divinate::project::load(repository_path)?.config.repository
+    } else {
+        divinate::release::repository_identity(repository_path)?
+    };
     let branch = branch.map_or_else(|| divinate::release::current_branch(repository_path), Ok)?;
     divinate::workflow::init(state)?;
     divinate::workflow::ensure_repository_identity(state, &repository)?;
-    let project_path = repository_path.join(divinate::project::PROJECT_FILE);
     let created = if project_path.exists() {
         divinate::project::load(repository_path)?;
         false
@@ -936,7 +942,8 @@ fn resolve_release_context(
     corpus: &Corpus,
     args: &ProductCollectArgs,
 ) -> Result<ReleaseContext> {
-    let actual = divinate::release::repository_identity(&args.repository_path)?;
+    let actual =
+        divinate::release::repository_identity_for(&args.repository_path, &config.repository)?;
     if actual != config.repository {
         return Err(Error::Provenance(format!(
             "repository path resolves to {actual}, not configured repository {}",
@@ -1752,20 +1759,29 @@ fn remote_collection_scope(
     } else {
         requested.until.clone()
     };
-    if matches!(
-        transcript.contents.collector_contract.as_str(),
+    // github activity covers one year; gitlab prunes project events after three
+    // years, so 1,095 days is the conservative bound.
+    let retention = match transcript.contents.collector_contract.as_str() {
         acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
-            | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
-            | acquisition::GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
-    ) {
-        let retained_from = captured_at - time::Duration::days(365);
+        | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+        | acquisition::GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT => Some((
+            365,
+            "GitHub repository activity is available for at most one year",
+        )),
+        acquisition::GITLAB_REPOSITORY_MUTATIONS_CONTRACT => {
+            Some((1_095, "GitLab project events are pruned after three years"))
+        }
+        _ => None,
+    };
+    if let Some((days, detail)) = retention {
+        let retained_from = captured_at - time::Duration::days(days);
         if requested_until <= retained_from {
             return Ok((
                 CollectionOutcome::RetentionLimited,
                 None,
                 vec![divinate::model::CollectionLimitation {
                     kind: divinate::model::CollectionLimitationKind::RetentionBoundary,
-                    detail: "GitHub repository activity is available for at most one year".into(),
+                    detail: detail.into(),
                 }],
             ));
         }
@@ -1778,7 +1794,7 @@ fn remote_collection_scope(
                 }),
                 vec![divinate::model::CollectionLimitation {
                     kind: divinate::model::CollectionLimitationKind::RetentionBoundary,
-                    detail: "GitHub repository activity is available for at most one year".into(),
+                    detail: detail.into(),
                 }],
             ));
         }
@@ -1793,6 +1809,7 @@ fn remote_collection_scope(
     ))
 }
 
+#[allow(clippy::too_many_lines)]
 fn capture_remote_plan(
     plan: &divinate::pack::CollectionPlan,
     acquisition_plan: &divinate::pack::RemoteAcquisitionPlan,
@@ -1894,7 +1911,55 @@ fn capture_remote_plan(
                 captured_at: parse_timestamp(&plan.observed_at)?,
             })
         }
+        divinate::pack::RemoteAcquisitionPlan::Gitlab {
+            resource,
+            max_pages,
+        } => capture_gitlab_plan(
+            plan,
+            repository_identity,
+            branch,
+            interval,
+            *resource,
+            *max_pages,
+        ),
     }
+}
+
+fn capture_gitlab_plan(
+    plan: &divinate::pack::CollectionPlan,
+    repository_identity: &str,
+    branch: &str,
+    interval: divinate::model::TimeRange,
+    resource: divinate::pack::GitlabResource,
+    max_pages: u16,
+) -> Result<AcquisitionTranscript> {
+    let (host, project) = repository_identity
+        .strip_prefix("gitlab:")
+        .and_then(|identity| identity.split_once('/'))
+        .ok_or_else(|| {
+            Error::Invalid("gitlab source requires gitlab:host/namespace/project identity".into())
+        })?;
+    let resource = match resource {
+        divinate::pack::GitlabResource::BranchProtection => {
+            acquisition::GitlabRemoteResource::BranchProtection
+        }
+        divinate::pack::GitlabResource::RepositoryMutations => {
+            acquisition::GitlabRemoteResource::RepositoryMutations
+        }
+        divinate::pack::GitlabResource::MergeRequestReviews => {
+            acquisition::GitlabRemoteResource::MergeRequestReviews
+        }
+    };
+    acquisition::capture_gitlab_remote(&acquisition::GitlabRemoteCapture {
+        host: host.into(),
+        project: project.into(),
+        branch: branch.into(),
+        resource,
+        subject: plan.subject.clone(),
+        interval,
+        max_pages,
+        captured_at: parse_timestamp(&plan.observed_at)?,
+    })
 }
 
 fn normalize_remote_exchanges(
@@ -1914,6 +1979,9 @@ fn normalize_remote_exchanges(
             | acquisition::AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT
             | acquisition::AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT
             | acquisition::AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT
+            | acquisition::GITLAB_BRANCH_PROTECTION_CONTRACT
+            | acquisition::GITLAB_REPOSITORY_MUTATIONS_CONTRACT
+            | acquisition::GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT
     ) {
         return normalize_remote_transcript(
             config, metadata, plan, transcript, run_id, described, planned,

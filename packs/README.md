@@ -1,6 +1,6 @@
 # in-tree packs
 
-the GitHub and Azure DevOps reference packs are Rust binaries, built and installed
+the GitHub, Azure DevOps, and GitLab reference packs are Rust binaries, built and installed
 with Divinate. the other directories contain executable fixtures. all implement
 pack protocol version 1. see
 [the protocol documentation](../docs/packs.md).
@@ -14,6 +14,10 @@ pack protocol version 1. see
   vote-history reads. core resolves the repository
   ID, authenticates, and retains the exact Azure responses without exposing the
   credential to the pack.
+- `gitlab` plans current protected-branch, approval-rule, and approval-setting
+  reads, plus branch-push, merge-request association, approval, and note reads.
+  core binds every request to the declared host and project path and
+  authenticates; the pack never sees the token.
 - `sbom-collector` collects and normalizes `sbom-diff` output.
 - `config-collector` shows a configuration-driven collector.
 - `external-evaluator` evaluates observations produced by another pack.

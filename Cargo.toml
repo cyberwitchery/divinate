@@ -32,6 +32,10 @@ path = "packs/github/main.rs"
 name = "divinate-pack-azure-devops"
 path = "packs/azure-devops/main.rs"
 
+[[bin]]
+name = "divinate-pack-gitlab"
+path = "packs/gitlab/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 gix-url = "0.39"

@@ -46,6 +46,12 @@ pub const AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT: &str = "azure-devops-pull-
 /// policy evaluations for integrations in one azure branch interval.
 pub const AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT: &str =
     "azure-devops-build-validation-history/v1";
+/// current gitlab protected branches, approval rules, and approval settings for one project.
+pub const GITLAB_BRANCH_PROTECTION_CONTRACT: &str = "gitlab-branch-protection/v1";
+/// branch push events and merge-request association for one gitlab branch interval.
+pub const GITLAB_REPOSITORY_MUTATIONS_CONTRACT: &str = "gitlab-repository-mutations/v1";
+/// merged merge requests, approvals, and approval notes for one gitlab branch interval.
+pub const GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT: &str = "gitlab-merge-request-reviews/v1";
 
 const GITHUB_API_ORIGIN: &str = "https://api.github.com";
 const AZURE_DEVOPS_API_ORIGIN: &str = "https://dev.azure.com";
@@ -69,6 +75,29 @@ pub enum AzureDevopsRemoteResource {
     RepositoryMutations,
     PullRequestReviews,
     BuildValidationHistory,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// the gitlab resources that core can acquire for packs.
+pub enum GitlabRemoteResource {
+    BranchProtection,
+    RepositoryMutations,
+    MergeRequestReviews,
+}
+
+#[derive(Debug, Clone)]
+/// one provider-aware gitlab acquisition requested by a pack.
+///
+/// `host` names the gitlab instance and `project` its full namespace path.
+pub struct GitlabRemoteCapture {
+    pub host: String,
+    pub project: String,
+    pub branch: String,
+    pub resource: GitlabRemoteResource,
+    pub subject: Subject,
+    pub interval: TimeRange,
+    pub max_pages: u16,
+    pub captured_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone)]
@@ -1713,6 +1742,600 @@ fn azure_devops_diagnostic(status: u16, body: &str) -> String {
     sanitize_diagnostic(&format!("HTTP {status}: {message}"))
 }
 
+/// acquire one provider-aware gitlab resource for a pack.
+///
+/// core binds the request to the declared host and project path, authenticates
+/// with `GITLAB_TOKEN` or the token `glab` holds for the host, refuses redirects,
+/// and retains every response the contract depends on.
+///
+/// # Errors
+///
+/// returns an error when the request context is invalid, no credential is
+/// available, or the provider cannot be reached.
+pub fn capture_gitlab_remote(options: &GitlabRemoteCapture) -> Result<AcquisitionTranscript> {
+    validate_gitlab_remote(options)?;
+    let token = gitlab_credential(&options.host)?;
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .timeout_global(Some(Duration::from_secs(30)))
+        .build()
+        .into();
+    let mut fetch = |url: &str| gitlab_get(&agent, url, options, &token);
+    capture_gitlab_with(options, &mut fetch)
+}
+
+fn capture_gitlab_with<F>(
+    options: &GitlabRemoteCapture,
+    fetch: &mut F,
+) -> Result<AcquisitionTranscript>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    validate_gitlab_remote(options)?;
+    let captured_at = format_time(options.captured_at)?;
+    let (contract, proposition) = gitlab_contract(options.resource);
+    let prefix = gitlab_project_url(&options.host, &options.project);
+    let project_exchange = fetch_gitlab_exchange(&prefix, options, fetch)?;
+    let status = project_exchange.response.status;
+    let mut exchanges = Vec::new();
+    let termination = if status == 200 {
+        gitlab_project_binding(&options.project, &project_exchange)?;
+        exchanges.push(project_exchange);
+        match options.resource {
+            GitlabRemoteResource::BranchProtection => {
+                capture_gitlab_branch_protection(&prefix, options, fetch, &mut exchanges)?
+            }
+            GitlabRemoteResource::RepositoryMutations => {
+                capture_gitlab_mutations(&prefix, options, fetch, &mut exchanges)?
+            }
+            GitlabRemoteResource::MergeRequestReviews => {
+                capture_gitlab_reviews(&prefix, options, fetch, &mut exchanges)?
+            }
+        }
+    } else {
+        let termination = classify_gitlab_failure(
+            status,
+            &project_exchange.response.body,
+            &project_exchange.response.headers,
+        );
+        exchanges.push(project_exchange);
+        Some(termination)
+    };
+    seal_transcript(TranscriptContents {
+        collector_contract: contract.into(),
+        collector_version: env!("CARGO_PKG_VERSION").into(),
+        subject: options.subject.clone(),
+        proposition,
+        requested_scope: options.interval.clone(),
+        captured_at,
+        initial_request: HttpRequest {
+            method: "GET".into(),
+            url: prefix,
+        },
+        exchanges,
+        termination: termination.unwrap_or(AcquisitionTermination::Exhausted),
+    })
+}
+
+fn gitlab_contract(resource: GitlabRemoteResource) -> (&'static str, Proposition) {
+    match resource {
+        GitlabRemoteResource::BranchProtection => (
+            GITLAB_BRANCH_PROTECTION_CONTRACT,
+            Proposition::BranchConfiguration,
+        ),
+        GitlabRemoteResource::RepositoryMutations => (
+            GITLAB_REPOSITORY_MUTATIONS_CONTRACT,
+            Proposition::RepositoryMutations,
+        ),
+        GitlabRemoteResource::MergeRequestReviews => (
+            GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT,
+            Proposition::PullRequestReviews,
+        ),
+    }
+}
+
+/// the first page of every list the branch-protection contract reads, in order.
+fn gitlab_branch_stages(prefix: &str) -> [String; 3] {
+    [
+        format!("{prefix}/protected_branches?per_page=100"),
+        format!("{prefix}/approval_rules?per_page=100"),
+        format!("{prefix}/approvals"),
+    ]
+}
+
+fn capture_gitlab_branch_protection<F>(
+    prefix: &str,
+    options: &GitlabRemoteCapture,
+    fetch: &mut F,
+    exchanges: &mut Vec<HttpExchange>,
+) -> Result<Option<AcquisitionTermination>>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    for stage in gitlab_branch_stages(prefix) {
+        if let Some(termination) = fetch_gitlab_list_pages(stage, options, fetch, exchanges)? {
+            return Ok(Some(termination));
+        }
+    }
+    Ok(None)
+}
+
+fn capture_gitlab_mutations<F>(
+    prefix: &str,
+    options: &GitlabRemoteCapture,
+    fetch: &mut F,
+    exchanges: &mut Vec<HttpExchange>,
+) -> Result<Option<AcquisitionTermination>>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    let (after, before) = gitlab_event_dates(&options.interval)?;
+    let events = format!(
+        "{prefix}/events?action=pushed&after={after}&before={before}&sort=asc&per_page=100"
+    );
+    if let Some(termination) = fetch_gitlab_list_pages(events, options, fetch, exchanges)? {
+        return Ok(Some(termination));
+    }
+    for head in gitlab_push_heads(exchanges, prefix, &options.branch, &options.interval)? {
+        let url = format!("{prefix}/repository/commits/{head}/merge_requests?per_page=100");
+        if let Some(termination) = fetch_gitlab_list_pages(url, options, fetch, exchanges)? {
+            return Ok(Some(termination));
+        }
+    }
+    Ok(None)
+}
+
+fn capture_gitlab_reviews<F>(
+    prefix: &str,
+    options: &GitlabRemoteCapture,
+    fetch: &mut F,
+    exchanges: &mut Vec<HttpExchange>,
+) -> Result<Option<AcquisitionTermination>>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    let list = format!(
+        "{prefix}/merge_requests?state=merged&target_branch={}&updated_after={}&order_by=updated_at&sort=asc&per_page=100",
+        percent_encode(&options.branch),
+        percent_encode(&options.interval.from),
+    );
+    if let Some(termination) = fetch_gitlab_list_pages(list, options, fetch, exchanges)? {
+        return Ok(Some(termination));
+    }
+    for iid in gitlab_merged_iids(exchanges, prefix, &options.branch, &options.interval)? {
+        for url in [
+            format!("{prefix}/merge_requests/{iid}/approvals"),
+            format!(
+                "{prefix}/merge_requests/{iid}/notes?sort=asc&order_by=created_at&per_page=100"
+            ),
+        ] {
+            if let Some(termination) = fetch_gitlab_list_pages(url, options, fetch, exchanges)? {
+                return Ok(Some(termination));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn fetch_gitlab_list_pages<F>(
+    initial_url: String,
+    options: &GitlabRemoteCapture,
+    fetch: &mut F,
+    exchanges: &mut Vec<HttpExchange>,
+) -> Result<Option<AcquisitionTermination>>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    let mut url = initial_url;
+    for page in 0..options.max_pages {
+        let exchange = fetch_gitlab_exchange(&url, options, fetch)?;
+        let status = exchange.response.status;
+        let body = exchange.response.body.clone();
+        let headers = exchange.response.headers.clone();
+        exchanges.push(exchange);
+        if status != 200 {
+            return Ok(Some(classify_gitlab_failure(status, &body, &headers)));
+        }
+        let Some(next_url) = next_link(&headers) else {
+            return Ok(None);
+        };
+        if ensure_gitlab_url(&next_url, &options.host, &options.project).is_err() {
+            return Ok(Some(AcquisitionTermination::Failed {
+                diagnostic: "gitlab pagination link leaves the declared project API".into(),
+            }));
+        }
+        if page + 1 == options.max_pages {
+            return Ok(Some(AcquisitionTermination::Truncated { next_url }));
+        }
+        url = next_url;
+    }
+    unreachable!()
+}
+
+fn fetch_gitlab_exchange<F>(
+    url: &str,
+    options: &GitlabRemoteCapture,
+    fetch: &mut F,
+) -> Result<HttpExchange>
+where
+    F: FnMut(&str) -> Result<HttpExchange>,
+{
+    ensure_gitlab_url(url, &options.host, &options.project)?;
+    fetch(url)
+}
+
+fn gitlab_project_url(host: &str, project: &str) -> String {
+    format!("https://{host}/api/v4/projects/{}", percent_encode(project))
+}
+
+/// whether `identity` is a valid `host/namespace/project` gitlab identity body.
+pub(crate) fn is_gitlab_identity(identity: &str) -> bool {
+    gitlab_identity_parts(identity).is_some()
+}
+
+/// split a `gitlab:` identity body into its host and project path.
+fn gitlab_identity_parts(identity: &str) -> Option<(&str, &str)> {
+    let (host, project) = identity.split_once('/')?;
+    (valid_gitlab_host(host) && valid_gitlab_project(project)).then_some((host, project))
+}
+
+fn gitlab_project_binding(project: &str, exchange: &HttpExchange) -> Result<()> {
+    let body: serde_json::Value = serde_json::from_str(&exchange.response.body)
+        .map_err(|error| Error::Invalid(format!("gitlab project response is not JSON: {error}")))?;
+    if body.get("id").and_then(serde_json::Value::as_u64).is_none() {
+        return Err(Error::Invalid(
+            "gitlab project response has no numeric id".into(),
+        ));
+    }
+    let resolved = body
+        .get("path_with_namespace")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Invalid("gitlab project response has no path".into()))?;
+    if resolved != project {
+        return Err(Error::Provenance(format!(
+            "gitlab resolved project {resolved:?}, not {project:?}"
+        )));
+    }
+    Ok(())
+}
+
+/// the date bounds for gitlab's day-granular, exclusive event filter.
+///
+/// one day of margin on each side keeps every event in the half-open interval
+/// inside the response; the exact interval is applied to retained timestamps.
+fn gitlab_event_dates(interval: &TimeRange) -> Result<(String, String)> {
+    let from = crate::parse_timestamp(&interval.from)?.to_offset(time::UtcOffset::UTC);
+    let until = crate::parse_timestamp(&interval.until)?.to_offset(time::UtcOffset::UTC);
+    let after = from.date().previous_day().ok_or_else(|| {
+        Error::Invalid("gitlab event interval starts before the first date".into())
+    })?;
+    let before = until
+        .date()
+        .next_day()
+        .ok_or_else(|| Error::Invalid("gitlab event interval ends after the last date".into()))?;
+    Ok((after.to_string(), before.to_string()))
+}
+
+fn in_interval(value: &str, interval: &TimeRange) -> Result<bool> {
+    let at = crate::parse_timestamp(value)?;
+    Ok(at >= crate::parse_timestamp(&interval.from)?
+        && at < crate::parse_timestamp(&interval.until)?)
+}
+
+fn gitlab_list_bodies<'a>(
+    exchanges: &'a [HttpExchange],
+    path: &'a str,
+) -> impl Iterator<Item = Result<Vec<serde_json::Value>>> + 'a {
+    exchanges
+        .iter()
+        .filter(move |exchange| exchange.request.url.split('?').next() == Some(path))
+        .map(|exchange| {
+            serde_json::from_str::<serde_json::Value>(&exchange.response.body)
+                .ok()
+                .and_then(|body| body.as_array().cloned())
+                .ok_or_else(|| Error::Invalid("gitlab list response is not a JSON array".into()))
+        })
+}
+
+/// the branch revisions produced by retained push events in the interval.
+fn gitlab_push_heads(
+    exchanges: &[HttpExchange],
+    prefix: &str,
+    branch: &str,
+    interval: &TimeRange,
+) -> Result<std::collections::BTreeSet<String>> {
+    let path = format!("{prefix}/events");
+    let mut heads = std::collections::BTreeSet::new();
+    for events in gitlab_list_bodies(exchanges, &path) {
+        for event in events? {
+            let push = event.get("push_data").unwrap_or(&serde_json::Value::Null);
+            if push.get("ref_type").and_then(serde_json::Value::as_str) != Some("branch")
+                || push.get("ref").and_then(serde_json::Value::as_str) != Some(branch)
+            {
+                continue;
+            }
+            let created_at = event
+                .get("created_at")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| Error::Invalid("gitlab push event has no timestamp".into()))?;
+            if !in_interval(created_at, interval)? {
+                continue;
+            }
+            match push.get("commit_to") {
+                Some(serde_json::Value::String(head)) if is_hex_revision(head) => {
+                    heads.insert(head.clone());
+                }
+                None | Some(serde_json::Value::Null) => {}
+                Some(_) => {
+                    return Err(Error::Invalid(
+                        "gitlab push event has an invalid resulting revision".into(),
+                    ))
+                }
+            }
+        }
+    }
+    Ok(heads)
+}
+
+/// merge requests into the branch whose merge falls in the interval.
+///
+/// a merged request without a merge time cannot be placed outside the interval,
+/// so it stays in the population that needs review enumeration.
+fn gitlab_merged_iids(
+    exchanges: &[HttpExchange],
+    prefix: &str,
+    branch: &str,
+    interval: &TimeRange,
+) -> Result<std::collections::BTreeSet<u64>> {
+    let path = format!("{prefix}/merge_requests");
+    let mut iids = std::collections::BTreeSet::new();
+    for requests in gitlab_list_bodies(exchanges, &path) {
+        for request in requests? {
+            if request
+                .get("target_branch")
+                .and_then(serde_json::Value::as_str)
+                != Some(branch)
+            {
+                continue;
+            }
+            let iid = request
+                .get("iid")
+                .and_then(serde_json::Value::as_u64)
+                .ok_or_else(|| Error::Invalid("gitlab merge request has no iid".into()))?;
+            let merged = match request.get("merged_at") {
+                Some(serde_json::Value::String(merged_at)) => in_interval(merged_at, interval)?,
+                None | Some(serde_json::Value::Null) => true,
+                Some(_) => {
+                    return Err(Error::Invalid(
+                        "gitlab merge request has an invalid merge time".into(),
+                    ))
+                }
+            };
+            if merged {
+                iids.insert(iid);
+            }
+        }
+    }
+    Ok(iids)
+}
+
+fn is_hex_revision(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn valid_gitlab_host(host: &str) -> bool {
+    !host.is_empty()
+        && !host.starts_with(['.', '-'])
+        && !host.ends_with(['.', '-'])
+        && !host.contains("..")
+        && host
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
+fn valid_gitlab_project(project: &str) -> bool {
+    let segments = project.split('/').collect::<Vec<_>>();
+    segments.len() >= 2
+        && segments.iter().all(|segment| {
+            !segment.is_empty()
+                && !matches!(*segment, "." | "..")
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+}
+
+fn validate_gitlab_remote(options: &GitlabRemoteCapture) -> Result<()> {
+    if options.max_pages == 0 || options.max_pages > 1_000 {
+        return Err(Error::Invalid(
+            "gitlab max-pages must be between 1 and 1000".into(),
+        ));
+    }
+    if !valid_gitlab_host(&options.host) {
+        return Err(Error::Invalid(
+            "gitlab host contains unsupported characters".into(),
+        ));
+    }
+    if !valid_gitlab_project(&options.project) {
+        return Err(Error::Invalid(
+            "gitlab project must be a namespace path such as group/project".into(),
+        ));
+    }
+    let branch = options.branch.as_str();
+    if branch.is_empty()
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.contains("..")
+        || branch.contains("//")
+        || !branch
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'/'))
+    {
+        return Err(Error::Invalid(
+            "gitlab branch contains unsupported characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn gitlab_credential(host: &str) -> Result<String> {
+    if let Ok(token) = std::env::var("GITLAB_TOKEN") {
+        if !token.trim().is_empty() {
+            return Ok(token.trim().to_owned());
+        }
+    }
+    if let Ok(output) = Command::new("glab")
+        .args(["config", "get", "token", "--host", host])
+        .output()
+    {
+        if output.status.success() {
+            let token = String::from_utf8(output.stdout)
+                .map_err(|_| Error::Invalid("glab returned a non-utf8 token".into()))?;
+            let token = token.trim().to_owned();
+            if !token.is_empty() {
+                return Ok(token);
+            }
+        }
+    }
+    Err(Error::Collection(format!(
+        "GitLab source requires authentication; set GITLAB_TOKEN or run `glab auth login --hostname {host}`"
+    )))
+}
+
+fn gitlab_get(
+    agent: &ureq::Agent,
+    url: &str,
+    options: &GitlabRemoteCapture,
+    token: &str,
+) -> Result<HttpExchange> {
+    ensure_gitlab_url(url, &options.host, &options.project)?;
+    let authorization = format!("Bearer {token}");
+    let mut response = agent
+        .get(url)
+        .header("accept", "application/json")
+        .header("authorization", &authorization)
+        .header(
+            "user-agent",
+            concat!("divinate/", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .map_err(|error| {
+            Error::Collection(format!(
+                "gitlab request failed before receiving a response: {}",
+                sanitize_diagnostic(&error.to_string())
+            ))
+        })?;
+    let status = response.status().as_u16();
+    let headers = retained_gitlab_headers(response.headers());
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|_| Error::Collection("gitlab response body could not be read".into()))?;
+    if body.contains(token)
+        || body.contains(&authorization)
+        || headers
+            .values()
+            .any(|value| value.contains(token) || value.contains(&authorization))
+    {
+        return Err(Error::Collection(
+            "gitlab response reflected credential material; response was not retained".into(),
+        ));
+    }
+    let parsed: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|error| Error::Invalid(format!("gitlab response body is not JSON: {error}")))?;
+    Ok(HttpExchange {
+        request: HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+        },
+        response: HttpResponse {
+            status,
+            headers,
+            body_sha256: hex_digest(body.as_bytes()),
+            item_count: json_item_count(&parsed),
+            body,
+        },
+    })
+}
+
+fn retained_gitlab_headers(headers: &ureq::http::HeaderMap) -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "date",
+        "etag",
+        "link",
+        "location",
+        "ratelimit-reset",
+        "retry-after",
+        "x-next-page",
+        "x-page",
+        "x-per-page",
+        "x-prev-page",
+        "x-request-id",
+        "x-total",
+        "x-total-pages",
+    ];
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str().to_ascii_lowercase();
+            ALLOWED
+                .contains(&name.as_str())
+                .then(|| value.to_str().ok().map(|value| (name, value.to_owned())))?
+        })
+        .collect()
+}
+
+fn ensure_gitlab_url(url: &str, host: &str, project: &str) -> Result<()> {
+    let prefix = gitlab_project_url(host, project);
+    let inside = url
+        .strip_prefix(&prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(['/', '?']));
+    if !inside || url.contains('@') || url.contains('#') {
+        return Err(Error::Invalid(format!(
+            "gitlab acquisition refused URL outside {prefix}"
+        )));
+    }
+    Ok(())
+}
+
+fn classify_gitlab_failure(
+    status: u16,
+    body: &str,
+    headers: &BTreeMap<String, String>,
+) -> AcquisitionTermination {
+    let message = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .or_else(|| value.get("error"))
+                .map(|message| {
+                    message
+                        .as_str()
+                        .map_or_else(|| message.to_string(), str::to_owned)
+                })
+        })
+        .unwrap_or_else(|| "request failed".into());
+    let diagnostic = sanitize_diagnostic(&format!("HTTP {status}: {message}"));
+    match status {
+        301 | 302 | 303 | 307 | 308 => AcquisitionTermination::UnsafeRedirect {
+            location: headers.get("location").cloned().unwrap_or_default(),
+        },
+        401 => AcquisitionTermination::Unauthenticated { diagnostic },
+        403 => AcquisitionTermination::PermissionDenied { diagnostic },
+        404 => AcquisitionTermination::NotFound { diagnostic },
+        429 => AcquisitionTermination::RateLimited {
+            diagnostic,
+            reset_at: headers
+                .get("ratelimit-reset")
+                .or_else(|| headers.get("retry-after"))
+                .cloned(),
+        },
+        _ => AcquisitionTermination::Failed { diagnostic },
+    }
+}
+
 fn base64(value: &str) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = value.as_bytes();
@@ -1795,6 +2418,9 @@ fn evidence_exchanges(transcript: &AcquisitionTranscript) -> &[HttpExchange] {
             | AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT
             | AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT
             | AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT
+            | GITLAB_BRANCH_PROTECTION_CONTRACT
+            | GITLAB_REPOSITORY_MUTATIONS_CONTRACT
+            | GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT
     ) {
         transcript.contents.exchanges.get(1..).unwrap_or_default()
     } else {
@@ -1947,7 +2573,12 @@ fn assess_enumeration(
     if is_historical_composite_contract(&transcript.contents.collector_contract) {
         return assess_composite_enumeration(transcript, reasons);
     }
-    if let Some(reason) = invalid_exchange_sequence(transcript) {
+    if transcript.contents.collector_contract == GITLAB_BRANCH_PROTECTION_CONTRACT {
+        if let Some(reason) = invalid_gitlab_branch_sequence(transcript) {
+            reasons.push(reason.into());
+            return EnumerationStatus::Failed;
+        }
+    } else if let Some(reason) = invalid_exchange_sequence(transcript) {
         reasons.push(reason.into());
         return EnumerationStatus::Failed;
     }
@@ -2039,6 +2670,8 @@ fn is_historical_composite_contract(contract: &str) -> bool {
             | AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT
             | AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT
             | AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT
+            | GITLAB_REPOSITORY_MUTATIONS_CONTRACT
+            | GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT
     )
 }
 
@@ -2183,6 +2816,9 @@ fn historical_request_allowed(transcript: &AcquisitionTranscript, request: &Http
     if let Some(repository) = contents.subject.id.strip_prefix("github:") {
         return github_request_allowed(contents, repository, branch, request, path);
     }
+    if let Some(identity) = contents.subject.id.strip_prefix("gitlab:") {
+        return gitlab_request_allowed(contents, identity, branch, request, path);
+    }
     let Some(identity) = contents.subject.id.strip_prefix("azure-devops:") else {
         return false;
     };
@@ -2286,6 +2922,12 @@ fn incomplete_composite_population(transcript: &AcquisitionTranscript) -> Option
         .starts_with("github-")
     {
         complete_github_history_requests(transcript)
+    } else if transcript
+        .contents
+        .collector_contract
+        .starts_with("gitlab-")
+    {
+        complete_gitlab_history_requests(transcript)
     } else {
         complete_azure_history_requests(transcript)
     }
@@ -2437,6 +3079,211 @@ fn complete_azure_history_requests(transcript: &AcquisitionTranscript) -> Option
     None
 }
 
+fn gitlab_request_allowed(
+    contents: &TranscriptContents,
+    identity: &str,
+    branch: &str,
+    request: &HttpRequest,
+    path: &str,
+) -> bool {
+    let Some((host, project)) = gitlab_identity_parts(identity) else {
+        return false;
+    };
+    let prefix = gitlab_project_url(host, project);
+    if path == prefix {
+        return request == &contents.initial_request;
+    }
+    let contract = contents.collector_contract.as_str();
+    // gitlab's pagination links re-render parameters, for example a date as
+    // midnight utc, so values are compared by meaning rather than spelling.
+    let query = |name| query_parameter(&request.url, name).map(percent_decode);
+    if path == format!("{prefix}/events") {
+        let Ok((after, before)) = gitlab_event_dates(&contents.requested_scope) else {
+            return false;
+        };
+        return contract == GITLAB_REPOSITORY_MUTATIONS_CONTRACT
+            && query("action").as_deref() == Some("pushed")
+            && query("after").is_some_and(|value| same_gitlab_date(&value, &after))
+            && query("before").is_some_and(|value| same_gitlab_date(&value, &before));
+    }
+    if let Some(revision) = path
+        .strip_prefix(&format!("{prefix}/repository/commits/"))
+        .and_then(|suffix| suffix.strip_suffix("/merge_requests"))
+    {
+        return contract == GITLAB_REPOSITORY_MUTATIONS_CONTRACT && is_hex_revision(revision);
+    }
+    if path == format!("{prefix}/merge_requests") {
+        return contract == GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT
+            && query("state").as_deref() == Some("merged")
+            && query("target_branch").as_deref() == Some(branch)
+            && query("updated_after")
+                .is_some_and(|value| same_instant(&value, &contents.requested_scope.from));
+    }
+    path.strip_prefix(&format!("{prefix}/merge_requests/"))
+        .and_then(|suffix| suffix.split_once('/'))
+        .is_some_and(|(iid, resource)| {
+            contract == GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT
+                && iid.parse::<u64>().is_ok()
+                && matches!(resource, "approvals" | "notes")
+        })
+}
+
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| value.get(index + 1..index + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        if let Some(byte) = escaped {
+            decoded.push(byte);
+            index += 3;
+        } else {
+            decoded.push(if bytes[index] == b'+' {
+                b' '
+            } else {
+                bytes[index]
+            });
+            index += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// whether a gitlab date parameter names `date`, spelled as a date or midnight utc.
+fn same_gitlab_date(value: &str, date: &str) -> bool {
+    value == date || same_instant(value, &format!("{date}T00:00:00Z"))
+}
+
+fn same_instant(left: &str, right: &str) -> bool {
+    matches!(
+        (crate::parse_timestamp(left), crate::parse_timestamp(right)),
+        (Ok(left), Ok(right)) if left == right
+    )
+}
+
+fn complete_gitlab_history_requests(transcript: &AcquisitionTranscript) -> Option<String> {
+    let contents = &transcript.contents;
+    let (host, project) = contents
+        .subject
+        .id
+        .strip_prefix("gitlab:")
+        .and_then(gitlab_identity_parts)?;
+    let branch = contents.subject.qualifier("branch")?;
+    let prefix = gitlab_project_url(host, project);
+    if contents
+        .exchanges
+        .first()
+        .is_none_or(|first| gitlab_project_binding(project, first).is_err())
+    {
+        return Some("gitlab history is not bound to the declared project".into());
+    }
+    let requested = |path: &str| {
+        contents
+            .exchanges
+            .iter()
+            .any(|exchange| exchange.request.url.split('?').next() == Some(path))
+    };
+    if contents.collector_contract == GITLAB_REPOSITORY_MUTATIONS_CONTRACT {
+        if !requested(&format!("{prefix}/events")) {
+            return Some("gitlab history lacks branch push enumeration".into());
+        }
+        let Ok(heads) = gitlab_push_heads(
+            &contents.exchanges,
+            &prefix,
+            branch,
+            &contents.requested_scope,
+        ) else {
+            return Some("gitlab push population has invalid records".into());
+        };
+        if heads.iter().any(|head| {
+            !requested(&format!(
+                "{prefix}/repository/commits/{head}/merge_requests"
+            ))
+        }) {
+            return Some("gitlab history lacks merge-request association for a branch push".into());
+        }
+    } else if contents.collector_contract == GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT {
+        if !requested(&format!("{prefix}/merge_requests")) {
+            return Some("gitlab history lacks merged merge-request enumeration".into());
+        }
+        let Ok(iids) = gitlab_merged_iids(
+            &contents.exchanges,
+            &prefix,
+            branch,
+            &contents.requested_scope,
+        ) else {
+            return Some("gitlab merge-request population has invalid records".into());
+        };
+        for iid in iids {
+            for resource in ["approvals", "notes"] {
+                if !requested(&format!("{prefix}/merge_requests/{iid}/{resource}")) {
+                    return Some(format!(
+                        "gitlab history lacks {resource} for a merged merge request"
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// verify the fixed order of the gitlab branch-protection reads.
+///
+/// the project binding comes first, then each list in [`gitlab_branch_stages`],
+/// following every pagination link before the next list starts. an exhausted
+/// transcript must have reached the last list.
+fn invalid_gitlab_branch_sequence(transcript: &AcquisitionTranscript) -> Option<&'static str> {
+    let contents = &transcript.contents;
+    let Some((host, project)) = contents
+        .subject
+        .id
+        .strip_prefix("gitlab:")
+        .and_then(gitlab_identity_parts)
+    else {
+        return Some("gitlab transcript has no valid project identity");
+    };
+    let prefix = gitlab_project_url(host, project);
+    let Some(first) = contents.exchanges.first() else {
+        return Some("gitlab transcript has no exchanges");
+    };
+    if first.request != contents.initial_request || first.request.url != prefix {
+        return Some("first exchange does not match the gitlab project request");
+    }
+    if first.response.status == 200 && gitlab_project_binding(project, first).is_err() {
+        return Some("gitlab project response does not match the declared project");
+    }
+    let stages = gitlab_branch_stages(&prefix);
+    let mut stage = None;
+    for pair in contents.exchanges.windows(2) {
+        let url = pair[1].request.url.as_str();
+        if ensure_gitlab_url(url, host, project).is_err() {
+            return Some("gitlab transcript contains a request outside the project API");
+        }
+        match next_link(&pair[0].response.headers) {
+            Some(next) if stage.is_some() => {
+                if next != url {
+                    return Some("response pagination link does not match the following request");
+                }
+            }
+            _ => {
+                let expected = stage.map_or(0, |index: usize| index + 1);
+                if stages.get(expected).map(String::as_str) != Some(url) {
+                    return Some("gitlab branch-protection reads are out of order");
+                }
+                stage = Some(expected);
+            }
+        }
+    }
+    if contents.termination == AcquisitionTermination::Exhausted && stage != Some(stages.len() - 1)
+    {
+        return Some("gitlab branch-protection transcript did not read every list");
+    }
+    None
+}
+
 fn incomplete_github_validation_population(
     contents: &TranscriptContents,
     revision: &str,
@@ -2490,6 +3337,11 @@ fn ensure_provider_url(transcript: &AcquisitionTranscript, url: &str) -> Result<
         .starts_with("github-")
     {
         ensure_github_url(url)
+    } else if let Some(identity) = transcript.contents.subject.id.strip_prefix("gitlab:") {
+        let (host, project) = gitlab_identity_parts(identity).ok_or_else(|| {
+            Error::Invalid("gitlab transcript has no valid project identity".into())
+        })?;
+        ensure_gitlab_url(url, host, project)
     } else {
         let organization = transcript
             .contents
@@ -2599,16 +3451,22 @@ fn assess_github_result_count(
 fn contract_authority(contract: &str) -> Vec<Proposition> {
     match contract {
         GITHUB_COMMITS_CONTRACT => vec![Proposition::CommitAncestry],
-        GITHUB_BRANCH_PROTECTION_CONTRACT | AZURE_DEVOPS_BRANCH_POLICY_CONTRACT => {
+        GITHUB_BRANCH_PROTECTION_CONTRACT
+        | AZURE_DEVOPS_BRANCH_POLICY_CONTRACT
+        | GITLAB_BRANCH_PROTECTION_CONTRACT => {
             vec![Proposition::BranchConfiguration]
         }
         GITHUB_CHECK_RUNS_CONTRACT | GITHUB_COMMIT_STATUSES_CONTRACT => {
             vec![Proposition::RevisionChecks]
         }
-        GITHUB_REPOSITORY_MUTATIONS_CONTRACT | AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT => {
+        GITHUB_REPOSITORY_MUTATIONS_CONTRACT
+        | AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT
+        | GITLAB_REPOSITORY_MUTATIONS_CONTRACT => {
             vec![Proposition::RepositoryMutations]
         }
-        GITHUB_PULL_REQUEST_REVIEWS_CONTRACT | AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT => {
+        GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+        | AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT
+        | GITLAB_MERGE_REQUEST_REVIEWS_CONTRACT => {
             vec![Proposition::PullRequestReviews]
         }
         GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
@@ -3477,5 +4335,250 @@ mod tests {
                 .windows(authorization.len())
                 .any(|bytes| bytes == authorization.as_bytes()));
         }
+    }
+
+    const GITLAB_PROJECT: &str =
+        "https://gitlab.example.org/api/v4/projects/example-group%2Fexample-project";
+    const GITLAB_MERGED: &str = "1111111111111111111111111111111111111111";
+    const GITLAB_DIRECT: &str = "2222222222222222222222222222222222222222";
+
+    fn gitlab_remote(resource: GitlabRemoteResource) -> GitlabRemoteCapture {
+        GitlabRemoteCapture {
+            host: "gitlab.example.org".into(),
+            project: "example-group/example-project".into(),
+            branch: "main".into(),
+            resource,
+            subject: Subject {
+                kind: "repository".into(),
+                id: "gitlab:gitlab.example.org/example-group/example-project".into(),
+                qualifiers: BTreeMap::from([
+                    ("branch".into(), serde_json::json!("main")),
+                    ("revision".into(), serde_json::json!("abc123")),
+                ]),
+            },
+            interval: TimeRange {
+                from: "2026-09-11T00:00:00Z".into(),
+                until: "2026-09-12T00:00:00Z".into(),
+            },
+            max_pages: 10,
+            captured_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn gitlab_project(url: &str) -> Option<HttpExchange> {
+        (url == GITLAB_PROJECT).then(|| {
+            exchange(
+                url,
+                200,
+                r#"{"id":7,"path_with_namespace":"example-group/example-project"}"#,
+                BTreeMap::new(),
+            )
+        })
+    }
+
+    fn reseal(mut transcript: AcquisitionTranscript) -> AcquisitionTranscript {
+        transcript.contents.exchanges.pop();
+        seal_transcript(transcript.contents).unwrap()
+    }
+
+    #[test]
+    fn gitlab_branch_protection_reads_every_list_in_order() {
+        let options = gitlab_remote(GitlabRemoteResource::BranchProtection);
+        let next = format!("{GITLAB_PROJECT}/protected_branches?page=2&per_page=100");
+        let transcript = capture_gitlab_with(&options, &mut |url: &str| {
+            if let Some(project) = gitlab_project(url) {
+                return Ok(project);
+            }
+            let headers = if url.ends_with("/protected_branches?per_page=100") {
+                BTreeMap::from([("link".into(), format!("<{next}>; rel=\"next\""))])
+            } else {
+                BTreeMap::new()
+            };
+            let body = if url.ends_with("/approvals") {
+                "{}"
+            } else {
+                "[{}]"
+            };
+            Ok(exchange(url, 200, body, headers))
+        })
+        .unwrap();
+        assert_eq!(transcript.contents.exchanges.len(), 5);
+        assert_eq!(transcript.contents.exchanges[2].request.url, next);
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.authority, vec![Proposition::BranchConfiguration]);
+        assert_eq!(assessment.pages, 4);
+
+        let short = assess(&reseal(transcript), &ContractRegistry::default());
+        assert_eq!(short.enumeration, EnumerationStatus::Failed);
+        assert_eq!(short.authority, Vec::<Proposition>::new());
+    }
+
+    #[test]
+    fn gitlab_mutations_associate_every_push_head_in_the_interval() {
+        let options = gitlab_remote(GitlabRemoteResource::RepositoryMutations);
+        let transcript = capture_gitlab_with(&options, &mut |url: &str| {
+            if let Some(project) = gitlab_project(url) {
+                return Ok(project);
+            }
+            let body = if url.contains("/events?") {
+                assert!(url.contains("after=2026-09-10&before=2026-09-13"));
+                format!(
+                    r#"[{{"id":1,"created_at":"2026-09-11T12:00:00Z","push_data":{{"ref":"main","ref_type":"branch","commit_to":"{GITLAB_MERGED}"}}}},
+                        {{"id":2,"created_at":"2026-09-11T13:00:00Z","push_data":{{"ref":"main","ref_type":"branch","commit_to":"{GITLAB_DIRECT}"}}}},
+                        {{"id":3,"created_at":"2026-09-10T13:00:00Z","push_data":{{"ref":"main","ref_type":"branch","commit_to":"{GITLAB_DIRECT}"}}}},
+                        {{"id":4,"created_at":"2026-09-11T13:00:00Z","push_data":{{"ref":"other","ref_type":"branch","commit_to":"{GITLAB_DIRECT}"}}}}]"#
+                )
+            } else {
+                "[]".into()
+            };
+            Ok(exchange(url, 200, &body, BTreeMap::new()))
+        })
+        .unwrap();
+        assert_eq!(transcript.contents.exchanges.len(), 4);
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.authority, vec![Proposition::RepositoryMutations]);
+
+        let missing = assess(&reseal(transcript), &ContractRegistry::default());
+        assert_eq!(missing.enumeration, EnumerationStatus::Failed);
+        assert!(missing
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("merge-request association")));
+    }
+
+    #[test]
+    fn gitlab_pagination_links_may_re_render_the_interval() {
+        // gitlab renders a date filter as midnight utc and adds the project id.
+        let next = format!(
+            "{GITLAB_PROJECT}/events?action=pushed&after=2026-09-10T00%3A00%3A00%2B00%3A00&before=2026-09-13T00%3A00%3A00%2B00%3A00&id=example-group%2Fexample-project&page=2&per_page=100&sort=asc"
+        );
+        let options = gitlab_remote(GitlabRemoteResource::RepositoryMutations);
+        let transcript = capture_gitlab_with(&options, &mut |url: &str| {
+            if let Some(project) = gitlab_project(url) {
+                return Ok(project);
+            }
+            if url.contains("/events?") && !url.contains("page=2") {
+                return Ok(exchange(
+                    url,
+                    200,
+                    "[]",
+                    BTreeMap::from([("link".into(), format!("<{next}>; rel=\"next\""))]),
+                ));
+            }
+            let body = if url == next {
+                format!(
+                    r#"[{{"id":1,"created_at":"2026-09-11T12:00:00Z","push_data":{{"ref":"main","ref_type":"branch","commit_to":"{GITLAB_MERGED}"}}}}]"#
+                )
+            } else {
+                "[]".into()
+            };
+            Ok(exchange(url, 200, &body, BTreeMap::new()))
+        })
+        .unwrap();
+        assert_eq!(transcript.contents.exchanges.len(), 4);
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(
+            assessment.enumeration,
+            EnumerationStatus::Complete,
+            "{:?}",
+            assessment.reasons
+        );
+        assert!(same_gitlab_date("2026-09-10", "2026-09-10"));
+        assert!(!same_gitlab_date("2026-09-11T00:00:00+00:00", "2026-09-10"));
+    }
+
+    #[test]
+    fn gitlab_reviews_enumerate_approvals_and_notes_for_merges_in_the_interval() {
+        let options = gitlab_remote(GitlabRemoteResource::MergeRequestReviews);
+        let transcript = capture_gitlab_with(&options, &mut |url: &str| {
+            if let Some(project) = gitlab_project(url) {
+                return Ok(project);
+            }
+            let body = if url.contains("/merge_requests?") {
+                assert!(url.contains("updated_after=2026-09-11T00%3A00%3A00Z"));
+                r#"[{"iid":1,"target_branch":"main","merged_at":"2026-09-11T12:00:00Z"},
+                    {"iid":2,"target_branch":"main","merged_at":"2026-09-13T12:00:00Z"}]"#
+            } else if url.ends_with("/approvals") {
+                r#"{"approved_by":[]}"#
+            } else {
+                "[]"
+            };
+            Ok(exchange(url, 200, body, BTreeMap::new()))
+        })
+        .unwrap();
+        let urls = transcript
+            .contents
+            .exchanges
+            .iter()
+            .map(|exchange| exchange.request.url.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(urls.len(), 4);
+        assert!(urls
+            .iter()
+            .any(|url| url.contains("/merge_requests/1/approvals")));
+        assert!(!urls.iter().any(|url| url.contains("/merge_requests/2/")));
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
+        assert_eq!(assessment.authority, vec![Proposition::PullRequestReviews]);
+    }
+
+    #[test]
+    fn gitlab_acquisition_is_bound_to_the_declared_project() {
+        let options = gitlab_remote(GitlabRemoteResource::BranchProtection);
+        let error = capture_gitlab_with(&options, &mut |url: &str| {
+            Ok(exchange(
+                url,
+                200,
+                r#"{"id":7,"path_with_namespace":"example-group/other-project"}"#,
+                BTreeMap::new(),
+            ))
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::Provenance(_)));
+        for url in [
+            "https://gitlab.example.org/api/v4/projects/example-group%2Fexample-projectx",
+            "https://other.example.org/api/v4/projects/example-group%2Fexample-project",
+            "https://gitlab.example.org/api/v4/projects/example-group%2Fexample-project/x@y",
+        ] {
+            assert!(
+                ensure_gitlab_url(url, "gitlab.example.org", "example-group/example-project")
+                    .is_err()
+            );
+        }
+        let transcript = capture_gitlab_with(&options, &mut |url: &str| {
+            if let Some(project) = gitlab_project(url) {
+                return Ok(project);
+            }
+            Ok(exchange(
+                url,
+                200,
+                "[]",
+                BTreeMap::from([(
+                    "link".into(),
+                    "<https://other.example.org/api/v4/projects/1/protected_branches?page=2>; rel=\"next\"".into(),
+                )]),
+            ))
+        })
+        .unwrap();
+        assert!(matches!(
+            transcript.contents.termination,
+            AcquisitionTermination::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn gitlab_identity_requires_host_and_namespace_path() {
+        assert!(is_gitlab_identity("gitlab.example.org/group/project"));
+        assert!(is_gitlab_identity("gitlab.example.org/group/sub/project"));
+        assert!(!is_gitlab_identity("gitlab.example.org/project"));
+        assert!(!is_gitlab_identity("gitlab.example.org/group/../project"));
+        assert!(!is_gitlab_identity("-bad.example.org/group/project"));
+        let mut options = gitlab_remote(GitlabRemoteResource::BranchProtection);
+        options.branch = "../main".into();
+        assert!(validate_gitlab_remote(&options).is_err());
+        options.branch = "release/5.2".into();
+        assert!(validate_gitlab_remote(&options).is_ok());
     }
 }

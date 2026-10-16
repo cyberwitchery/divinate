@@ -445,7 +445,7 @@ pub fn resolve_release(repository: &Path, release: &str) -> Result<String> {
 }
 
 fn validate_repository_identity(repository: &Path, expected: &str) -> Result<()> {
-    let actual = repository_identity(repository)?;
+    let actual = repository_identity_for(repository, expected)?;
     if actual != expected {
         return provenance(format!(
             "repository path resolves to {actual}, not configured repository {expected}"
@@ -460,6 +460,36 @@ fn validate_repository_identity(repository: &Path, expected: &str) -> Result<()>
 ///
 /// returns an error when the origin is absent, unsupported, or invalid.
 pub fn repository_identity(repository: &Path) -> Result<String> {
+    let origin = origin_url(repository)?;
+    repository_identity_from_origin(&origin).ok_or_else(|| {
+        Error::Provenance(format!(
+            "git origin {origin:?} is not a supported repository URL"
+        ))
+    })
+}
+
+/// derive the repository identity in the provider form `expected` declares.
+///
+/// self-hosted gitlab cannot be recognised from its host name, so a declared
+/// `gitlab:` identity reads the origin's host and namespace path as gitlab.
+/// every other identity is derived as [`repository_identity`] does.
+///
+/// # Errors
+///
+/// returns an error when the origin is absent, unsupported, or invalid.
+pub fn repository_identity_for(repository: &Path, expected: &str) -> Result<String> {
+    if !expected.starts_with("gitlab:") {
+        return repository_identity(repository);
+    }
+    let origin = origin_url(repository)?;
+    gitlab_identity_from_origin(&origin).ok_or_else(|| {
+        Error::Provenance(format!(
+            "git origin {origin:?} is not a supported gitlab repository URL"
+        ))
+    })
+}
+
+fn origin_url(repository: &Path) -> Result<String> {
     let output = Command::new("git")
         .args(["-C"])
         .arg(repository)
@@ -474,12 +504,7 @@ pub fn repository_identity(repository: &Path) -> Result<String> {
     }
     let origin = String::from_utf8(output.stdout)
         .map_err(|_| Error::Provenance("git origin is not utf-8".into()))?;
-    repository_identity_from_origin(origin.trim()).ok_or_else(|| {
-        Error::Provenance(format!(
-            "git origin {:?} is not a supported repository URL",
-            origin.trim()
-        ))
-    })
+    Ok(origin.trim().to_owned())
 }
 
 /// return the checkout's current branch.
@@ -679,6 +704,7 @@ fn repository_identity_from_origin(origin: &str) -> Option<String> {
     match url.host()? {
         "github.com" => github_identity(path),
         "ssh.github.com" if matches!(url.scheme, gix_url::Scheme::Ssh) => github_identity(path),
+        "gitlab.com" => gitlab_identity_from_origin(origin),
         "ssh.dev.azure.com" => {
             let mut parts = path.strip_prefix("v3/")?.split('/');
             let identity =
@@ -725,6 +751,17 @@ fn github_identity(path: &str) -> Option<String> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'));
     (parts.next().is_none() && owner_valid && name_valid).then(|| format!("github:{owner}/{name}"))
+}
+
+fn gitlab_identity_from_origin(origin: &str) -> Option<String> {
+    let url = gix_url::parse(origin).ok()?;
+    if !matches!(url.scheme, gix_url::Scheme::Ssh | gix_url::Scheme::Https) {
+        return None;
+    }
+    let path = std::str::from_utf8(&url.path).ok()?.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let identity = format!("{}/{path}", url.host()?);
+    crate::acquisition::is_gitlab_identity(&identity).then(|| format!("gitlab:{identity}"))
 }
 
 fn azure_devops_identity_parts(
@@ -929,7 +966,7 @@ fn provenance<T>(message: impl Into<String>) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{original_host, repository_identity_from_origin};
+    use super::{gitlab_identity_from_origin, original_host, repository_identity_from_origin};
 
     #[test]
     fn repository_origins_have_stable_provider_specific_identities() {
@@ -982,6 +1019,35 @@ mod tests {
                 Some("azure-devops:MyOrg/Proj/Repo"),
                 "{origin}"
             );
+        }
+    }
+
+    #[test]
+    fn gitlab_origins_keep_host_and_namespace_path() {
+        for origin in [
+            "git@gitlab.com:example-group/sub/example-project.git",
+            "https://gitlab.com/example-group/sub/example-project.git",
+            "ssh://git@gitlab.com/example-group/sub/example-project",
+        ] {
+            assert_eq!(
+                repository_identity_from_origin(origin).as_deref(),
+                Some("gitlab:gitlab.com/example-group/sub/example-project"),
+                "{origin}"
+            );
+        }
+        // a self-hosted instance is only recognised through a declared identity.
+        let origin = "git@gitlab.example.org:example-group/example-project.git";
+        assert_eq!(repository_identity_from_origin(origin), None);
+        assert_eq!(
+            gitlab_identity_from_origin(origin).as_deref(),
+            Some("gitlab:gitlab.example.org/example-group/example-project")
+        );
+        for origin in [
+            "https://gitlab.com/example-project",
+            "https://gitlab.com/group/../project",
+            "file:///srv/example-group/example-project.git",
+        ] {
+            assert_eq!(gitlab_identity_from_origin(origin), None, "{origin}");
         }
     }
 

@@ -133,11 +133,14 @@ remote plans are provider-aware and deliberately narrow:
 ```json
 {"acquisition":{"provider":"github","resource":"commit_statuses","per_page":100,"max_pages":10}}
 {"acquisition":{"provider":"azure_devops","resource":"branch_policy","max_pages":10}}
+{"acquisition":{"provider":"gitlab","resource":"merge_request_reviews","max_pages":20}}
 ```
 
 GitHub resources are branch protection, check runs, commit statuses,
 `repository_mutations`, and `pull_request_reviews`. Azure DevOps exposes branch
-policy and the same two historical resource names. the pack supplies no URL, headers,
+policy and the same two historical resource names. GitLab exposes
+`branch_protection`, `repository_mutations`, and `merge_request_reviews`. the
+pack supplies no URL, headers,
 or credential. core derives each API URL from verified repository context,
 scopes authentication to the provider host, disables redirects, and captures
 pagination.
@@ -184,6 +187,18 @@ chronology. votes `10` and `5` record approval, `-10` and `-5` do not; zero and
 unrecognized values remain unresolved. see the
 [thread API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1).
 
+GitLab core reads the project's push events for the interval, widened by one
+day on each side because GitLab filters events by date, and applies the exact
+interval to the retained timestamps. each resulting branch revision is joined
+to the merged merge request whose merge, squash, or head commit produced it,
+through the commit's merge-request association. for reviews, core enumerates
+merge requests merged into the branch, then each one's approvals and notes.
+the approvers are GitLab's `approved_by` set; each approval's time is that
+approver's last `approved this merge request` system note before the merge. an
+approver without such a note stays undated and leaves the claim insufficient.
+GitLab prunes project events after three years, so older requested scope is
+retention-limited. a push that only deleted the branch is not interpreted.
+
 support requires complete authoritative mutation and review coverage, complete
 PR associations, and a qualifying approval for every integration. an
 authoritative direct integration or a complete PR review record without a
@@ -195,8 +210,9 @@ stale-review or vote-reset policy satisfaction.
 
 the versioned contracts remain provider-specific:
 `github-repository-mutations/v1`, `github-pull-request-reviews/v1`,
-`azure-devops-repository-mutations/v1`, and
-`azure-devops-pull-request-reviews/v1`. core retains a composite acquisition
+`azure-devops-repository-mutations/v1`,
+`azure-devops-pull-request-reviews/v1`, `gitlab-repository-mutations/v1`, and
+`gitlab-merge-request-reviews/v1`. core retains a composite acquisition
 transcript containing every request, exact body, pagination link, and termination.
 the normalizer receives that sanitized transcript, not credentials or network
 access. offline verification binds the normalized source to its canonical
@@ -249,7 +265,7 @@ coverage, and collisions before writing state. saved invocations and assertions
 verify without the pack. reevaluation executes the currently configured binary;
 reproducing an older derivation requires that older executable.
 
-protocol version 1 accepts only the named provider-aware GitHub and Azure DevOps
-acquisition plans above. it is not arbitrary authenticated HTTP. unknown
+protocol version 1 accepts only the named provider-aware GitHub, Azure DevOps,
+and GitLab acquisition plans above. it is not arbitrary authenticated HTTP. unknown
 providers, resources, versions, and operations fail; there is no capability
 fallback.

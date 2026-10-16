@@ -208,6 +208,11 @@ pub enum RemoteAcquisitionPlan {
         #[serde(default = "default_max_pages")]
         max_pages: u16,
     },
+    Gitlab {
+        resource: GitlabResource,
+        #[serde(default = "default_max_pages")]
+        max_pages: u16,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -230,6 +235,15 @@ pub enum AzureDevopsResource {
     RepositoryMutations,
     PullRequestReviews,
     BuildValidationHistory,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// the narrow gitlab resources core can acquire for packs.
+pub enum GitlabResource {
+    BranchProtection,
+    RepositoryMutations,
+    MergeRequestReviews,
 }
 
 const fn default_per_page() -> u16 {

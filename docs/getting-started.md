@@ -21,6 +21,12 @@ DevOps SSH and HTTPS origins normalize to
 `azure-devops:organization/project/repository`. divinate verifies that the
 checkout still matches the identity in YAML before using it.
 
+`gitlab.com` origins normalize to `gitlab:gitlab.com/namespace/project`. a
+self-hosted GitLab instance has no recognisable host name, so write its
+`gitlab:host/namespace/project` identity into `divinate.yaml` before running
+`init`. divinate reads the origin's host and namespace path as GitLab only when
+the configuration declares it.
+
 accepted Azure forms are
 `git@ssh.dev.azure.com:v3/organization/project/repository`,
 `ssh://git@ssh.dev.azure.com/v3/organization/project/repository`,
@@ -184,10 +190,43 @@ pushes contradict; missing populations or ambiguous associations remain
 insufficient. current configured policy remains a separate claim. see
 [historical review semantics](packs.md#historical-approving-review).
 
-the GitHub and Azure reference pack executables are built with `cargo build
---bins` and installed by `cargo install --path .`. put the build directory on
-`PATH` when running a development checkout; no Python runtime is needed for
-these two packs.
+a GitLab project uses the GitLab pack. its historical collector is named
+`merge-request-reviews`, after GitLab's term:
+
+```yaml
+repository:
+  identity: gitlab:gitlab.example.org/example-group/example-project
+  branch: main
+
+packs:
+  cyberwitchery.gitlab:
+    executable: divinate-pack-gitlab
+
+sources:
+  gitlab-branch-protection:
+    provider:
+      pack: cyberwitchery.gitlab
+      collector: branch-protection
+    required: true
+  branch-mutations:
+    provider:
+      pack: cyberwitchery.gitlab
+      collector: repository-mutations
+    required: true
+  approving-reviews:
+    provider:
+      pack: cyberwitchery.gitlab
+      collector: merge-request-reviews
+    required: true
+```
+
+core authenticates with `GITLAB_TOKEN`, then the token `glab` holds for the
+configured host. a token with the `read_api` scope is enough.
+
+the GitHub, Azure, and GitLab reference pack executables are built with `cargo
+build --bins` and installed by `cargo install --path .`. put the build directory
+on `PATH` when running a development checkout; no Python runtime is needed for
+these packs.
 
 ## collect and evaluate
 

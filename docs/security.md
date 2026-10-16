@@ -96,6 +96,14 @@ diagnostic response headers are retained. redirects are disabled. permission
 failure remains an evidence gap rather than evidence that no policy exists.
 retained Azure evidence verifies without Azure CLI, a PAT, or network access.
 
+for GitLab, core reads `GITLAB_TOKEN`, then asks `glab config get token` for
+the configured host. the token is sent as a bearer credential only to
+`https://<host>/api/v4/projects/<namespace%2Fproject>`, the project path is
+checked against the first response, redirects are disabled, and a pagination
+link outside that prefix ends the acquisition as failed. the raw token and
+Authorization value are rejected if reflected in a response. `GITLAB_TOKEN` is
+not scoped to a host, so set it only for the instance being collected.
+
 ## integrity limits
 
 sha-256 addressing and offline verification detect changes to retained bytes and

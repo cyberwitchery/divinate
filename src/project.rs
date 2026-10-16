@@ -122,7 +122,8 @@ pub fn load(repository_root: &Path) -> Result<LoadedProject> {
     })?;
     let file = parse(&path, &bytes)?;
     validate_repository(&file.repository)?;
-    let actual = crate::release::repository_identity(repository_root)?;
+    let actual =
+        crate::release::repository_identity_for(repository_root, &file.repository.identity)?;
     if actual != file.repository.identity {
         return Err(Error::Provenance(format!(
             "repository path resolves to {actual}, not divinate.yaml repository identity {}",

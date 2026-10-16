@@ -16,8 +16,9 @@ divinate init [--branch <branch>] [--repository-path <checkout>]
 
 creates a minimal `divinate.yaml` and initializes local evidence state.
 repository identity comes from the normalized Git `origin`; branch defaults to
-the current symbolic branch. GitHub and Azure DevOps origins are supported. an
-existing YAML file is validated, not replaced.
+the current symbolic branch. GitHub, Azure DevOps, and `gitlab.com` origins are
+supported. an existing YAML file is validated, not replaced, and its declared
+identity is used, which is how a self-hosted GitLab checkout is initialized.
 
 if YAML is absent and legacy `.evidence/config.json` exists, init converts its
 live pack and source configuration to YAML. it leaves the legacy file in place

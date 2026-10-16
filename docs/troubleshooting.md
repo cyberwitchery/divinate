@@ -87,6 +87,14 @@ code access. unauthenticated, permission-denied, missing, redirected, and
 incomplete responses remain explicit gaps; none means that the branch has no
 policies.
 
+## gitlab authentication or permission failure
+
+set `GITLAB_TOKEN` to a token with `read_api` scope for the Divinate process, or
+log in with `glab auth login --hostname <host>`. do not put a token in YAML or
+pack configuration. approval rules and approval settings are only served by
+GitLab tiers that have them; a missing or denied endpoint stays an explicit gap
+rather than meaning that no approval is required.
+
 ## unknown assertion or execution id
 
 `provenance` reads one saved evaluation. pass the label that produced the

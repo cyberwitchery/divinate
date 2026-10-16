@@ -36,7 +36,10 @@ $EDITOR divinate.yaml
 creates `.evidence/`, and writes a minimal `divinate.yaml`. commit the YAML file
 so source configuration can be reviewed with the rest of the repository.
 GitHub repositories use `github:owner/name`; Azure DevOps repositories use
-`azure-devops:organization/project/repository`.
+`azure-devops:organization/project/repository`; GitLab repositories use
+`gitlab:host/namespace/project`. a self-hosted GitLab origin cannot be
+recognised from its host name, so declare its identity in `divinate.yaml` before
+`init`; divinate then checks it against the origin's host and path.
 
 a repository using the built-in release SBOM source can declare:
 
@@ -93,6 +96,12 @@ Azure DevOps access token from Azure CLI, falling back to
 `AZURE_DEVOPS_EXT_PAT`, and retains neither credential. current policy evidence
 can establish configured blocking policy, reviewer, and build-validation claims;
 it does not establish historical enforcement.
+
+GitLab, including self-hosted instances, is an external pack source too. core
+authenticates with `GITLAB_TOKEN`, falling back to the token `glab` holds for
+the host, and retains neither. the pack reads protected branches, approval
+rules, and approval settings, plus push events and merged merge requests for
+historical approving review.
 
 ## collect and review
 
