@@ -34,9 +34,15 @@ pub fn reply(result: Value) -> ! {
     std::process::exit(0)
 }
 
+#[cfg(not(test))]
 pub fn fail(message: &str) -> ! {
     println!("{}", json!({"ok": false, "error": message}));
     std::process::exit(0)
+}
+
+#[cfg(test)]
+pub fn fail(message: &str) -> ! {
+    panic!("{message}")
 }
 
 pub fn context_subject(context: &Value) -> Value {
@@ -99,6 +105,13 @@ pub fn transcript(payload: &Value) -> divinate::acquisition::AcquisitionTranscri
 pub fn json_body(exchange: &divinate::acquisition::HttpExchange) -> Value {
     serde_json::from_str(&exchange.response.body)
         .unwrap_or_else(|_| fail("acquisition transcript contains invalid response json"))
+}
+
+pub fn route_suffix<'a>(path: &'a str, prefix: &str, alias: Option<&str>) -> Option<&'a str> {
+    std::iter::once(prefix).chain(alias).find_map(|base| {
+        path.strip_prefix(base)
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
 }
 
 #[cfg(test)]

@@ -49,3 +49,7 @@
 - reject an acquisition transcript linked to a collection run about another kind
   of subject or other qualifiers, such as another branch, or recorded for a
   branch other than the one the run requested
+- read github and azure devops history by each response's exact api route, so an
+  owner, repository, organization, or project named like a route segment, such
+  as `activity`, `pulls`, or `PullRequests`, no longer fails normalization or
+  loses a merge's pull request

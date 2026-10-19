@@ -3,6 +3,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use divinate::acquisition::{HttpExchange, TranscriptContents};
 use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
@@ -137,22 +138,87 @@ struct AzureHistory {
     threads_complete: BTreeSet<u64>,
 }
 
+enum Route {
+    Pushes,
+    PullRequests,
+    Threads(u64),
+}
+
+fn route(rest: &str) -> Option<Route> {
+    match rest {
+        "/pushes" => Some(Route::Pushes),
+        "/pullrequests" => Some(Route::PullRequests),
+        _ => rest
+            .strip_prefix("/pullrequests/")
+            .and_then(|rest| rest.strip_suffix("/threads"))
+            .and_then(|number| number.parse().ok())
+            .map(Route::Threads),
+    }
+}
+
+fn path(exchange: &HttpExchange) -> String {
+    exchange
+        .request
+        .url
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// the lower-cased path prefix of the repository its leading lookup resolved.
+fn repository_prefix(contents: &TranscriptContents) -> String {
+    let parts = contents
+        .subject
+        .id
+        .strip_prefix("azure-devops:")
+        .map(|identity| identity.split('/').collect::<Vec<_>>())
+        .filter(|parts| parts.len() == 3)
+        .unwrap_or_else(|| {
+            common::fail("azure devops history subject is not an azure devops repository")
+        });
+    let repositories = format!(
+        "https://dev.azure.com/{}/{}/_apis/git/repositories/",
+        percent_encode(parts[0]),
+        percent_encode(parts[1])
+    );
+    let lookup = format!("{repositories}{}", percent_encode(parts[2])).to_ascii_lowercase();
+    contents
+        .exchanges
+        .first()
+        .filter(|first| path(first) == lookup)
+        .and_then(|first| serde_json::from_str::<Value>(&first.response.body).ok())
+        .and_then(|body| {
+            body.get("id")
+                .and_then(Value::as_str)
+                .map(|id| format!("{repositories}{id}").to_ascii_lowercase())
+        })
+        .unwrap_or_else(|| common::fail("azure devops history has no repository lookup"))
+}
+
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                char::from(byte).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
 fn history(payload: &Value, branch: &str) -> AzureHistory {
     let transcript = common::transcript(payload);
     let from = parse_time(&transcript.contents.requested_scope.from);
     let until = parse_time(&transcript.contents.requested_scope.until);
+    let prefix = repository_prefix(&transcript.contents);
     let mut result = AzureHistory::default();
     for exchange in &transcript.contents.exchanges {
-        let path = exchange
-            .request
-            .url
-            .split('?')
-            .next()
-            .unwrap_or("")
-            .to_ascii_lowercase();
         let body = common::json_body(exchange);
         let values = body.get("value").and_then(Value::as_array);
-        if path.contains("/pushes") {
+        let resource = common::route_suffix(&path(exchange), &prefix, None).and_then(route);
+        if let Some(Route::Pushes) = resource {
             result.pushes.extend(
                 values
                     .unwrap_or_else(|| {
@@ -161,7 +227,7 @@ fn history(payload: &Value, branch: &str) -> AzureHistory {
                     .iter()
                     .cloned(),
             );
-        } else if path.ends_with("/pullrequests") {
+        } else if let Some(Route::PullRequests) = resource {
             result.pull_population_complete = values.is_some_and(|items| items.len() < 100)
                 && !exchange
                     .response
@@ -174,13 +240,7 @@ fn history(payload: &Value, branch: &str) -> AzureHistory {
                     result.pulls.insert(number, pull.clone());
                 }
             }
-        } else if path.ends_with("/threads") && path.contains("/pullrequests/") {
-            let number = path
-                .split("/pullrequests/")
-                .nth(1)
-                .and_then(|part| part.split('/').next())
-                .and_then(|part| part.parse().ok())
-                .unwrap_or_else(|| common::fail("azure thread URL has no pull-request number"));
+        } else if let Some(Route::Threads(number)) = resource {
             if !exchange
                 .response
                 .headers
@@ -495,7 +555,7 @@ mod tests {
     #[test]
     fn branch_update_joins_completed_pr_and_timestamped_vote() {
         let payload = common::historical_payload("azure-devops:org/project/repository", "develop", vec![
-            ("https://dev.azure.com/org/project/_apis/git/repositories/id", json!({"id":"id","name":"repository"})),
+            ("https://dev.azure.com/org/project/_apis/git/repositories/repository", json!({"id":"id","name":"repository"})),
             ("https://dev.azure.com/org/project/_apis/git/repositories/id/pushes?", json!({"value":[{"pushId":1,"date":"2026-09-11T12:00:00Z","refUpdates":[{"name":"refs/heads/develop","newObjectId":"integrated"}]}]})),
             ("https://dev.azure.com/org/project/_apis/git/repositories/id/pullrequests?", json!({"value":[{"pullRequestId":42,"targetRefName":"refs/heads/develop","closedDate":"2026-09-11T12:00:00Z","createdBy":{"id":"author"},"lastMergeCommit":{"commitId":"integrated"}}]})),
             ("https://dev.azure.com/org/project/_apis/git/repositories/id/pullRequests/42/threads?", json!({"value":[{"publishedDate":"2026-09-11T11:00:00Z","identities":{"1":{"id":"reviewer"}},"properties":{"CodeReviewVoteResult":{"$value":"10"},"CodeReviewVotedByIdentity":{"$value":"1"}}}]}))
@@ -519,6 +579,59 @@ mod tests {
             normalize_mutations(&payload, "other")["data"]["events"],
             json!([])
         );
+    }
+
+    #[test]
+    fn history_routes_by_exact_path_under_the_declared_repository() {
+        let id = "0f5c2a8e-1b2c-4d3e-8f90-123456789abc";
+        for (organization, project, name) in [
+            ("org", "project", "repository"),
+            ("org", "Pushes-Team", "repository"),
+            ("pushesorg", "project", "repository"),
+            ("org", "project", "PushesLog"),
+            ("org", "project", "PullRequests"),
+            ("org", "PullRequests", "repository"),
+            ("org", "My Project", "repository"),
+        ] {
+            let repositories = format!(
+                "https://dev.azure.com/{organization}/{}/_apis/git/repositories",
+                project.replace(' ', "%20")
+            );
+            let lookup = format!("{repositories}/{name}?api-version=7.1");
+            let pushes = format!("{repositories}/{id}/pushes?api-version=7.1");
+            let pulls = format!("{repositories}/{id}/pullrequests?api-version=7.1");
+            let threads = format!("{repositories}/{id}/pullRequests/42/threads?api-version=7.1");
+            let payload = common::historical_payload(
+                &format!("azure-devops:{organization}/{project}/{name}"),
+                "develop",
+                vec![
+                    (&lookup, json!({"id":id,"name":name})),
+                    (
+                        &pushes,
+                        json!({"value":[{"pushId":1,"date":"2026-09-11T12:00:00Z","refUpdates":[{"name":"refs/heads/develop","newObjectId":"integrated"}]}]}),
+                    ),
+                    (
+                        &pulls,
+                        json!({"value":[{"pullRequestId":42,"targetRefName":"refs/heads/develop","closedDate":"2026-09-11T12:00:00Z","createdBy":{"id":"author"},"lastMergeCommit":{"commitId":"integrated"}}]}),
+                    ),
+                    (
+                        &threads,
+                        json!({"value":[{"publishedDate":"2026-09-11T11:00:00Z","identities":{"1":{"id":"reviewer"}},"properties":{"CodeReviewVoteResult":{"$value":"10"},"CodeReviewVotedByIdentity":{"$value":"1"}}}]}),
+                    ),
+                ],
+            );
+            assert_eq!(
+                normalize_mutations(&payload, "develop")["data"]["events"][0]["pull_request"],
+                42,
+                "{lookup}"
+            );
+            assert_eq!(
+                normalize_reviews(&payload, "develop")["data"]["pull_requests"][0]["approvals"][0]
+                    ["state"],
+                "approved",
+                "{lookup}"
+            );
+        }
     }
 
     #[test]
