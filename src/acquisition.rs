@@ -934,21 +934,7 @@ fn github_get(agent: &ureq::Agent, url: &str, token: &str) -> Result<HttpExchang
         .read_to_string()
         .map_err(|_| Error::Collection("github response body could not be read".into()))?;
     reject_reflected_credential(&body, &headers, token)?;
-    let parsed: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|error| Error::Invalid(format!("github response body is not JSON: {error}")))?;
-    Ok(HttpExchange {
-        request: HttpRequest {
-            method: "GET".into(),
-            url: url.into(),
-        },
-        response: HttpResponse {
-            status,
-            headers,
-            body_sha256: hex_digest(body.as_bytes()),
-            item_count: json_item_count(&parsed),
-            body,
-        },
-    })
+    build_exchange(url, status, headers, body, "github")
 }
 
 fn reject_reflected_credential(
@@ -1586,22 +1572,7 @@ fn azure_devops_get(
         .read_to_string()
         .map_err(|_| Error::Collection("azure devops response body could not be read".into()))?;
     reject_reflected_azure_credential(&body, &headers, credential.secret(), &authorization)?;
-    let parsed: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
-        Error::Invalid(format!("azure devops response body is not JSON: {error}"))
-    })?;
-    Ok(HttpExchange {
-        request: HttpRequest {
-            method: "GET".into(),
-            url: url.into(),
-        },
-        response: HttpResponse {
-            status,
-            headers,
-            body_sha256: hex_digest(body.as_bytes()),
-            item_count: json_item_count(&parsed),
-            body,
-        },
-    })
+    build_exchange(url, status, headers, body, "azure devops")
 }
 
 fn retained_azure_devops_headers(headers: &ureq::http::HeaderMap) -> BTreeMap<String, String> {
@@ -1870,9 +1841,8 @@ fn verify_integrity(
             ));
             return IntegrityStatus::Failed;
         }
-        let item_count = serde_json::from_str::<serde_json::Value>(&exchange.response.body)
-            .ok()
-            .map(|body| json_item_count(&body));
+        let item_count =
+            response_item_count(exchange.response.status, &exchange.response.body).ok();
         if item_count != Some(exchange.response.item_count) {
             reasons.push(format!(
                 "response item count failed for {}",
@@ -2687,6 +2657,40 @@ fn percent_encode(value: &str) -> String {
         .collect()
 }
 
+fn build_exchange(
+    url: &str,
+    status: u16,
+    headers: BTreeMap<String, String>,
+    body: String,
+    provider: &str,
+) -> Result<HttpExchange> {
+    let item_count = response_item_count(status, &body).map_err(|error| {
+        Error::Invalid(format!("{provider} response body is not JSON: {error}"))
+    })?;
+    Ok(HttpExchange {
+        request: HttpRequest {
+            method: "GET".into(),
+            url: url.into(),
+        },
+        response: HttpResponse {
+            status,
+            headers,
+            body_sha256: hex_digest(body.as_bytes()),
+            item_count,
+            body,
+        },
+    })
+}
+
+/// a success body must be JSON; an error body that is not JSON counts no items.
+fn response_item_count(status: u16, body: &str) -> serde_json::Result<u64> {
+    match serde_json::from_str::<serde_json::Value>(body) {
+        Ok(value) => Ok(json_item_count(&value)),
+        Err(_) if !(200..300).contains(&status) => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
 fn parse_exchange(url: &str, bytes: &[u8]) -> Result<HttpExchange> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| Error::Invalid(format!("gh emitted non-utf8 response: {error}")))?;
@@ -2714,22 +2718,7 @@ fn parse_exchange(url: &str, bytes: &[u8]) -> Result<HttpExchange> {
         .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
         .filter(|(name, _)| allowed.contains(&name.as_str()))
         .collect::<BTreeMap<_, _>>();
-    let parsed: serde_json::Value = serde_json::from_str(body)
-        .map_err(|error| Error::Invalid(format!("github response body is not JSON: {error}")))?;
-    let item_count = json_item_count(&parsed);
-    Ok(HttpExchange {
-        request: HttpRequest {
-            method: "GET".into(),
-            url: url.into(),
-        },
-        response: HttpResponse {
-            status,
-            headers,
-            body: body.into(),
-            body_sha256: hex_digest(body.as_bytes()),
-            item_count,
-        },
-    })
+    build_exchange(url, status, headers, body.into(), "github")
 }
 
 fn next_link(headers: &BTreeMap<String, String>) -> Option<String> {
@@ -2814,20 +2803,7 @@ mod tests {
         body: &str,
         headers: BTreeMap<String, String>,
     ) -> HttpExchange {
-        let parsed: serde_json::Value = serde_json::from_str(body).unwrap();
-        HttpExchange {
-            request: HttpRequest {
-                method: "GET".into(),
-                url: url.into(),
-            },
-            response: HttpResponse {
-                status,
-                headers,
-                body: body.into(),
-                body_sha256: hex_digest(body.as_bytes()),
-                item_count: json_item_count(&parsed),
-            },
-        }
+        build_exchange(url, status, headers, body.into(), "test").unwrap()
     }
 
     fn github_lookup(url: &str) -> Option<HttpExchange> {
@@ -3444,6 +3420,90 @@ mod tests {
             );
             assert_eq!(assessment.authority, vec![authority], "{resource:?}");
             assert_eq!(assessment.items, 0, "{resource:?}");
+        }
+    }
+
+    #[test]
+    fn non_json_error_bodies_are_retained_as_classified_failures() {
+        let html = "<!DOCTYPE html><html><body>Sign in</body></html>";
+        let github = |status: u16, body: &str| {
+            capture_github_remote_with(&remote(GithubRemoteResource::BranchProtection), |url| {
+                Ok(exchange(url, status, body, BTreeMap::new()))
+            })
+        };
+        let azure = |status: u16, body: &str| {
+            capture_azure_devops_branch_policy_with(&azure_remote(), |url| {
+                Ok(exchange(url, status, body, BTreeMap::new()))
+            })
+        };
+        let failed = AcquisitionTermination::Failed {
+            diagnostic: "HTTP 500: request failed".into(),
+        };
+        for (transcript, termination, enumeration) in [
+            (github(500, ""), failed.clone(), EnumerationStatus::Failed),
+            (github(500, html), failed, EnumerationStatus::Failed),
+            (
+                azure(401, html),
+                AcquisitionTermination::Unauthenticated {
+                    diagnostic: "HTTP 401: request failed".into(),
+                },
+                EnumerationStatus::Unauthenticated,
+            ),
+        ] {
+            let transcript = transcript.unwrap();
+            assert_eq!(transcript.contents.termination, termination);
+            assert_eq!(transcript.contents.exchanges.len(), 1);
+            assert_eq!(transcript.contents.exchanges[0].response.item_count, 0);
+            let assessment = assess(&transcript, &ContractRegistry::default());
+            assert_eq!(
+                assessment.integrity,
+                IntegrityStatus::Verified,
+                "{:?}",
+                assessment.reasons
+            );
+            assert_eq!(assessment.enumeration, enumeration);
+            assert_eq!(assessment.authority, []);
+        }
+    }
+
+    #[test]
+    fn only_error_responses_may_carry_a_non_json_body() {
+        let recorded =
+            capture_github_remote_with(&remote(GithubRemoteResource::BranchProtection), |url| {
+                Ok(exchange(url, 500, "", BTreeMap::new()))
+            })
+            .unwrap();
+        for (status, retained) in [
+            (200, false),
+            (204, false),
+            (299, false),
+            (300, true),
+            (302, true),
+            (401, true),
+            (500, true),
+        ] {
+            for body in ["", "<html><body>error</body></html>"] {
+                let built = build_exchange(
+                    GITHUB_API_ORIGIN,
+                    status,
+                    BTreeMap::new(),
+                    body.into(),
+                    "github",
+                );
+                assert_eq!(built.is_ok(), retained, "{status} {body:?}");
+                let mut contents = recorded.contents.clone();
+                let response = &mut contents.exchanges[0].response;
+                response.status = status;
+                response.body = body.into();
+                response.body_sha256 = hex_digest(body.as_bytes());
+                let mut reasons = Vec::new();
+                let integrity = verify_integrity(&seal_transcript(contents).unwrap(), &mut reasons);
+                assert_eq!(
+                    integrity == IntegrityStatus::Verified,
+                    retained,
+                    "{status} {body:?} {reasons:?}"
+                );
+            }
         }
     }
 }
