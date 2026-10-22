@@ -1672,9 +1672,7 @@ fn prepare_remote_pack_collection(
         }),
         enumeration: divinate::model::Enumeration {
             items_fetched: assessment.items,
-            items_reported: transcript
-                .contents
-                .exchanges
+            items_reported: acquisition::exchanges_after_github_lookup(&transcript)
                 .first()
                 .and_then(|exchange| {
                     serde_json::from_str::<serde_json::Value>(&exchange.response.body).ok()
@@ -1924,7 +1922,7 @@ fn normalize_remote_exchanges(
         observations: vec![],
         invocations: vec![described, planned],
     };
-    for exchange in &transcript.contents.exchanges {
+    for exchange in acquisition::exchanges_after_github_lookup(transcript) {
         if exchange.response.status != 200 {
             continue;
         }
