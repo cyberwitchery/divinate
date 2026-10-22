@@ -832,13 +832,19 @@ fn github_repository_alias(exchanges: &[HttpExchange], repository: &str) -> Opti
         .then(|| format!("{GITHUB_API_ORIGIN}/repositories/{id}"))
 }
 
-/// rewrite an aliased `/repositories/{id}` path onto its `/repos/{owner}/{name}` form.
+/// rewrite an aliased `/repositories/{id}` path, including the `/status/{ref}` route github
+/// pages a combined status through, onto its `/repos/{owner}/{name}` form.
 fn canonical_github_path(path: &str, alias: Option<(&str, &str)>) -> String {
     alias
         .and_then(|(canonical, alias)| {
             path.strip_prefix(alias)
                 .filter(|rest| rest.is_empty() || rest.starts_with('/'))
-                .map(|rest| format!("{canonical}{rest}"))
+                .map(|rest| match rest.strip_prefix("/status/") {
+                    Some(reference) if !reference.is_empty() && !reference.contains('/') => {
+                        format!("{canonical}/commits/{reference}/status")
+                    }
+                    _ => format!("{canonical}{rest}"),
+                })
         })
         .unwrap_or_else(|| path.into())
 }
@@ -3449,12 +3455,21 @@ mod tests {
 
     #[test]
     fn github_revision_pagination_stays_on_the_proven_repository_and_revision() {
-        for (resource, suffix, records) in [
-            (GithubRemoteResource::CheckRuns, "check-runs", "check_runs"),
-            (GithubRemoteResource::CommitStatuses, "status", "statuses"),
+        for (resource, route, records) in [
+            (
+                GithubRemoteResource::CheckRuns,
+                "commits/{revision}/check-runs",
+                "check_runs",
+            ),
+            (
+                GithubRemoteResource::CommitStatuses,
+                "status/{revision}",
+                "statuses",
+            ),
         ] {
             let page = |repository_id: u64, revision: &str| {
-                format!("https://api.github.com/repositories/{repository_id}/commits/{revision}/{suffix}?per_page=100&page=2")
+                let route = route.replace("{revision}", revision);
+                format!("https://api.github.com/repositories/{repository_id}/{route}?per_page=100&page=2")
             };
             let fetch = |next: String| {
                 move |url: &str| {
@@ -3489,14 +3504,16 @@ mod tests {
                     "{resource:?}: {error}"
                 );
             }
-            let mut by_ref = remote(resource);
-            by_ref.revision = "main".into();
-            let error =
-                capture_github_remote_with(&by_ref, fetch(page(123, REVISION))).unwrap_err();
-            assert!(
-                error.to_string().contains("full lowercase commit id"),
-                "{error}"
-            );
+            for revision in ["main".to_owned(), REVISION[..7].to_owned(), "g".repeat(40)] {
+                let mut by_ref = remote(resource);
+                by_ref.revision = revision;
+                let error =
+                    capture_github_remote_with(&by_ref, fetch(page(123, REVISION))).unwrap_err();
+                assert!(
+                    error.to_string().contains("full lowercase commit id"),
+                    "{error}"
+                );
+            }
 
             let mut unproven = transcript.contents.clone();
             unproven.exchanges.remove(0);
@@ -3569,6 +3586,22 @@ mod tests {
         assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
         assert_eq!(assessment.items, 2);
         assert_eq!(assessment.authority, vec![Proposition::CommitAncestry]);
+
+        let mut gap = transcript.contents.clone();
+        gap.exchanges[2].request.url = gap.exchanges[2].request.url.replace("page=2", "page=3");
+        let assessment = assess(&seal_transcript(gap).unwrap(), &ContractRegistry::default());
+        assert_eq!(assessment.enumeration, EnumerationStatus::Failed);
+
+        let one_page = GithubCapture {
+            max_pages: 1,
+            ..options.clone()
+        };
+        let truncated = capture_github_commits_with(&one_page, gh(123)).unwrap();
+        assert!(matches!(
+            truncated.contents.termination,
+            AcquisitionTermination::Truncated { .. }
+        ));
+        assert_eq!(truncated.contents.exchanges.len(), 2);
 
         let error = capture_github_commits_with(&options, gh(999)).unwrap_err();
         assert!(
