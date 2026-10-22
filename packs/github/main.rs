@@ -3,6 +3,7 @@ mod common;
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use divinate::acquisition::HttpExchange;
 use serde_json::{json, Value};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
@@ -216,26 +217,66 @@ struct GithubHistory {
     reviews_complete: BTreeSet<u64>,
 }
 
+enum Route<'a> {
+    Activity,
+    Pulls(&'a str),
+    Reviews(u64),
+}
+
+fn route(rest: &str) -> Option<Route<'_>> {
+    if rest == "/activity" {
+        return Some(Route::Activity);
+    }
+    if let Some(sha) = rest
+        .strip_prefix("/commits/")
+        .and_then(|rest| rest.strip_suffix("/pulls"))
+    {
+        return (!sha.is_empty() && !sha.contains('/')).then_some(Route::Pulls(sha));
+    }
+    rest.strip_prefix("/pulls/")
+        .and_then(|rest| rest.strip_suffix("/reviews"))
+        .and_then(|number| number.parse().ok())
+        .map(Route::Reviews)
+}
+
+/// the `/repositories/{id}` prefix a leading repository lookup proves equivalent to `prefix`.
+fn repository_alias(exchanges: &[HttpExchange], prefix: &str, repository: &str) -> Option<String> {
+    let lookup = exchanges.first()?;
+    if lookup.request.url != prefix || lookup.response.status != 200 {
+        return None;
+    }
+    let body = serde_json::from_str::<Value>(&lookup.response.body).ok()?;
+    let id = body.get("id").and_then(Value::as_u64)?;
+    body.get("full_name")
+        .and_then(Value::as_str)
+        .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+        .then(|| format!("https://api.github.com/repositories/{id}"))
+}
+
 fn history(payload: &Value, branch: &str) -> GithubHistory {
     let transcript = common::transcript(payload);
     let from = parse_time(&transcript.contents.requested_scope.from);
     let until = parse_time(&transcript.contents.requested_scope.until);
+    let repository = transcript
+        .contents
+        .subject
+        .id
+        .strip_prefix("github:")
+        .unwrap_or_else(|| common::fail("github history subject is not a github repository"));
+    let prefix = format!("https://api.github.com/repos/{repository}");
+    let alias = repository_alias(&transcript.contents.exchanges, &prefix, repository);
     let mut result = GithubHistory::default();
     for exchange in &transcript.contents.exchanges {
         let path = exchange.request.url.split('?').next().unwrap_or("");
         let body = common::json_body(exchange);
-        if path.ends_with("/activity") {
+        let resource = common::route_suffix(path, &prefix, alias.as_deref()).and_then(route);
+        if let Some(Route::Activity) = resource {
             result.activities.extend(
                 array(&body, "github activity response is not an array")
                     .iter()
                     .cloned(),
             );
-        } else if path.contains("/commits/") && path.ends_with("/pulls") {
-            let sha = path
-                .split("/commits/")
-                .nth(1)
-                .and_then(|part| part.split('/').next())
-                .unwrap_or("");
+        } else if let Some(Route::Pulls(sha)) = resource {
             if !exchange.response.headers.contains_key("link")
                 || !exchange.response.headers["link"].contains("rel=\"next\"")
             {
@@ -251,13 +292,7 @@ fn history(payload: &Value, branch: &str) -> GithubHistory {
                     result.pulls.insert(number, pull.clone());
                 }
             }
-        } else if path.contains("/pulls/") && path.ends_with("/reviews") {
-            let number = path
-                .split("/pulls/")
-                .nth(1)
-                .and_then(|part| part.split('/').next())
-                .and_then(|part| part.parse::<u64>().ok())
-                .unwrap_or_else(|| common::fail("github review URL has no pull-request number"));
+        } else if let Some(Route::Reviews(number)) = resource {
             if !exchange.response.headers.contains_key("link")
                 || !exchange.response.headers["link"].contains("rel=\"next\"")
             {
@@ -773,5 +808,61 @@ mod tests {
         let mutations = normalize_mutations(&ambiguous, "main");
         assert_eq!(mutations["data"]["events"][0]["kind"], "pull_request_merge");
         assert!(mutations["data"]["events"][0]["pull_request"].is_null());
+    }
+
+    #[test]
+    fn history_routes_by_exact_path_under_the_declared_repository() {
+        for (owner, name, aliased) in [
+            ("owner", "repository", false),
+            ("owner", "activity", false),
+            ("owner", "pulls", false),
+            ("pulls", "repo", false),
+            ("commits", "repo", false),
+            ("owner", "commits", false),
+            ("owner", "repository", true),
+        ] {
+            let repository = format!("https://api.github.com/repos/{owner}/{name}");
+            let paged = if aliased {
+                "https://api.github.com/repositories/7".to_owned()
+            } else {
+                repository.clone()
+            };
+            let activity = format!("{paged}/activity?ref=main&page=2");
+            let pulls = format!("{repository}/commits/integrated/pulls?per_page=100");
+            let reviews = format!("{paged}/pulls/42/reviews?per_page=100&page=2");
+            let payload = common::historical_payload(
+                &format!("github:{owner}/{name}"),
+                "main",
+                vec![
+                    (
+                        &repository,
+                        json!({"id":7,"full_name":format!("{owner}/{name}")}),
+                    ),
+                    (
+                        &activity,
+                        json!([{"id":1,"ref":"refs/heads/main","timestamp":"2026-09-11T12:00:00Z","after":"integrated","activity_type":"pr_merge"}]),
+                    ),
+                    (
+                        &pulls,
+                        json!([{"number":42,"base":{"ref":"main"},"user":{"login":"author"},"merge_commit_sha":"integrated","merged_at":"2026-09-11T12:00:00Z"}]),
+                    ),
+                    (
+                        &reviews,
+                        json!([{"user":{"login":"reviewer"},"state":"APPROVED","submitted_at":"2026-09-11T11:00:00Z"}]),
+                    ),
+                ],
+            );
+            assert_eq!(
+                normalize_mutations(&payload, "main")["data"]["events"][0]["pull_request"],
+                42,
+                "{paged}"
+            );
+            assert_eq!(
+                normalize_reviews(&payload, "main")["data"]["pull_requests"][0]["approvals"][0]
+                    ["state"],
+                "approved",
+                "{paged}"
+            );
+        }
     }
 }
