@@ -53,3 +53,6 @@
   owner, repository, organization, or project named like a route segment, such
   as `activity`, `pulls`, or `PullRequests`, no longer fails normalization or
   loses a merge's pull request
+- refuse github check-run, commit-status, and commit pagination onto another
+  repository or revision, following only `/repositories/{id}` links that a
+  retained repository lookup proves equivalent
