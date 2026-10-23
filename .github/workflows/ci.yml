@@ -146,7 +146,7 @@ jobs:
       - uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
         with:
           mode: check
-          version: v0.5.1
+          version: v0.5.2
 
   sbom:
     uses: cyberwitchery/.github/.github/workflows/sbom.yml@64ffd6a08c3e9626a681c8be1c8ad056765f3b85 # main
