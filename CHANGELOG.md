@@ -59,3 +59,6 @@
 - refuse github check-run, commit-status, and commit pagination onto another
   repository or revision, following only `/repositories/{id}` links that a
   retained repository lookup proves equivalent
+- count the commit-status pages github links through
+  `/repositories/{id}/status/{sha}`, so a build-validation history whose
+  statuses for a revision span more than one page no longer fails assessment

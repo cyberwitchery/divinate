@@ -2451,7 +2451,9 @@ fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Optio
                     ));
                 }
             }
-            if let Some(reason) = incomplete_github_validation_population(contents, &revision) {
+            if let Some(reason) =
+                incomplete_github_validation_population(contents, repository, &revision)
+            {
                 return Some(reason);
             }
         }
@@ -2522,20 +2524,23 @@ fn complete_azure_history_requests(transcript: &AcquisitionTranscript) -> Option
 
 fn incomplete_github_validation_population(
     contents: &TranscriptContents,
+    repository: &str,
     revision: &str,
 ) -> Option<String> {
+    let prefix = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
+    let alias = github_repository_alias(&contents.exchanges, repository);
+    let alias = alias.as_deref().map(|alias| (prefix.as_str(), alias));
     for (suffix, field, label) in [
         ("check-runs", "check_runs", "check run"),
         ("status", "statuses", "commit status"),
     ] {
-        let marker = format!("/commits/{revision}/{suffix}");
+        let path = format!("{prefix}/commits/{revision}/{suffix}");
         let mut reported = None;
         let mut retained = 0_u64;
-        for exchange in contents
-            .exchanges
-            .iter()
-            .filter(|exchange| exchange.request.url.contains(&marker))
-        {
+        for exchange in contents.exchanges.iter().filter(|exchange| {
+            let requested = exchange.request.url.split('?').next().unwrap_or("");
+            canonical_github_path(requested, alias) == path
+        }) {
             let Ok(body) = serde_json::from_str::<serde_json::Value>(&exchange.response.body)
             else {
                 return Some(format!("github {label} history contains invalid JSON"));
@@ -3271,6 +3276,82 @@ mod tests {
             .exchanges
             .iter()
             .any(|exchange| exchange.request.url.contains("/commits/head/check-runs?")));
+    }
+
+    #[test]
+    fn github_build_validation_history_counts_pages_on_the_repository_alias() {
+        for (route, records) in [
+            ("commits/{revision}/check-runs", "check_runs"),
+            ("status/{revision}", "statuses"),
+        ] {
+            let page = |revision: &str| {
+                let route = route.replace("{revision}", revision);
+                format!("https://api.github.com/repositories/123/{route}?per_page=100&page=2")
+            };
+            let options = remote(GithubRemoteResource::BuildValidationHistory);
+            let transcript = capture_github_remote_with(&options, |url| {
+                if let Some(lookup) = github_lookup(url) {
+                    return Ok(lookup);
+                }
+                let mut headers = BTreeMap::new();
+                let body = if url.contains("/activity?") {
+                    r#"[{"id":"a","activity_type":"pr_merge","timestamp":"2026-09-11T12:00:00Z","ref":"refs/heads/main","after":"merge"}]"#.into()
+                } else if url.contains("/pulls?") {
+                    r#"[{"number":1,"merge_commit_sha":"merge","merged_at":"2026-09-11T12:00:00Z","base":{"ref":"main"},"head":{"sha":"head"}}]"#.into()
+                } else {
+                    let field = if url.contains("/check-runs?") {
+                        "check_runs"
+                    } else {
+                        "statuses"
+                    };
+                    if field == records && url.contains("/repos/") {
+                        let revision = url.split("/commits/").nth(1).unwrap().split('/').next();
+                        let next = page(revision.unwrap());
+                        headers.insert("link".into(), format!("<{next}>; rel=\"next\""));
+                    }
+                    let total = if field == records { 2 } else { 1 };
+                    format!(r#"{{"total_count":{total},"{field}":[{{}}]}}"#)
+                };
+                Ok(exchange(url, 200, &body, headers))
+            })
+            .unwrap();
+            let assessment = assess(&transcript, &ContractRegistry::default());
+            assert_eq!(
+                assessment.enumeration,
+                EnumerationStatus::Complete,
+                "{records}: {:?}",
+                assessment.reasons
+            );
+            assert_eq!(
+                assessment.authority,
+                vec![Proposition::BuildValidationResults]
+            );
+
+            let mut elsewhere = transcript.contents.clone();
+            let second = elsewhere
+                .exchanges
+                .iter()
+                .position(|exchange| exchange.request.url == page("head"))
+                .unwrap();
+            elsewhere.exchanges[second - 1]
+                .response
+                .headers
+                .insert("link".into(), format!("<{}>; rel=\"next\"", page("other")));
+            elsewhere.exchanges[second].request.url = page("other");
+            let assessment = assess(
+                &seal_transcript(elsewhere).unwrap(),
+                &ContractRegistry::default(),
+            );
+            assert_eq!(assessment.enumeration, EnumerationStatus::Failed);
+            assert!(
+                assessment
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.ends_with("but 1 were retained")),
+                "{records}: {:?}",
+                assessment.reasons
+            );
+        }
     }
 
     #[test]
