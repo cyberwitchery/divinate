@@ -62,3 +62,5 @@
 - count the commit-status pages github links through
   `/repositories/{id}/status/{sha}`, so a build-validation history whose
   statuses for a revision span more than one page no longer fails assessment
+- verify a long github or azure devops history in time linear in its exchanges
+  instead of quadratic
