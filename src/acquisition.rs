@@ -2343,6 +2343,12 @@ fn query_parameter<'a>(url: &'a str, name: &str) -> Option<&'a str> {
 }
 
 fn incomplete_composite_population(transcript: &AcquisitionTranscript) -> Option<String> {
+    let requested = transcript
+        .contents
+        .exchanges
+        .iter()
+        .map(|exchange| exchange.request.url.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
     if transcript.contents.exchanges.iter().any(|exchange| {
         exchange.response.status != 200
             || next_request_url(
@@ -2350,13 +2356,7 @@ fn incomplete_composite_population(transcript: &AcquisitionTranscript) -> Option
                 &exchange.request.url,
                 &exchange.response.headers,
             )
-            .is_some_and(|next| {
-                !transcript
-                    .contents
-                    .exchanges
-                    .iter()
-                    .any(|following| following.request.url == next)
-            })
+            .is_some_and(|next| !requested.contains(next.as_str()))
     }) {
         return Some(
             "composite acquisition lacks a successful terminal page for a requested population"
@@ -2372,6 +2372,13 @@ fn incomplete_composite_population(transcript: &AcquisitionTranscript) -> Option
     } else {
         complete_azure_history_requests(transcript)
     }
+}
+
+fn requested_paths(exchanges: &[HttpExchange]) -> std::collections::BTreeSet<&str> {
+    exchanges
+        .iter()
+        .map(|exchange| exchange.request.url.split('?').next().unwrap_or(""))
+        .collect()
 }
 
 fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Option<String> {
@@ -2406,13 +2413,10 @@ fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Optio
     let Ok(heads) = github_activity_heads(&contents.exchanges, &options) else {
         return Some("github activity population has invalid records".into());
     };
+    let paths = requested_paths(&contents.exchanges);
     for head in heads {
         let path = format!("{GITHUB_API_ORIGIN}/repos/{repository}/commits/{head}/pulls");
-        if !contents
-            .exchanges
-            .iter()
-            .any(|exchange| exchange.request.url.split('?').next() == Some(path.as_str()))
-        {
+        if !paths.contains(path.as_str()) {
             return Some(
                 "github history lacks pull-request association enumeration for a branch mutation"
                     .into(),
@@ -2422,11 +2426,7 @@ fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Optio
     if contents.collector_contract == GITHUB_PULL_REQUEST_REVIEWS_CONTRACT {
         for number in github_associated_pull_requests(&contents.exchanges) {
             let path = format!("{GITHUB_API_ORIGIN}/repos/{repository}/pulls/{number}/reviews");
-            if !contents
-                .exchanges
-                .iter()
-                .any(|exchange| exchange.request.url.split('?').next() == Some(path.as_str()))
-            {
+            if !paths.contains(path.as_str()) {
                 return Some(
                     "github history lacks review enumeration for an associated pull request".into(),
                 );
@@ -2437,22 +2437,19 @@ fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Optio
         let Ok(revisions) = github_validation_revisions(&contents.exchanges) else {
             return Some("github integration population has invalid records".into());
         };
+        let pages = github_canonical_pages(contents, repository);
         for revision in revisions {
             for suffix in ["check-runs", "status"] {
                 let path =
                     format!("{GITHUB_API_ORIGIN}/repos/{repository}/commits/{revision}/{suffix}");
-                if !contents
-                    .exchanges
-                    .iter()
-                    .any(|exchange| exchange.request.url.split('?').next() == Some(path.as_str()))
-                {
+                if !paths.contains(path.as_str()) {
                     return Some(format!(
                         "github history lacks {suffix} enumeration for an integration revision"
                     ));
                 }
             }
             if let Some(reason) =
-                incomplete_github_validation_population(contents, repository, &revision)
+                incomplete_github_validation_population(&pages, repository, &revision)
             {
                 return Some(reason);
             }
@@ -2474,31 +2471,20 @@ fn complete_azure_history_requests(transcript: &AcquisitionTranscript) -> Option
     };
     let prefix = first.request.url.split("/_apis/").next()?;
     let repository = format!("{prefix}/_apis/git/repositories/{id}");
+    let paths = requested_paths(&contents.exchanges);
     let pull_path = format!("{repository}/pullrequests");
-    if !contents
-        .exchanges
-        .iter()
-        .any(|exchange| exchange.request.url.split('?').next() == Some(pull_path.as_str()))
-    {
+    if !paths.contains(pull_path.as_str()) {
         return Some("azure history lacks completed pull-request enumeration".into());
     }
     if contents.collector_contract == AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT {
         let push_path = format!("{repository}/pushes");
-        if !contents
-            .exchanges
-            .iter()
-            .any(|exchange| exchange.request.url.split('?').next() == Some(push_path.as_str()))
-        {
+        if !paths.contains(push_path.as_str()) {
             return Some("azure history lacks branch mutation enumeration".into());
         }
     } else if contents.collector_contract == AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT {
         for number in azure_devops_pull_request_ids(&contents.exchanges) {
             let path = format!("{repository}/pullRequests/{number}/threads");
-            if !contents
-                .exchanges
-                .iter()
-                .any(|exchange| exchange.request.url.split('?').next() == Some(path.as_str()))
-            {
+            if !paths.contains(path.as_str()) {
                 return Some(
                     "azure history lacks vote-history enumeration for a completed pull request"
                         .into(),
@@ -2522,14 +2508,30 @@ fn complete_azure_history_requests(transcript: &AcquisitionTranscript) -> Option
     None
 }
 
+fn github_canonical_pages<'a>(
+    contents: &'a TranscriptContents,
+    repository: &str,
+) -> BTreeMap<String, Vec<&'a HttpExchange>> {
+    let prefix = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
+    let alias = github_repository_alias(&contents.exchanges, repository);
+    let alias = alias.as_deref().map(|alias| (prefix.as_str(), alias));
+    let mut pages = BTreeMap::<_, Vec<_>>::new();
+    for exchange in &contents.exchanges {
+        let requested = exchange.request.url.split('?').next().unwrap_or("");
+        pages
+            .entry(canonical_github_path(requested, alias))
+            .or_default()
+            .push(exchange);
+    }
+    pages
+}
+
 fn incomplete_github_validation_population(
-    contents: &TranscriptContents,
+    pages: &BTreeMap<String, Vec<&HttpExchange>>,
     repository: &str,
     revision: &str,
 ) -> Option<String> {
     let prefix = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
-    let alias = github_repository_alias(&contents.exchanges, repository);
-    let alias = alias.as_deref().map(|alias| (prefix.as_str(), alias));
     for (suffix, field, label) in [
         ("check-runs", "check_runs", "check run"),
         ("status", "statuses", "commit status"),
@@ -2537,10 +2539,7 @@ fn incomplete_github_validation_population(
         let path = format!("{prefix}/commits/{revision}/{suffix}");
         let mut reported = None;
         let mut retained = 0_u64;
-        for exchange in contents.exchanges.iter().filter(|exchange| {
-            let requested = exchange.request.url.split('?').next().unwrap_or("");
-            canonical_github_path(requested, alias) == path
-        }) {
+        for exchange in pages.get(&path).into_iter().flatten() {
             let Ok(body) = serde_json::from_str::<serde_json::Value>(&exchange.response.body)
             else {
                 return Some(format!("github {label} history contains invalid JSON"));
@@ -3276,6 +3275,26 @@ mod tests {
             .exchanges
             .iter()
             .any(|exchange| exchange.request.url.contains("/commits/head/check-runs?")));
+
+        let mut contents = transcript.contents.clone();
+        contents
+            .exchanges
+            .retain(|exchange| !exchange.request.url.contains("/commits/head/status?"));
+        let runs = contents
+            .exchanges
+            .iter_mut()
+            .find(|exchange| exchange.request.url.contains("/commits/merge/check-runs?"))
+            .unwrap();
+        runs.response.body = runs.response.body.replace(":1,", ":2,");
+        runs.response.body_sha256 = hex_digest(runs.response.body.as_bytes());
+        let assessment = assess(
+            &seal_transcript(contents).unwrap(),
+            &ContractRegistry::default(),
+        );
+        assert_eq!(
+            assessment.reasons,
+            ["github history lacks status enumeration for an integration revision"]
+        );
     }
 
     #[test]
@@ -3351,6 +3370,27 @@ mod tests {
                 "{records}: {:?}",
                 assessment.reasons
             );
+
+            let mut overstated = transcript.contents.clone();
+            let first = &mut overstated.exchanges[second - 1].response;
+            first.body = first.body.replace(":2,", ":3,");
+            first.body_sha256 = hex_digest(first.body.as_bytes());
+            let mut unrequested = transcript.contents.clone();
+            unrequested.exchanges.remove(second - 1);
+            for (contents, reason) in [
+                (overstated, "github reported 3 "),
+                (unrequested, "github history lacks "),
+            ] {
+                let assessment = assess(
+                    &seal_transcript(contents).unwrap(),
+                    &ContractRegistry::default(),
+                );
+                assert!(
+                    assessment.reasons.iter().any(|r| r.starts_with(reason)),
+                    "{records}: {:?}",
+                    assessment.reasons
+                );
+            }
         }
     }
 
@@ -3389,6 +3429,16 @@ mod tests {
             .url
             .contains("CodeReviewId%2Faaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee%2F42"));
         assert_eq!(transcript.contents.exchanges.len(), 4);
+        let mut unfollowed = transcript.contents.clone();
+        unfollowed.exchanges.pop();
+        assert_eq!(
+            assess(
+                &seal_transcript(unfollowed).unwrap(),
+                &ContractRegistry::default()
+            )
+            .enumeration,
+            EnumerationStatus::Failed
+        );
     }
 
     #[test]
