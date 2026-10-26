@@ -64,3 +64,7 @@
   statuses for a revision span more than one page no longer fails assessment
 - verify a long github or azure devops history in time linear in its exchanges
   instead of quadratic
+- leave the repository lookup that opens a github repository-mutation,
+  pull-request-review, or build-validation history out of the pages and items
+  its collection run and dossier report, as check runs, commit statuses, and
+  commits already do

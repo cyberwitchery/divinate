@@ -1860,14 +1860,27 @@ fn evidence_exchanges(transcript: &AcquisitionTranscript) -> &[HttpExchange] {
 }
 
 /// the exchanges after the repository lookup that opens a check-run, commit-status,
-/// or commit transcript, and every exchange of any other transcript.
+/// commit, or history transcript, and every exchange of any other transcript.
 #[must_use]
 pub fn exchanges_after_github_lookup(transcript: &AcquisitionTranscript) -> &[HttpExchange] {
-    let exchanges = &transcript.contents.exchanges;
-    if github_looked_up_resource(&transcript.contents).is_some() {
-        exchanges.get(1..).unwrap_or_default()
+    let contents = &transcript.contents;
+    let history = matches!(
+        contents.collector_contract.as_str(),
+        GITHUB_REPOSITORY_MUTATIONS_CONTRACT
+            | GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+            | GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
+    );
+    let opens_with_lookup = contents
+        .subject
+        .id
+        .strip_prefix("github:")
+        .is_some_and(|repository| {
+            contents.initial_request.url == format!("{GITHUB_API_ORIGIN}/repos/{repository}")
+        });
+    if (history && opens_with_lookup) || github_looked_up_resource(contents).is_some() {
+        contents.exchanges.get(1..).unwrap_or_default()
     } else {
-        exchanges
+        &contents.exchanges
     }
 }
 
@@ -3820,24 +3833,37 @@ mod tests {
     }
 
     #[test]
-    fn azure_empty_history_is_complete_authoritative_coverage() {
-        for (resource, authority) in [
+    fn empty_history_is_complete_authoritative_coverage() {
+        for (github, azure, authority, azure_pages) in [
             (
+                GithubRemoteResource::RepositoryMutations,
                 AzureDevopsRemoteResource::RepositoryMutations,
                 Proposition::RepositoryMutations,
+                2,
             ),
             (
+                GithubRemoteResource::PullRequestReviews,
                 AzureDevopsRemoteResource::PullRequestReviews,
                 Proposition::PullRequestReviews,
+                1,
             ),
             (
+                GithubRemoteResource::BuildValidationHistory,
                 AzureDevopsRemoteResource::BuildValidationHistory,
                 Proposition::BuildValidationResults,
+                1,
             ),
         ] {
+            let github = capture_github_remote_with(&remote(github), |url| {
+                Ok(github_lookup(url).unwrap_or_else(|| exchange(url, 200, "[]", BTreeMap::new())))
+            })
+            .unwrap();
+            let mut without_lookup = github.contents.clone();
+            without_lookup.exchanges.remove(0);
+            without_lookup.initial_request = without_lookup.exchanges[0].request.clone();
             let mut options = azure_remote();
-            options.resource = resource;
-            let transcript = capture_azure_devops_history_with(&options, &mut |url: &str| {
+            options.resource = azure;
+            let azure = capture_azure_devops_history_with(&options, &mut |url: &str| {
                 let body = if url.contains("/pushes?") || url.contains("/pullrequests?") {
                     r#"{"value":[]}"#
                 } else {
@@ -3846,14 +3872,25 @@ mod tests {
                 Ok(exchange(url, 200, body, BTreeMap::new()))
             })
             .unwrap();
-            let assessment = assess(&transcript, &ContractRegistry::default());
-            assert_eq!(
-                assessment.enumeration,
-                EnumerationStatus::Complete,
-                "{resource:?}"
-            );
-            assert_eq!(assessment.authority, vec![authority], "{resource:?}");
-            assert_eq!(assessment.items, 0, "{resource:?}");
+            for (transcript, pages) in [
+                (github, 1),
+                (seal_transcript(without_lookup).unwrap(), 1),
+                (azure, azure_pages),
+            ] {
+                let assessment = assess(&transcript, &ContractRegistry::default());
+                assert_eq!(
+                    (
+                        assessment.enumeration,
+                        assessment.authority,
+                        assessment.pages,
+                        assessment.items
+                    ),
+                    (EnumerationStatus::Complete, vec![authority], pages, 0),
+                    "{} from {}",
+                    transcript.contents.collector_contract,
+                    transcript.contents.initial_request.url
+                );
+            }
         }
     }
 
