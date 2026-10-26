@@ -1636,14 +1636,7 @@ fn azure_devops_get(
 ) -> Result<HttpExchange> {
     ensure_azure_devops_url(url, organization)?;
     let authorization = credential.authorization();
-    let mut response = agent
-        .get(url)
-        .header("accept", "application/json")
-        .header("authorization", &authorization)
-        .header(
-            "user-agent",
-            concat!("divinate/", env!("CARGO_PKG_VERSION")),
-        )
+    let mut response = azure_devops_request(agent, url, &authorization)
         .call()
         .map_err(|error| {
             Error::Collection(format!(
@@ -1659,6 +1652,22 @@ fn azure_devops_get(
         .map_err(|_| Error::Collection("azure devops response body could not be read".into()))?;
     reject_reflected_azure_credential(&body, &headers, credential.secret(), &authorization)?;
     build_exchange(url, status, headers, body, "azure devops")
+}
+
+fn azure_devops_request(
+    agent: &ureq::Agent,
+    url: &str,
+    authorization: &str,
+) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
+    agent
+        .get(url)
+        .header("accept", "application/json")
+        .header("authorization", authorization)
+        .header(
+            "user-agent",
+            concat!("divinate/", env!("CARGO_PKG_VERSION")),
+        )
+        .header("x-tfs-fedauthredirect", "Suppress")
 }
 
 fn retained_azure_devops_headers(headers: &ureq::http::HeaderMap) -> BTreeMap<String, String> {
@@ -3491,6 +3500,15 @@ mod tests {
             failure,
             AcquisitionTermination::UnsafeRedirect { .. }
         ));
+        let request = azure_devops_request(
+            &ureq::Agent::new_with_defaults(),
+            "https://dev.azure.com/example-org/_apis/projects",
+            &authorization,
+        );
+        assert_eq!(
+            request.headers_ref().unwrap()["x-tfs-fedauthredirect"],
+            "Suppress"
+        );
 
         let options = azure_remote();
         let transcript = capture_azure_devops_branch_policy_with(&options, |url| {
