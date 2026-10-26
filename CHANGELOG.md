@@ -68,3 +68,6 @@
   pull-request-review, or build-validation history out of the pages and items
   its collection run and dossier report, as check runs, commit statuses, and
   commits already do
+- report a wrong or expired azure devops credential as permission denied, with
+  azure's own `TF400813` message, instead of as a failed collection citing a
+  refused redirect to azure's sign-in page
