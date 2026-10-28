@@ -143,10 +143,9 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - uses: cyberwitchery/unsafe-budget@92b73becc9c76134433ac0347d828fa87fdb3fa3 # v0.5.2
+      - uses: cyberwitchery/unsafe-budget@22209a08757e0b3f994befcff704e1ef76d65d0f # v0.5.4
         with:
           mode: check
-          version: v0.5.2
 
   sbom:
     uses: cyberwitchery/.github/.github/workflows/sbom.yml@64ffd6a08c3e9626a681c8be1c8ad056765f3b85 # main
