@@ -218,9 +218,10 @@ saved pack assertions remain verifiable without executing the pack. reevaluation
 uses the currently configured executable. reproducing an old derivation requires
 configuring the corresponding old executable.
 
-protocol version 1 plans local commands, three named GitHub acquisitions, and
-one Azure DevOps branch-policy acquisition. it does not expose arbitrary
-authenticated HTTP or secret-bearing headers.
+protocol version 1 plans local commands and named provider-aware acquisitions:
+six GitHub resources and four Azure DevOps resources, listed in
+`docs/packs.md`. it does not expose arbitrary authenticated HTTP or
+secret-bearing headers.
 
 the repository dogfoods this boundary with in-tree Cargo.lock and GitHub packs
 declared in root `divinate.yaml`. the GitHub pack owns endpoint interpretation;

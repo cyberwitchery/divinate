@@ -25,12 +25,16 @@ struct Cli {
 enum Command {
     /// configure this repository
     Init {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// branch to govern; defaults to the current git branch
         #[arg(long)]
         branch: Option<String>,
+        /// repository checkout to read
         #[arg(long, default_value = ".")]
         repository_path: PathBuf,
+        /// print the result as json
         #[arg(long)]
         json: bool,
     },
@@ -43,23 +47,31 @@ enum Command {
     },
     /// summarize the latest saved state
     Status {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// repository checkout to read
         #[arg(long, default_value = ".")]
         repository_path: PathBuf,
+        /// print the result as json
         #[arg(long)]
         json: bool,
     },
     /// compare the current evaluation with the previous one
     Review {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// label of the earlier evaluation; required when no previous evaluation exists
         #[arg(long)]
         since: Option<String>,
+        /// label of the later evaluation
         #[arg(long, default_value = "current")]
         current: String,
+        /// label of the written review view
         #[arg(long, default_value = "review")]
         output: String,
+        /// print the result as json
         #[arg(long)]
         json: bool,
     },
@@ -70,45 +82,62 @@ enum Command {
     },
     /// advanced: list configured packs
     Packs {
+        /// repository checkout to read
         #[arg(long, default_value = ".")]
         repository_path: PathBuf,
     },
     /// advanced: inspect one configured external pack
     Pack {
+        /// repository checkout to read
         #[arg(long, default_value = ".")]
         repository_path: PathBuf,
+        /// configured pack id
         id: String,
     },
     /// advanced: run a local tool and retain its provenance
     Run {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// tool name to record
         #[arg(long)]
         tool: String,
+        /// tool version to record
         #[arg(long)]
         tool_version: Option<String>,
+        /// named input to retain, as name=path; repeatable
         #[arg(long = "input", value_parser = parse_named_path)]
         inputs: Vec<NamedPathArg>,
+        /// named output to retain, as name=path; repeatable
         #[arg(long = "output", value_parser = parse_named_path)]
         outputs: Vec<NamedPathArg>,
+        /// environment value to pass, as name=value; the command otherwise gets an empty environment
         #[arg(long = "environment", value_parser = parse_metadata)]
         environment: Vec<(String, String)>,
+        /// directory to run the command in
         #[arg(long)]
         working_directory: Option<PathBuf>,
+        /// also write the retained stdout to this path
         #[arg(long)]
         stdout: Option<PathBuf>,
+        /// executable to run
         executable: PathBuf,
+        /// arguments passed to the executable
         #[arg(last = true)]
         argv: Vec<String>,
     },
     /// advanced: derive and save assertions
     Evaluate {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// repository checkout to read
         #[arg(long, default_value = ".")]
         repository_path: PathBuf,
+        /// label of the written evaluation
         #[arg(long, default_value = "current")]
         label: String,
+        /// alternate source-contract registry, for historical reproduction
         #[arg(long)]
         contracts: Option<PathBuf>,
         #[command(flatten)]
@@ -116,24 +145,32 @@ enum Command {
     },
     /// inspect: verify all retained provenance offline
     Verify {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
     },
     /// inspect: show an assertion's provenance
     Provenance {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// label of the evaluation to read
         #[arg(long, default_value = "current")]
         evaluation: String,
+        /// assertion id to explain
         assertion_id: String,
     },
     /// inspect: extract a retained command stream
     Extract {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// execution id to extract
         execution_id: String,
+        /// retained stream to extract
         #[arg(long, value_enum, default_value_t = Stream::Stdout)]
         stream: Stream,
+        /// path to write the stream to
         #[arg(short, long)]
         output: PathBuf,
     },
@@ -245,12 +282,16 @@ enum Command {
 enum ExportCommand {
     /// render a due-diligence evidence response
     Dd {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// label of the evaluation to render
         #[arg(long, default_value = "current")]
         evaluation: String,
+        /// label of the written view
         #[arg(long, default_value = "dd-response")]
         output: String,
+        /// print the result as json
         #[arg(long)]
         json: bool,
     },
@@ -260,20 +301,28 @@ enum ExportCommand {
 enum CollectCommand {
     /// collect with a configured pack
     Pack {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// repository checkout to read
         #[arg(long, default_value = ".")]
         repository_path: PathBuf,
+        /// configured pack id
         id: String,
+        /// collector to invoke
         collector: String,
+        /// json file supplying collector context; defaults to null
         #[arg(long)]
         context: Option<PathBuf>,
     },
     /// import a source manifest
     Manifest {
+        /// evidence state directory
         #[arg(long, default_value = ".evidence")]
         state: PathBuf,
+        /// source manifest to import
         manifest: PathBuf,
+        /// acquisition transcript to import with it; repeatable
         #[arg(long = "acquisition")]
         acquisitions: Vec<PathBuf>,
     },
@@ -281,22 +330,31 @@ enum CollectCommand {
 
 #[derive(Args)]
 struct ProductCollectArgs {
+    /// evidence state directory
     #[arg(long, default_value = ".evidence")]
     state: PathBuf,
+    /// repository checkout to read
     #[arg(long, default_value = ".")]
     repository_path: PathBuf,
+    /// release tag; defaults to the only tag at HEAD when a source needs release context
     #[arg(long)]
     release: Option<String>,
+    /// base release tag; defaults to the nearest ancestor release
     #[arg(long)]
     base_release: Option<String>,
+    /// interval start; defaults to the base release or the unique root commit
     #[arg(long)]
     from: Option<String>,
+    /// interval end; defaults to collection start and may not be later
     #[arg(long)]
     until: Option<String>,
+    /// evaluation time; selects evidence available at that time
     #[arg(long)]
     at: Option<String>,
+    /// rerun release executions instead of reusing verified ones
     #[arg(long)]
     force: bool,
+    /// print the result as json
     #[arg(long)]
     json: bool,
 }
@@ -439,16 +497,22 @@ struct CaptureBranchArgs {
 
 #[derive(Args)]
 struct TargetArgs {
+    /// repository identity; defaults to divinate.yaml
     #[arg(long)]
     repository: Option<String>,
+    /// branch; defaults to divinate.yaml
     #[arg(long)]
     branch: Option<String>,
+    /// release tag; omit for repository-scoped evaluation
     #[arg(long)]
     release: Option<String>,
+    /// interval start
     #[arg(long)]
     from: String,
+    /// interval end
     #[arg(long)]
     until: String,
+    /// evaluation time; selects evidence available at that time
     #[arg(long)]
     at: Option<String>,
 }
