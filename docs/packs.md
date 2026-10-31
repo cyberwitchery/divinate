@@ -1,7 +1,11 @@
 # external packs
 
-a pack is an executable that supplies collectors, normalizers, or evaluators
-without writing divinate state. core still executes commands, assigns identity,
+a pack adds questions divinate can answer, and the evidence sources to answer
+them. a pack's answers appear alongside the built-in ones, with the same five
+results, coverage rules, and provenance.
+
+technically, a pack is an executable that supplies collectors, normalizers, or
+evaluators without writing divinate state. core still executes commands, assigns identity,
 checks provenance and coverage, and persists the result.
 
 ## declarative collection configuration
