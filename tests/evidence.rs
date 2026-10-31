@@ -480,6 +480,114 @@ fn complete_empty_reviews_are_a_concrete_counterexample() {
     assert_eq!(assertion.outcome, Outcome::Contradicted);
 }
 
+fn overlapping_review_records(
+    earlier_record: (&str, &serde_json::Value, bool),
+    later_record: (&str, &serde_json::Value, bool),
+) -> evidence_spike::model::Corpus {
+    let mut earlier = corpus();
+    let mut run = earlier
+        .collections
+        .iter()
+        .find(|run| run.id == "run-reviews-complete")
+        .unwrap()
+        .clone();
+    run.id = "run-reviews-overlapping".into();
+    run.started_at = "2026-09-05T00:01:00Z".into();
+    run.completed_at = "2026-09-05T00:05:00Z".into();
+    run.observation_ids = vec![later_record.0.into()];
+    let review = earlier
+        .observations
+        .iter_mut()
+        .find(|item| item.kind == ObservationKind::ReviewRecord)
+        .unwrap();
+    let mut later = review.clone();
+    later.collection_run_id = Some(run.id.clone());
+    later.observed_at.clone_from(&run.completed_at);
+    for (observation, (id, approvals, complete)) in
+        [(review, earlier_record), (&mut later, later_record)]
+    {
+        observation.id = id.into();
+        observation.data["pull_requests"][0]["approvals"] = approvals.clone();
+        observation.data["pull_requests"][0]["enumeration_complete"] = json!(complete);
+    }
+    let later = evidence_spike::model::Corpus {
+        collections: vec![run],
+        observations: vec![later],
+        schema_version: earlier.schema_version.clone(),
+        sources: vec![],
+    };
+    evidence_spike::workflow::merge(&earlier, &later).unwrap()
+}
+
+#[test]
+fn review_records_from_overlapping_runs_decide_alike_in_either_order() {
+    let approval =
+        json!([{"actor":"bob","state":"approved","submitted_at":"2026-09-02T09:00:00Z"}]);
+    let dismissal =
+        json!([{"actor":"bob","state":"dismissed","submitted_at":"2026-09-02T09:00:00Z"}]);
+    let late_comment = json!([approval[0], {"actor":"carol","state":"commented","submitted_at":"2026-09-04T00:00:00Z"}]);
+    let empty = json!([]);
+    for (label, approval_complete, other, other_complete, expected) in [
+        ("truncated empty", true, &empty, false, Outcome::Supported),
+        (
+            "dismissal",
+            true,
+            &dismissal,
+            true,
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            "complete empty",
+            true,
+            &empty,
+            true,
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            "post-merge comment",
+            true,
+            &late_comment,
+            true,
+            Outcome::Supported,
+        ),
+        ("identical", true, &approval, true, Outcome::Supported),
+        (
+            "both truncated",
+            false,
+            &empty,
+            false,
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            "truncated approval",
+            false,
+            &empty,
+            true,
+            Outcome::InsufficientEvidence,
+        ),
+    ] {
+        let [first, second] =
+            [("review-a", "review-b"), ("review-b", "review-a")].map(|(approval_id, other_id)| {
+                let corpus = overlapping_review_records(
+                    (approval_id, &approval, approval_complete),
+                    (other_id, other, other_complete),
+                );
+                evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap()
+            });
+        assert_eq!(first.outcome, expected, "{label}");
+        assert_eq!(second.outcome, expected, "{label}");
+        assert_eq!(first.missing, second.missing, "{label}");
+        assert_eq!(
+            first
+                .missing
+                .iter()
+                .any(|item| item.requirement == "consistent_pull_request_review_record"),
+            expected == Outcome::InsufficientEvidence,
+            "{label}"
+        );
+    }
+}
+
 #[test]
 fn permission_denial_is_an_explicit_population_gap() {
     let mut corpus = corpus();

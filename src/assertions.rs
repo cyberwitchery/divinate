@@ -1038,8 +1038,8 @@ fn collect_reviews<'a>(
     corpus: &'a Corpus,
     target: &EvaluationTarget,
     run_ids: &BTreeSet<String>,
-) -> Result<BTreeMap<u64, (&'a Observation, PullRequestData)>> {
-    let mut reviews = BTreeMap::new();
+) -> Result<BTreeMap<u64, Vec<(&'a Observation, PullRequestData)>>> {
+    let mut reviews = BTreeMap::<u64, Vec<_>>::new();
     for observation in corpus.observations.iter().filter(|item| {
         item.kind == ObservationKind::ReviewRecord
             && (item.subject.id == target.repository
@@ -1055,16 +1055,107 @@ fn collect_reviews<'a>(
     }) {
         let data: PullRequestReviewData = payload(observation)?;
         for pull_request in data.pull_requests {
-            reviews.insert(pull_request.number, (observation, pull_request));
+            reviews
+                .entry(pull_request.number)
+                .or_default()
+                .push((observation, pull_request));
         }
     }
     Ok(reviews)
 }
 
+#[derive(PartialEq, Eq)]
+enum ReviewVerdict {
+    OtherRevision(String),
+    OutsideInterval,
+    Reviewed,
+    Inconclusive,
+    Unreviewed,
+}
+
+/// `None` when an incomplete enumeration showed no decisive review state.
+fn judge_review(
+    target: &EvaluationTarget,
+    event: &MutationEventData,
+    pull_request: &PullRequestData,
+) -> Result<Option<ReviewVerdict>> {
+    if pull_request.merge_commit_sha != event.commit {
+        return Ok(Some(ReviewVerdict::OtherRevision(
+            pull_request.merge_commit_sha.clone(),
+        )));
+    }
+    let integrated = parse_timestamp(&pull_request.merged_at)?;
+    if integrated < parse_timestamp(&target.from)? || integrated >= parse_timestamp(&target.until)?
+    {
+        return Ok(Some(ReviewVerdict::OutsideInterval));
+    }
+    let occurred_at = parse_timestamp(&event.occurred_at)?;
+    let reviewed = pull_request.approvals.iter().any(|approval| {
+        approval.state == "approved"
+            && approval.actor != pull_request.author
+            && approval
+                .submitted_at
+                .as_deref()
+                .is_some_and(|submitted_at| {
+                    parse_timestamp(submitted_at).is_ok_and(|submitted| submitted < occurred_at)
+                })
+    });
+    if reviewed {
+        return Ok(Some(ReviewVerdict::Reviewed));
+    }
+    let unsettled = pull_request.approvals.iter().any(|approval| {
+        !matches!(
+            approval.state.as_str(),
+            "approved" | "changes_requested" | "commented" | "rejected"
+        ) || (approval.state == "approved"
+            && approval.submitted_at.as_deref().is_none_or(|timestamp| {
+                parse_timestamp(timestamp).map_or(true, |submitted| submitted == occurred_at)
+            }))
+    });
+    Ok(if unsettled {
+        Some(ReviewVerdict::Inconclusive)
+    } else if pull_request.enumeration_complete {
+        Some(ReviewVerdict::Unreviewed)
+    } else {
+        None
+    })
+}
+
+/// the verdict every deciding record reaches, with those records; `None` when they disagree.
+fn agreed_review<'a>(
+    target: &EvaluationTarget,
+    event: &MutationEventData,
+    records: &[(&'a Observation, PullRequestData)],
+    considered: &mut Vec<EvidenceUse>,
+) -> Result<Option<(ReviewVerdict, Vec<&'a Observation>)>> {
+    let any_complete = records
+        .iter()
+        .any(|(_, pull_request)| pull_request.enumeration_complete);
+    let mut deciding = Vec::new();
+    for (observation, pull_request) in records {
+        match judge_review(target, event, pull_request)? {
+            Some(verdict) => deciding.push((*observation, verdict)),
+            None if any_complete => considered.push(use_evidence(
+                observation,
+                &format!("incomplete review history for pull request #{} showed no decisive review state and was set aside for a complete record", pull_request.number),
+            )),
+            None => deciding.push((*observation, ReviewVerdict::Inconclusive)),
+        }
+    }
+    if deciding.windows(2).any(|pair| pair[0].1 != pair[1].1) {
+        return Ok(None);
+    }
+    let observations = deciding
+        .iter()
+        .map(|(observation, _)| *observation)
+        .collect();
+    Ok(deciding.pop().map(|(_, verdict)| (verdict, observations)))
+}
+
 fn evaluate_mutation_reviews(
     target: &EvaluationTarget,
     merges: Vec<(&Observation, MutationEventData)>,
-    reviews: &BTreeMap<u64, (&Observation, PullRequestData)>,
+    reviews: &BTreeMap<u64, Vec<(&Observation, PullRequestData)>>,
     assertion: &mut DerivedAssertion,
 ) -> Result<()> {
     for (mutation, event) in merges {
@@ -1076,7 +1167,7 @@ fn evaluate_mutation_reviews(
             });
             continue;
         };
-        let Some((review_observation, pull_request)) = reviews.get(&number) else {
+        let Some(records) = reviews.get(&number) else {
             assertion.missing.push(MissingEvidence {
                 requirement: "pull_request_review_record".into(),
                 subject: format!("{}#pull/{number}", target.repository),
@@ -1084,82 +1175,78 @@ fn evaluate_mutation_reviews(
             });
             continue;
         };
-        if pull_request.merge_commit_sha != event.commit {
+        let Some((verdict, deciding)) =
+            agreed_review(target, &event, records, &mut assertion.considered)?
+        else {
             assertion.missing.push(MissingEvidence {
-                requirement: "mutation_to_pull_request_revision_identity".into(),
-                subject: event.commit,
-                reason: format!(
-                    "pull request #{number} records integration revision {}, which does not match the branch mutation",
-                    pull_request.merge_commit_sha
-                ),
-            });
-            continue;
-        }
-        let integrated = parse_timestamp(&pull_request.merged_at)?;
-        if integrated < parse_timestamp(&target.from)?
-            || integrated >= parse_timestamp(&target.until)?
-        {
-            assertion.missing.push(MissingEvidence {
-                requirement: "pull_request_integration_interval".into(),
+                requirement: "consistent_pull_request_review_record".into(),
                 subject: format!("{}#pull/{number}", target.repository),
-                reason: "the associated PR was integrated outside the evaluated interval".into(),
+                reason: "retained review records reach different conclusions about the same pull request".into(),
             });
             continue;
+        };
+        match &verdict {
+            ReviewVerdict::OtherRevision(revision) => {
+                assertion.missing.push(MissingEvidence {
+                    requirement: "mutation_to_pull_request_revision_identity".into(),
+                    subject: event.commit,
+                    reason: format!(
+                        "pull request #{number} records integration revision {revision}, which does not match the branch mutation"
+                    ),
+                });
+                continue;
+            }
+            ReviewVerdict::OutsideInterval => {
+                assertion.missing.push(MissingEvidence {
+                    requirement: "pull_request_integration_interval".into(),
+                    subject: format!("{}#pull/{number}", target.repository),
+                    reason: "the associated PR was integrated outside the evaluated interval"
+                        .into(),
+                });
+                continue;
+            }
+            _ => {}
         }
-        let occurred_at = parse_timestamp(&event.occurred_at)?;
-        let reviewed = pull_request.approvals.iter().any(|approval| {
-            approval.state == "approved"
-                && approval.actor != pull_request.author
-                && approval
-                    .submitted_at
-                    .as_deref()
-                    .is_some_and(|submitted_at| {
-                        parse_timestamp(submitted_at).is_ok_and(|submitted| submitted < occurred_at)
-                    })
-        });
-        assertion.identity_joins.push(join(
-            mutation,
-            review_observation,
-            &[
-                ("repository", &target.repository),
-                ("pull_request", &number.to_string()),
-                ("commit", &event.commit),
-            ],
-        ));
-        if reviewed {
-            assertion.support.push(use_evidence(
+        for review_observation in &deciding {
+            assertion.identity_joins.push(join(
                 mutation,
-                &format!(
-                    "mutation {} was pull-request merge #{number}",
-                    event.event_id
-                ),
-            ));
-            assertion.support.push(use_evidence(
                 review_observation,
-                &format!("pull request #{number} had an approving review by another recorded actor before integration"),
+                &[
+                    ("repository", &target.repository),
+                    ("pull_request", &number.to_string()),
+                    ("commit", &event.commit),
+                ],
             ));
-        } else if !pull_request.enumeration_complete
-            || pull_request.approvals.iter().any(|approval| {
-                !matches!(
-                    approval.state.as_str(),
-                    "approved" | "changes_requested" | "commented" | "rejected"
-                ) || (approval.state == "approved"
-                    && approval.submitted_at.as_deref().is_none_or(|timestamp| {
-                        parse_timestamp(timestamp)
-                            .map_or(true, |submitted| submitted == occurred_at)
-                    }))
-            })
-        {
-            assertion.missing.push(MissingEvidence {
+        }
+        match verdict {
+            ReviewVerdict::Reviewed => {
+                assertion.support.push(use_evidence(
+                    mutation,
+                    &format!(
+                        "mutation {} was pull-request merge #{number}",
+                        event.event_id
+                    ),
+                ));
+                for review_observation in &deciding {
+                    assertion.support.push(use_evidence(
+                        review_observation,
+                        &format!("pull request #{number} had an approving review by another recorded actor before integration"),
+                    ));
+                }
+            }
+            ReviewVerdict::Unreviewed => {
+                for review_observation in &deciding {
+                    assertion.contradictions.push(use_evidence(
+                        review_observation,
+                        &format!("pull request #{number} had no approving review before integration"),
+                    ));
+                }
+            }
+            _ => assertion.missing.push(MissingEvidence {
                 requirement: "terminal_pull_request_review_state".into(),
                 subject: format!("{}#pull/{number}", target.repository),
                 reason: "the retained review history is incomplete or contains an unknown, transitional, or undated approval state".into(),
-            });
-        } else {
-            assertion.contradictions.push(use_evidence(
-                review_observation,
-                &format!("pull request #{number} had no approving review before integration"),
-            ));
+            }),
         }
     }
     Ok(())
