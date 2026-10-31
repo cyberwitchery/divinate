@@ -1,6 +1,15 @@
-# concepts
+# how answers are derived
 
-divinate separates retained facts from the claims derived from them.
+this page explains why a divinate answer can be trusted, and where that trust
+ends. every answer is built in layers, and each layer may only use the layer
+below it:
+
+- **transcripts** keep exactly what a provider or tool returned;
+- **collection runs** record whether a whole population, such as every change to
+  a branch in a period, was read;
+- **observations** say what the retained bytes mean;
+- **assertions** are the answers: a claim, a result, and the reasons;
+- **views** are documents rendered from the answers.
 
 ```text
 acquisition and execution transcripts
@@ -11,6 +20,8 @@ acquisition and execution transcripts
 ```
 
 ## transcripts
+
+*what was actually received.*
 
 an acquisition transcript records a remote request and response sequence,
 including scope, pagination, termination, response digests, and the source
@@ -24,6 +35,9 @@ transcripts establish what divinate captured. they do not establish that the
 source or tool was correct.
 
 ## collection coverage
+
+*whether everything was seen.* this is what lets divinate answer "every" or
+"none" questions, and what stops it answering them when it cannot.
 
 a collection run records an attempt to enumerate a population. its scope is a
 proposition, subject, branch where applicable, and half-open time interval. the
@@ -47,6 +61,8 @@ integrated, reviewed, or checked, only for their content.
 
 ## observations
 
+*what the received records mean.*
+
 an observation is a typed interpretation of retained source bytes. it names its
 subject, time, producer, evidence class, claim key, adapter, and provenance.
 
@@ -55,6 +71,8 @@ classes. a branch rule requiring review does not prove that every change was
 reviewed. an approval count does not prove that the review was adequate.
 
 ## assertions
+
+*the answers.* [reading an answer](answers.md) explains how to read one.
 
 an assertion contains a claim, outcome, validity, derivation identity, evidence
 uses, coverage decisions, identity joins, reasoning, limitations, and missing
@@ -76,6 +94,8 @@ the gap when those rules cannot support a claim.
 
 ## time
 
+*when an answer could have been known.*
+
 `observed_at` says when the represented fact was observed. it does not make the
 evidence available before capture. historical evaluation includes an observation
 only when every transcript needed to justify it existed by the evaluation time.
@@ -87,6 +107,8 @@ withdrawing a source contract's current authority affects current interpretation
 it does not rewrite a historical transcript.
 
 ## views
+
+*documents for people.*
 
 dossiers, reviews, and due-diligence responses select and render saved assertions.
 they do not collect evidence and contain no independent assertion logic. use the
