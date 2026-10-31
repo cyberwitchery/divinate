@@ -71,3 +71,5 @@
 - report a wrong or expired azure devops credential as permission denied, with
   azure's own `TF400813` message, instead of as a failed collection citing a
   refused redirect to azure's sign-in page
+- report a github secondary rate limit, and any rate limit `gh` reports, as rate
+  limited instead of as permission denied or a failed collection
