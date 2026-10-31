@@ -328,15 +328,7 @@ where
     loop {
         let output = gh(&url)?;
         if !output.status.success() {
-            let diagnostic = sanitize_diagnostic(&String::from_utf8_lossy(&output.stderr));
-            termination = if diagnostic.to_ascii_lowercase().contains("authentication")
-                || diagnostic.contains("HTTP 401")
-                || diagnostic.contains("HTTP 403")
-            {
-                AcquisitionTermination::PermissionDenied { diagnostic }
-            } else {
-                AcquisitionTermination::Failed { diagnostic }
-            };
+            termination = classify_gh_failure(&output.stderr);
             break;
         }
 
@@ -419,16 +411,7 @@ pub fn capture_github_branch_protection(
             AcquisitionTermination::Exhausted,
         )
     } else {
-        let diagnostic = sanitize_diagnostic(&String::from_utf8_lossy(&output.stderr));
-        let termination = if diagnostic.to_ascii_lowercase().contains("authentication")
-            || diagnostic.contains("HTTP 401")
-            || diagnostic.contains("HTTP 403")
-        {
-            AcquisitionTermination::PermissionDenied { diagnostic }
-        } else {
-            AcquisitionTermination::Failed { diagnostic }
-        };
-        (vec![], termination)
+        (vec![], classify_gh_failure(&output.stderr))
     };
     seal_transcript(TranscriptContents {
         collector_contract: GITHUB_BRANCH_PROTECTION_CONTRACT.into(),
@@ -1087,20 +1070,45 @@ fn classify_github_failure(
             location: headers.get("location").cloned().unwrap_or_default(),
         },
         401 => AcquisitionTermination::Unauthenticated { diagnostic },
-        403 if headers.get("x-ratelimit-remaining").map(String::as_str) == Some("0") => {
-            AcquisitionTermination::RateLimited {
-                diagnostic,
-                reset_at: headers.get("x-ratelimit-reset").cloned(),
-            }
+        403 if !github_rate_limited(&diagnostic, headers) => {
+            AcquisitionTermination::PermissionDenied { diagnostic }
         }
-        403 => AcquisitionTermination::PermissionDenied { diagnostic },
-        404 => AcquisitionTermination::NotFound { diagnostic },
-        429 => AcquisitionTermination::RateLimited {
+        403 | 429 => AcquisitionTermination::RateLimited {
             diagnostic,
             reset_at: headers.get("x-ratelimit-reset").cloned(),
         },
+        404 => AcquisitionTermination::NotFound { diagnostic },
         _ => AcquisitionTermination::Failed { diagnostic },
     }
+}
+
+fn github_rate_limited(diagnostic: &str, headers: &BTreeMap<String, String>) -> bool {
+    headers.get("x-ratelimit-remaining").map(String::as_str) == Some("0")
+        || headers.contains_key("retry-after")
+        || mentions_rate_limit(diagnostic)
+}
+
+fn classify_gh_failure(stderr: &[u8]) -> AcquisitionTermination {
+    let diagnostic = sanitize_diagnostic(&String::from_utf8_lossy(stderr));
+    if diagnostic.contains("HTTP 429")
+        || (diagnostic.contains("HTTP 403") && mentions_rate_limit(&diagnostic))
+    {
+        AcquisitionTermination::RateLimited {
+            diagnostic,
+            reset_at: None,
+        }
+    } else if diagnostic.to_ascii_lowercase().contains("authentication")
+        || diagnostic.contains("HTTP 401")
+        || diagnostic.contains("HTTP 403")
+    {
+        AcquisitionTermination::PermissionDenied { diagnostic }
+    } else {
+        AcquisitionTermination::Failed { diagnostic }
+    }
+}
+
+fn mentions_rate_limit(diagnostic: &str) -> bool {
+    diagnostic.to_ascii_lowercase().contains("rate limit")
 }
 
 /// acquire one narrow azure devops resource with credentials held by core.
@@ -3168,15 +3176,35 @@ mod tests {
 
     #[test]
     fn rate_limit_and_redirect_are_distinct_failures() {
-        let rate = classify_github_failure(
-            403,
-            r#"{"message":"API rate limit exceeded"}"#,
-            &BTreeMap::from([
-                ("x-ratelimit-remaining".into(), "0".into()),
-                ("x-ratelimit-reset".into(), "123".into()),
-            ]),
-        );
-        assert!(matches!(rate, AcquisitionTermination::RateLimited { .. }));
+        const PRIMARY: &str = "API rate limit exceeded for user ID 1.";
+        const SECONDARY: &str = "You have exceeded a secondary rate limit. Please wait a few minutes before you try again.";
+        const ABUSE: &str = "You have triggered an abuse detection mechanism. Please wait a few minutes before you try again.";
+        const DENIED: &str = "Resource not accessible by integration";
+        let exhausted = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "123")];
+        let remaining = [
+            ("x-ratelimit-remaining", "4999"),
+            ("x-ratelimit-reset", "123"),
+        ];
+        let retry = [("x-ratelimit-remaining", "4999"), ("retry-after", "60")];
+        for (status, message, headers, kind, reset_at) in [
+            (403, PRIMARY, &exhausted[..], "rate_limited", Some("123")),
+            (429, PRIMARY, &exhausted[..], "rate_limited", Some("123")),
+            (403, "", &exhausted[..], "rate_limited", Some("123")),
+            (403, ABUSE, &retry[..], "rate_limited", None),
+            (403, SECONDARY, &remaining[..], "rate_limited", Some("123")),
+            (429, SECONDARY, &[][..], "rate_limited", None),
+            (403, DENIED, &remaining[..], "permission_denied", None),
+        ] {
+            let body = serde_json::json!({ "message": message }).to_string();
+            let headers = headers
+                .iter()
+                .map(|&(name, value)| (name.to_owned(), value.to_owned()))
+                .collect();
+            let outcome =
+                serde_json::to_value(classify_github_failure(status, &body, &headers)).unwrap();
+            assert_eq!(outcome["kind"], kind, "{status} {message}");
+            assert_eq!(outcome["reset_at"].as_str(), reset_at, "{status} {message}");
+        }
         let redirect = classify_github_failure(
             302,
             r#"{"message":"Moved"}"#,
@@ -3191,6 +3219,22 @@ mod tests {
             AcquisitionTermination::NotFound { .. }
         ));
         assert!(ensure_github_url("https://evil.invalid/steal").is_err());
+    }
+
+    #[test]
+    fn gh_rate_limits_are_not_permission_denials() {
+        for (stderr, kind) in [
+            ("gh: API rate limit exceeded for user ID 1. (HTTP 403)\n", "rate_limited"),
+            ("gh: API rate limit exceeded for user ID 1. (HTTP 429)\n", "rate_limited"),
+            ("gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)\n", "rate_limited"),
+            ("gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 429)\n", "rate_limited"),
+            ("gh: Resource not accessible by integration (HTTP 403)\n", "permission_denied"),
+            ("gh: Bad credentials (HTTP 401)\n", "permission_denied"),
+            ("gh: Not Found (HTTP 404)\n", "failed"),
+        ] {
+            let outcome = serde_json::to_value(classify_gh_failure(stderr.as_bytes())).unwrap();
+            assert_eq!(outcome["kind"], kind, "{stderr}");
+        }
     }
 
     #[test]
