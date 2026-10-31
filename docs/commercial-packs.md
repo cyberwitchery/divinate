@@ -47,7 +47,7 @@ reevaluation provenance without rewriting earlier results.
 
 ## historical build validation
 
-Core supports two provider-aware named resources for packs:
+Core supports one historical build-validation resource per provider:
 
 - `github/build_validation_history` enumerates merged integration revisions,
   Checks API results, and classic commit statuses;

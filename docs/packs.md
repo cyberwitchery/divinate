@@ -135,10 +135,12 @@ remote plans are provider-aware and deliberately narrow:
 {"acquisition":{"provider":"azure_devops","resource":"branch_policy","max_pages":10}}
 ```
 
-GitHub resources are branch protection, check runs, commit statuses,
-`repository_mutations`, and `pull_request_reviews`. Azure DevOps exposes branch
-policy and the same two historical resource names. the pack supplies no URL, headers,
-or credential. core derives each API URL from verified repository context,
+GitHub resources are `branch_protection`, `check_runs`, `commit_statuses`,
+`repository_mutations`, `pull_request_reviews`, and `build_validation_history`.
+Azure DevOps exposes `branch_policy` and the same three historical resource
+names. the build-validation history resources are described in
+[commercial packs](commercial-packs.md#historical-build-validation). the pack
+supplies no URL, headers, or credential. core derives each API URL from verified repository context,
 scopes authentication to the provider host, disables redirects, and captures
 pagination.
 
