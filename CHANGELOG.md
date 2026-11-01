@@ -42,6 +42,9 @@
   since the previous evaluation, and pair review claims without the interval end
 - report the transport error when a github or azure devops request fails before
   a response
+- verify that a stored acquisition transcript holds every request its collector
+  plans, unfiltered: a trimmed or filtered transcript, or one relabelled as
+  truncated, no longer counts as complete or authoritative coverage
 - keep a github or azure devops error response whose body is not json, such as
   an empty 500 or an html sign-in page, as its classified http failure instead
   of aborting collection

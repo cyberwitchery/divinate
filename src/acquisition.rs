@@ -509,11 +509,7 @@ where
                 if !protected {
                     break AcquisitionTermination::Exhausted;
                 }
-                url = format!(
-                    "{GITHUB_API_ORIGIN}/repos/{}/branches/{}/protection",
-                    options.repository,
-                    percent_encode(&options.branch)
-                );
+                url = format!("{initial_url}/protection");
             }
             GithubRemoteResource::BranchProtection => {
                 break AcquisitionTermination::Exhausted;
@@ -628,23 +624,14 @@ where
         github_repository_lookup(&initial_url, &options.repository, fetch, &mut exchanges)?;
     let alias = alias.as_deref().map(|alias| (initial_url.as_str(), alias));
     if termination.is_none() {
-        let url = format!(
-            "{GITHUB_API_ORIGIN}/repos/{}/activity?ref={}&time_period=year&per_page={}",
-            options.repository,
-            percent_encode(&options.branch),
-            options.per_page,
-        );
+        let url = github_activity_url(options);
         termination = fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
     }
     if termination.is_none() {
         let heads = github_activity_heads(&exchanges, options)?;
         for head in heads {
-            let url = format!(
-                "{GITHUB_API_ORIGIN}/repos/{}/commits/{}/pulls?per_page={}",
-                options.repository,
-                percent_encode(&head),
-                options.per_page,
-            );
+            let url =
+                github_history_url(options, &format!("commits/{}/pulls", percent_encode(&head)));
             termination =
                 fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
             if termination.is_some() {
@@ -654,10 +641,7 @@ where
     }
     if termination.is_none() && options.resource == GithubRemoteResource::PullRequestReviews {
         for number in github_associated_pull_requests(&exchanges) {
-            let url = format!(
-                "{GITHUB_API_ORIGIN}/repos/{}/pulls/{number}/reviews?per_page={}",
-                options.repository, options.per_page,
-            );
+            let url = github_history_url(options, &format!("pulls/{number}/reviews"));
             termination =
                 fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
             if termination.is_some() {
@@ -668,12 +652,8 @@ where
     if termination.is_none() && options.resource == GithubRemoteResource::BuildValidationHistory {
         for revision in github_validation_revisions(&exchanges)? {
             for suffix in ["check-runs", "status"] {
-                let url = format!(
-                    "{GITHUB_API_ORIGIN}/repos/{}/commits/{}/{suffix}?per_page={}",
-                    options.repository,
-                    percent_encode(&revision),
-                    options.per_page,
-                );
+                let path = format!("commits/{}/{suffix}", percent_encode(&revision));
+                let url = github_history_url(options, &path);
                 termination =
                     fetch_github_pages(&url, options.max_pages, fetch, &mut exchanges, alias)?;
                 if termination.is_some() {
@@ -714,6 +694,23 @@ where
         exchanges,
         termination: termination.unwrap_or(AcquisitionTermination::Exhausted),
     })
+}
+
+fn github_activity_url(options: &GithubRemoteCapture) -> String {
+    format!(
+        "{GITHUB_API_ORIGIN}/repos/{}/activity?ref={}&time_period=year&per_page={}",
+        options.repository,
+        percent_encode(&options.branch),
+        options.per_page,
+    )
+}
+
+/// the first page of the history population at `path` below the repository.
+fn github_history_url(options: &GithubRemoteCapture, path: &str) -> String {
+    format!(
+        "{GITHUB_API_ORIGIN}/repos/{}/{path}?per_page={}",
+        options.repository, options.per_page,
+    )
 }
 
 /// fetch every page of one github resource.
@@ -1179,7 +1176,8 @@ where
         ensure_azure_devops_url(&url, &options.organization)?;
         let exchange = fetch(&url)?;
         let status = exchange.response.status;
-        let next = azure_devops_next_url(&url, &exchange.response.headers);
+        let page = u64::try_from(exchanges.len().saturating_sub(1)).unwrap_or(u64::MAX);
+        let next = azure_devops_next_page_url(&exchange, page);
         let body = exchange.response.body.clone();
         let headers = exchange.response.headers.clone();
         exchanges.push(exchange);
@@ -1211,13 +1209,7 @@ where
                     name, options.repository
                 )));
             }
-            url = format!(
-                "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/policy/configurations?repositoryId={}&refName={}&%24top=100&api-version=7.1",
-                percent_encode(&options.organization),
-                percent_encode(&options.project),
-                percent_encode(id),
-                percent_encode(&format!("refs/heads/{}", options.branch)),
-            );
+            url = azure_devops_policy_configurations_url(options, id);
             continue;
         }
         if let Some(next_url) = next {
@@ -1306,11 +1298,7 @@ where
     }
     if termination.is_none() && options.resource == AzureDevopsRemoteResource::PullRequestReviews {
         for number in azure_devops_pull_request_ids(&exchanges) {
-            let url = format!(
-                "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/repositories/{repository_id}/pullRequests/{number}/threads?api-version=7.1",
-                percent_encode(&options.organization),
-                percent_encode(&options.project),
-            );
+            let url = azure_devops_threads_url(options, &repository_id, number);
             let exchange = fetch_azure_exchange(&url, options, fetch)?;
             let status = exchange.response.status;
             let body = exchange.response.body.clone();
@@ -1353,18 +1341,51 @@ where
 {
     let project_id = azure_devops_project_id(&exchanges[0])?;
     for number in azure_devops_pull_request_ids(exchanges) {
-        let artifact = format!("vstfs:///CodeReview/CodeReviewId/{project_id}/{number}");
-        let url = format!(
-            "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/policy/evaluations?artifactId={}&includeNotApplicable=true&%24top=100&%24skip=0&api-version=7.1-preview.1",
-            percent_encode(&options.organization),
-            percent_encode(&options.project),
-            percent_encode(&artifact),
-        );
+        let url = azure_devops_policy_evaluations_url(options, &project_id, number);
         if let Some(termination) = fetch_azure_list_pages(url, options, fetch, exchanges)? {
             return Ok(Some(termination));
         }
     }
     Ok(None)
+}
+
+fn azure_devops_threads_url(
+    options: &AzureDevopsRemoteCapture,
+    repository_id: &str,
+    number: u64,
+) -> String {
+    format!(
+        "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/repositories/{repository_id}/pullRequests/{number}/threads?api-version=7.1",
+        percent_encode(&options.organization),
+        percent_encode(&options.project),
+    )
+}
+
+fn azure_devops_policy_evaluations_url(
+    options: &AzureDevopsRemoteCapture,
+    project_id: &str,
+    number: u64,
+) -> String {
+    let artifact = format!("vstfs:///CodeReview/CodeReviewId/{project_id}/{number}");
+    format!(
+        "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/policy/evaluations?artifactId={}&includeNotApplicable=true&%24top=100&%24skip=0&api-version=7.1-preview.1",
+        percent_encode(&options.organization),
+        percent_encode(&options.project),
+        percent_encode(&artifact),
+    )
+}
+
+fn azure_devops_policy_configurations_url(
+    options: &AzureDevopsRemoteCapture,
+    repository_id: &str,
+) -> String {
+    format!(
+        "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/policy/configurations?repositoryId={}&refName={}&%24top=100&api-version=7.1",
+        percent_encode(&options.organization),
+        percent_encode(&options.project),
+        percent_encode(repository_id),
+        percent_encode(&format!("refs/heads/{}", options.branch)),
+    )
 }
 
 fn azure_devops_repository_url(options: &AzureDevopsRemoteCapture) -> String {
@@ -1468,30 +1489,18 @@ where
     for page in 0..options.max_pages {
         let exchange = fetch_azure_exchange(&url, options, fetch)?;
         let status = exchange.response.status;
+        let next_url = azure_devops_next_page_url(&exchange, u64::from(page));
         let body = exchange.response.body.clone();
         let headers = exchange.response.headers.clone();
         exchanges.push(exchange);
         if status != 200 {
             return Ok(Some(classify_azure_devops_failure(status, &body, &headers)));
         }
-        let count = serde_json::from_str::<serde_json::Value>(&body)
-            .ok()
-            .and_then(|value| {
-                value
-                    .get("value")
-                    .and_then(serde_json::Value::as_array)
-                    .map(Vec::len)
-            })
-            .ok_or_else(|| {
-                Error::Invalid("azure devops list response has no value array".into())
-            })?;
-        let next_url = if let Some(next_url) = azure_devops_next_url(&url, &headers) {
-            Some(next_url)
-        } else if count == 100 {
-            Some(replace_azure_skip(&url, (u64::from(page) + 1) * 100)?)
-        } else {
-            None
-        };
+        if azure_devops_listed_items(&body).is_none() {
+            return Err(Error::Invalid(
+                "azure devops list response has no value array".into(),
+            ));
+        }
         let Some(next_url) = next_url else {
             return Ok(None);
         };
@@ -1503,16 +1512,32 @@ where
     unreachable!()
 }
 
-fn replace_azure_skip(url: &str, skip: u64) -> Result<String> {
+/// the page an azure collector requests after `exchange`, the zero-based `page` of its
+/// population: the continuation token, else the `$skip` step after a full list page.
+fn azure_devops_next_page_url(exchange: &HttpExchange, page: u64) -> Option<String> {
+    let url = &exchange.request.url;
+    azure_devops_next_url(url, &exchange.response.headers).or_else(|| {
+        (azure_devops_listed_items(&exchange.response.body) == Some(100))
+            .then(|| replace_azure_skip(url, (page + 1) * 100))
+            .flatten()
+    })
+}
+
+fn azure_devops_listed_items(body: &str) -> Option<usize> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("value")?
+        .as_array()
+        .map(Vec::len)
+}
+
+fn replace_azure_skip(url: &str, skip: u64) -> Option<String> {
     let marker = "%24skip=";
-    let start = url
-        .find(marker)
-        .ok_or_else(|| Error::Invalid("azure devops list URL has no skip parameter".into()))?;
-    let value_start = start + marker.len();
+    let value_start = url.find(marker)? + marker.len();
     let value_end = url[value_start..]
         .find('&')
         .map_or(url.len(), |offset| value_start + offset);
-    Ok(format!(
+    Some(format!(
         "{}{}{}",
         &url[..value_start],
         skip,
@@ -2059,10 +2084,11 @@ fn assess_enumeration(
     transcript: &AcquisitionTranscript,
     reasons: &mut Vec<String>,
 ) -> EnumerationStatus {
+    let next_pages = next_pages(transcript);
     if is_historical_composite_contract(&transcript.contents.collector_contract) {
-        return assess_composite_enumeration(transcript, reasons);
+        return assess_composite_enumeration(transcript, &next_pages, reasons);
     }
-    if let Some(reason) = invalid_exchange_sequence(transcript) {
+    if let Some(reason) = invalid_exchange_sequence(transcript, &next_pages) {
         reasons.push(reason.into());
         return EnumerationStatus::Failed;
     }
@@ -2073,37 +2099,22 @@ fn assess_enumeration(
             }
             let terminal = exchanges_after_github_lookup(transcript)
                 .last()
-                .is_some_and(|exchange| {
-                    exchange.response.status == 200
-                        && next_request_url(
-                            &transcript.contents.collector_contract,
-                            &exchange.request.url,
-                            &exchange.response.headers,
-                        )
-                        .is_none()
-                });
-            if terminal {
-                EnumerationStatus::Complete
-            } else {
+                .is_some_and(|exchange| exchange.response.status == 200)
+                && next_pages.last().is_some_and(Option::is_none);
+            if !terminal {
                 reasons.push("exhausted transcript lacks a terminal successful response".into());
                 EnumerationStatus::Failed
+            } else if transcript.contents.exchanges.len() == 1
+                && planned_successor(&transcript.contents, None).is_some()
+            {
+                reasons.push("exhausted transcript lacks its planned detail request".into());
+                EnumerationStatus::Failed
+            } else {
+                EnumerationStatus::Complete
             }
         }
         AcquisitionTermination::Truncated { next_url } => {
-            if transcript
-                .contents
-                .exchanges
-                .last()
-                .and_then(|exchange| {
-                    next_request_url(
-                        &transcript.contents.collector_contract,
-                        &exchange.request.url,
-                        &exchange.response.headers,
-                    )
-                })
-                .as_deref()
-                != Some(next_url.as_str())
-            {
+            if !truncated_at(&next_pages, next_url) {
                 reasons.push("truncation next url does not match the last response".into());
                 return EnumerationStatus::Failed;
             }
@@ -2157,15 +2168,18 @@ fn is_historical_composite_contract(contract: &str) -> bool {
 
 fn assess_composite_enumeration(
     transcript: &AcquisitionTranscript,
+    next_pages: &[Option<String>],
     reasons: &mut Vec<String>,
 ) -> EnumerationStatus {
-    if let Some(reason) = invalid_composite_sequence(transcript) {
+    if let Some(reason) = invalid_composite_sequence(transcript, next_pages) {
         reasons.push(reason);
         return EnumerationStatus::Failed;
     }
     match &transcript.contents.termination {
         AcquisitionTermination::Exhausted => {
-            if let Some(reason) = incomplete_composite_population(transcript) {
+            if let Some(reason) = incomplete_composite_population(transcript, next_pages)
+                .or_else(|| unplanned_composite_population(transcript, next_pages))
+            {
                 reasons.push(reason);
                 EnumerationStatus::Failed
             } else {
@@ -2175,6 +2189,12 @@ fn assess_composite_enumeration(
         AcquisitionTermination::Truncated { next_url } => {
             if ensure_provider_url(transcript, next_url).is_err() {
                 reasons.push("truncation next url is outside the provider origin".into());
+                EnumerationStatus::Failed
+            } else if !truncated_at(next_pages, next_url) {
+                reasons.push("truncation next url does not match the last response".into());
+                EnumerationStatus::Failed
+            } else if let Some(reason) = unplanned_composite_population(transcript, next_pages) {
+                reasons.push(reason);
                 EnumerationStatus::Failed
             } else {
                 reasons.push("collection stopped while a next page was available".into());
@@ -2214,7 +2234,10 @@ fn assess_composite_enumeration(
     }
 }
 
-fn invalid_composite_sequence(transcript: &AcquisitionTranscript) -> Option<String> {
+fn invalid_composite_sequence(
+    transcript: &AcquisitionTranscript,
+    next_pages: &[Option<String>],
+) -> Option<String> {
     let Some(first) = transcript.contents.exchanges.first() else {
         return Some("composite acquisition has no exchanges".into());
     };
@@ -2231,17 +2254,12 @@ fn invalid_composite_sequence(transcript: &AcquisitionTranscript) -> Option<Stri
             return Some("historical request does not match the declared repository, branch, interval, or named resource".into());
         }
     }
-    for pair in transcript.contents.exchanges.windows(2) {
-        if let Some(next) = next_request_url(
-            &transcript.contents.collector_contract,
-            &pair[0].request.url,
-            &pair[0].response.headers,
-        ) {
-            if pair[1].request.url != next {
-                return Some(
-                    "response pagination link does not match the following request".into(),
-                );
-            }
+    for (pair, next) in transcript.contents.exchanges.windows(2).zip(next_pages) {
+        if next
+            .as_ref()
+            .is_some_and(|next| pair[1].request.url != *next)
+        {
+            return Some("response pagination link does not match the following request".into());
         }
     }
     None
@@ -2372,170 +2390,274 @@ fn query_parameter<'a>(url: &'a str, name: &str) -> Option<&'a str> {
         .find_map(|(key, value)| (key == name).then_some(value))
 }
 
-fn incomplete_composite_population(transcript: &AcquisitionTranscript) -> Option<String> {
-    let requested = transcript
+fn incomplete_composite_population(
+    transcript: &AcquisitionTranscript,
+    next_pages: &[Option<String>],
+) -> Option<String> {
+    let requested = requested_urls(&transcript.contents.exchanges);
+    if transcript
         .contents
         .exchanges
         .iter()
-        .map(|exchange| exchange.request.url.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    if transcript.contents.exchanges.iter().any(|exchange| {
-        exchange.response.status != 200
-            || next_request_url(
-                &transcript.contents.collector_contract,
-                &exchange.request.url,
-                &exchange.response.headers,
-            )
-            .is_some_and(|next| !requested.contains(next.as_str()))
-    }) {
+        .zip(next_pages)
+        .any(|(exchange, next)| {
+            exchange.response.status != 200
+                || next
+                    .as_deref()
+                    .is_some_and(|next| !requested.contains(next))
+        })
+    {
         return Some(
             "composite acquisition lacks a successful terminal page for a requested population"
                 .into(),
         );
     }
-    if transcript
-        .contents
-        .collector_contract
-        .starts_with("github-")
+    let planned = match planned_history(&transcript.contents) {
+        Ok(planned) => planned,
+        Err(reason) => return Some(reason),
+    };
+    if let Some((_, reason)) = planned
+        .into_iter()
+        .find(|(url, _)| !requested.contains(url.as_str()))
     {
-        complete_github_history_requests(transcript)
-    } else {
-        complete_azure_history_requests(transcript)
+        return Some(reason);
     }
+    incomplete_github_validation_history(&transcript.contents)
 }
 
-fn requested_paths(exchanges: &[HttpExchange]) -> std::collections::BTreeSet<&str> {
+/// a population that does not open with a request the collector plans for this transcript, or a
+/// planned population missing before the last one the transcript reached.
+fn unplanned_composite_population(
+    transcript: &AcquisitionTranscript,
+    next_pages: &[Option<String>],
+) -> Option<String> {
+    let contents = &transcript.contents;
+    let planned = match planned_history(contents) {
+        Ok(planned) => planned,
+        Err(reason) => return Some(reason),
+    };
+    let planned_urls = planned
+        .iter()
+        .map(|(url, _)| url.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let unplanned = contents
+        .exchanges
+        .windows(2)
+        .zip(next_pages)
+        .any(|(pair, next)| {
+            let url = pair[1].request.url.as_str();
+            next.as_deref() != Some(url) && !planned_urls.contains(url)
+        });
+    if unplanned {
+        let provider = if contents.collector_contract.starts_with("github-") {
+            "github"
+        } else {
+            "azure"
+        };
+        return Some(format!(
+            "{provider} history contains a request its collector does not plan"
+        ));
+    }
+    let requested = requested_urls(&contents.exchanges);
+    let reached = planned
+        .iter()
+        .rposition(|(url, _)| requested.contains(url.as_str()))
+        .unwrap_or(0);
+    planned
+        .into_iter()
+        .take(reached + 1)
+        .find(|(url, _)| !requested.contains(url.as_str()))
+        .map(|(_, reason)| reason)
+}
+
+fn requested_urls(exchanges: &[HttpExchange]) -> std::collections::BTreeSet<&str> {
     exchanges
         .iter()
-        .map(|exchange| exchange.request.url.split('?').next().unwrap_or(""))
+        .map(|exchange| exchange.request.url.as_str())
         .collect()
 }
 
-fn complete_github_history_requests(transcript: &AcquisitionTranscript) -> Option<String> {
-    let contents = &transcript.contents;
-    let repository = contents.subject.id.strip_prefix("github:")?;
-    let branch = contents.subject.qualifier("branch")?;
-    let activity_path = format!("{GITHUB_API_ORIGIN}/repos/{repository}/activity");
-    let lookup = format!("{GITHUB_API_ORIGIN}/repos/{repository}");
-    let activity_request = if contents.initial_request.url == lookup {
-        contents.exchanges.get(1).map(|exchange| &exchange.request)
+/// every population's planned first request, in fetch order, with the gap its absence leaves.
+fn planned_history(
+    contents: &TranscriptContents,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    if contents.collector_contract.starts_with("github-") {
+        planned_github_history(contents)
     } else {
-        Some(&contents.initial_request)
-    };
-    if activity_request.and_then(|request| request.url.split('?').next())
-        != Some(activity_path.as_str())
-    {
-        return Some(
-            "github history initial request does not match the repository activity resource".into(),
-        );
+        planned_azure_history(contents)
     }
-    let options = GithubRemoteCapture {
-        repository: repository.into(),
-        branch: branch.into(),
-        revision: String::new(),
-        subject: contents.subject.clone(),
-        interval: contents.requested_scope.clone(),
-        resource: GithubRemoteResource::RepositoryMutations,
-        per_page: 100,
-        max_pages: 1,
-        captured_at: OffsetDateTime::UNIX_EPOCH,
-    };
-    let Ok(heads) = github_activity_heads(&contents.exchanges, &options) else {
-        return Some("github activity population has invalid records".into());
-    };
-    let paths = requested_paths(&contents.exchanges);
-    for head in heads {
-        let path = format!("{GITHUB_API_ORIGIN}/repos/{repository}/commits/{head}/pulls");
-        if !paths.contains(path.as_str()) {
-            return Some(
-                "github history lacks pull-request association enumeration for a branch mutation"
-                    .into(),
-            );
-        }
-    }
-    if contents.collector_contract == GITHUB_PULL_REQUEST_REVIEWS_CONTRACT {
-        for number in github_associated_pull_requests(&contents.exchanges) {
-            let path = format!("{GITHUB_API_ORIGIN}/repos/{repository}/pulls/{number}/reviews");
-            if !paths.contains(path.as_str()) {
-                return Some(
-                    "github history lacks review enumeration for an associated pull request".into(),
-                );
-            }
-        }
-    }
-    if contents.collector_contract == GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT {
-        let Ok(revisions) = github_validation_revisions(&contents.exchanges) else {
-            return Some("github integration population has invalid records".into());
-        };
-        let pages = github_canonical_pages(contents, repository);
-        for revision in revisions {
-            for suffix in ["check-runs", "status"] {
-                let path =
-                    format!("{GITHUB_API_ORIGIN}/repos/{repository}/commits/{revision}/{suffix}");
-                if !paths.contains(path.as_str()) {
-                    return Some(format!(
-                        "github history lacks {suffix} enumeration for an integration revision"
-                    ));
-                }
-            }
-            if let Some(reason) =
-                incomplete_github_validation_population(&pages, repository, &revision)
-            {
-                return Some(reason);
-            }
-        }
-    }
-    None
 }
 
-fn complete_azure_history_requests(transcript: &AcquisitionTranscript) -> Option<String> {
-    let contents = &transcript.contents;
-    let first = contents.exchanges.first()?;
-    let body: serde_json::Value = serde_json::from_str(&first.response.body).ok()?;
-    let Some(id) = body
-        .get("id")
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| is_uuid(id))
-    else {
-        return Some("azure history has no verified repository identifier".into());
+fn github_options(
+    contents: &TranscriptContents,
+    resource: GithubRemoteResource,
+    per_page: u16,
+) -> Option<GithubRemoteCapture> {
+    Some(GithubRemoteCapture {
+        repository: contents.subject.id.strip_prefix("github:")?.into(),
+        branch: contents
+            .subject
+            .qualifier("branch")
+            .unwrap_or_default()
+            .into(),
+        revision: contents
+            .subject
+            .qualifier("revision")
+            .unwrap_or_default()
+            .into(),
+        subject: contents.subject.clone(),
+        interval: contents.requested_scope.clone(),
+        resource,
+        per_page,
+        max_pages: 1,
+        captured_at: OffsetDateTime::UNIX_EPOCH,
+    })
+}
+
+/// the history capture whose activity request opens this transcript's enumeration.
+fn github_history_options(contents: &TranscriptContents) -> Option<GithubRemoteCapture> {
+    let resource = match contents.collector_contract.as_str() {
+        GITHUB_REPOSITORY_MUTATIONS_CONTRACT => GithubRemoteResource::RepositoryMutations,
+        GITHUB_PULL_REQUEST_REVIEWS_CONTRACT => GithubRemoteResource::PullRequestReviews,
+        GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT => GithubRemoteResource::BuildValidationHistory,
+        _ => return None,
     };
-    let prefix = first.request.url.split("/_apis/").next()?;
-    let repository = format!("{prefix}/_apis/git/repositories/{id}");
-    let paths = requested_paths(&contents.exchanges);
-    let pull_path = format!("{repository}/pullrequests");
-    if !paths.contains(pull_path.as_str()) {
-        return Some("azure history lacks completed pull-request enumeration".into());
+    let repository = contents.subject.id.strip_prefix("github:")?;
+    let activity =
+        if contents.initial_request.url == format!("{GITHUB_API_ORIGIN}/repos/{repository}") {
+            &contents.exchanges.get(1)?.request
+        } else {
+            &contents.initial_request
+        };
+    let per_page = query_parameter(&activity.url, "per_page")?.parse().ok()?;
+    github_options(contents, resource, per_page)
+}
+
+fn planned_github_history(
+    contents: &TranscriptContents,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    let mismatch = "github history initial request does not match the repository activity resource";
+    let options = github_history_options(contents).ok_or_else(|| mismatch.to_owned())?;
+    let heads = github_activity_heads(&contents.exchanges, &options)
+        .map_err(|_| "github activity population has invalid records".to_owned())?;
+    let mut planned = vec![(github_activity_url(&options), mismatch.to_owned())];
+    for head in heads {
+        planned.push((
+            github_history_url(
+                &options,
+                &format!("commits/{}/pulls", percent_encode(&head)),
+            ),
+            "github history lacks pull-request association enumeration for a branch mutation"
+                .into(),
+        ));
     }
-    if contents.collector_contract == AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT {
-        let push_path = format!("{repository}/pushes");
-        if !paths.contains(push_path.as_str()) {
-            return Some("azure history lacks branch mutation enumeration".into());
+    if options.resource == GithubRemoteResource::PullRequestReviews {
+        for number in github_associated_pull_requests(&contents.exchanges) {
+            planned.push((
+                github_history_url(&options, &format!("pulls/{number}/reviews")),
+                "github history lacks review enumeration for an associated pull request".into(),
+            ));
         }
-    } else if contents.collector_contract == AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT {
-        for number in azure_devops_pull_request_ids(&contents.exchanges) {
-            let path = format!("{repository}/pullRequests/{number}/threads");
-            if !paths.contains(path.as_str()) {
-                return Some(
-                    "azure history lacks vote-history enumeration for a completed pull request"
-                        .into(),
-                );
+    }
+    if options.resource == GithubRemoteResource::BuildValidationHistory {
+        let revisions = github_validation_revisions(&contents.exchanges)
+            .map_err(|_| "github integration population has invalid records".to_owned())?;
+        for revision in revisions {
+            for suffix in ["check-runs", "status"] {
+                let path = format!("commits/{}/{suffix}", percent_encode(&revision));
+                planned.push((
+                    github_history_url(&options, &path),
+                    format!(
+                        "github history lacks {suffix} enumeration for an integration revision"
+                    ),
+                ));
             }
         }
-    } else if contents.collector_contract == AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT {
-        let policy_path = format!("{prefix}/_apis/policy/evaluations");
-        let artifacts = contents
-            .exchanges
-            .iter()
-            .filter(|exchange| exchange.request.url.split('?').next() == Some(policy_path.as_str()))
-            .filter_map(|exchange| query_parameter(&exchange.request.url, "artifactId"))
-            .collect::<std::collections::BTreeSet<_>>();
-        if artifacts.len() != azure_devops_pull_request_ids(&contents.exchanges).len() {
-            return Some(
-                "azure history lacks policy evaluation for a completed pull request".into(),
-            );
+    }
+    Ok(planned)
+}
+
+fn incomplete_github_validation_history(contents: &TranscriptContents) -> Option<String> {
+    if contents.collector_contract != GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT {
+        return None;
+    }
+    let repository = contents.subject.id.strip_prefix("github:")?;
+    let pages = github_canonical_pages(contents, repository);
+    github_validation_revisions(&contents.exchanges)
+        .ok()?
+        .iter()
+        .find_map(|revision| incomplete_github_validation_population(&pages, repository, revision))
+}
+
+fn azure_devops_options(contents: &TranscriptContents) -> Option<AzureDevopsRemoteCapture> {
+    let resource = match contents.collector_contract.as_str() {
+        AZURE_DEVOPS_BRANCH_POLICY_CONTRACT => AzureDevopsRemoteResource::BranchPolicy,
+        AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT => {
+            AzureDevopsRemoteResource::RepositoryMutations
+        }
+        AZURE_DEVOPS_PULL_REQUEST_REVIEWS_CONTRACT => AzureDevopsRemoteResource::PullRequestReviews,
+        AZURE_DEVOPS_BUILD_VALIDATION_HISTORY_CONTRACT => {
+            AzureDevopsRemoteResource::BuildValidationHistory
+        }
+        _ => return None,
+    };
+    let identity = contents.subject.id.strip_prefix("azure-devops:")?;
+    let parts = identity.split('/').collect::<Vec<_>>();
+    let [organization, project, repository] = parts.as_slice() else {
+        return None;
+    };
+    Some(AzureDevopsRemoteCapture {
+        organization: (*organization).into(),
+        project: (*project).into(),
+        repository: (*repository).into(),
+        branch: contents.subject.qualifier("branch")?.into(),
+        resource,
+        subject: contents.subject.clone(),
+        interval: contents.requested_scope.clone(),
+        max_pages: 1,
+        captured_at: OffsetDateTime::UNIX_EPOCH,
+    })
+}
+
+fn planned_azure_history(
+    contents: &TranscriptContents,
+) -> std::result::Result<Vec<(String, String)>, String> {
+    let unverified = || "azure history has no verified repository identifier".to_owned();
+    let options = azure_devops_options(contents).ok_or_else(unverified)?;
+    let repository = contents.exchanges.first().ok_or_else(unverified)?;
+    let repository_id =
+        azure_devops_repository_id(&options, repository).map_err(|_| unverified())?;
+    let mut planned = Vec::new();
+    if options.resource == AzureDevopsRemoteResource::RepositoryMutations {
+        planned.push((
+            azure_devops_pushes_url(&options, &repository_id, 0),
+            "azure history lacks branch mutation enumeration".to_owned(),
+        ));
+    }
+    planned.push((
+        azure_devops_pull_requests_url(&options, &repository_id, 0),
+        "azure history lacks completed pull-request enumeration".into(),
+    ));
+    let pulls = azure_devops_pull_request_ids(&contents.exchanges);
+    if options.resource == AzureDevopsRemoteResource::PullRequestReviews {
+        for &number in &pulls {
+            planned.push((
+                azure_devops_threads_url(&options, &repository_id, number),
+                "azure history lacks vote-history enumeration for a completed pull request".into(),
+            ));
         }
     }
-    None
+    if options.resource == AzureDevopsRemoteResource::BuildValidationHistory && !pulls.is_empty() {
+        let project_id = azure_devops_project_id(repository)
+            .map_err(|_| "azure history has no verified project identifier".to_owned())?;
+        for number in pulls {
+            planned.push((
+                azure_devops_policy_evaluations_url(&options, &project_id, number),
+                "azure history lacks policy evaluation for a completed pull request".into(),
+            ));
+        }
+    }
+    Ok(planned)
 }
 
 fn github_canonical_pages<'a>(
@@ -2621,7 +2743,10 @@ fn ensure_provider_url(transcript: &AcquisitionTranscript, url: &str) -> Result<
     }
 }
 
-fn invalid_exchange_sequence(transcript: &AcquisitionTranscript) -> Option<&'static str> {
+fn invalid_exchange_sequence(
+    transcript: &AcquisitionTranscript,
+    next_pages: &[Option<String>],
+) -> Option<&'static str> {
     if transcript
         .contents
         .exchanges
@@ -2651,51 +2776,74 @@ fn invalid_exchange_sequence(transcript: &AcquisitionTranscript) -> Option<&'sta
             return Some("github pagination changed the requested resource");
         }
     }
-    for (index, pair) in transcript.contents.exchanges.windows(2).enumerate() {
-        let planned_github_page = index == 0 && looked_up.is_some();
-        let planned_branch_detail = transcript.contents.collector_contract
-            == GITHUB_BRANCH_PROTECTION_CONTRACT
-            && pair[1].request.url == format!("{}/protection", pair[0].request.url);
-        let planned_azure_policy = transcript.contents.collector_contract
-            == AZURE_DEVOPS_BRANCH_POLICY_CONTRACT
-            && azure_policy_url_from_repository_exchange(
-                &pair[0],
-                transcript.contents.subject.qualifier("branch"),
-            )
-            .as_deref()
-                == Some(pair[1].request.url.as_str());
-        if !planned_github_page
-            && !planned_branch_detail
-            && !planned_azure_policy
-            && next_request_url(
-                &transcript.contents.collector_contract,
-                &pair[0].request.url,
-                &pair[0].response.headers,
-            )
-            .as_deref()
-                != Some(pair[1].request.url.as_str())
-        {
+    for (index, (pair, next)) in transcript
+        .contents
+        .exchanges
+        .windows(2)
+        .zip(next_pages)
+        .enumerate()
+    {
+        let planned = (index == 0)
+            .then(|| planned_successor(&transcript.contents, Some(&pair[1])))
+            .flatten();
+        if planned.is_some() && planned.as_deref() != Some(pair[1].request.url.as_str()) {
+            return Some("request does not match the one its collector plans");
+        }
+        if planned.is_none() && next.as_deref() != Some(pair[1].request.url.as_str()) {
             return Some("response pagination link does not match the following request");
         }
     }
     None
 }
 
-fn azure_policy_url_from_repository_exchange(
-    exchange: &HttpExchange,
-    branch: Option<&str>,
+/// the request a single-resource collector plans after its first exchange: the first page after
+/// a repository lookup, or a protected branch's or a repository's policy detail.
+fn planned_successor(
+    contents: &TranscriptContents,
+    following: Option<&HttpExchange>,
 ) -> Option<String> {
-    if !exchange.request.url.contains("/_apis/git/repositories/") {
-        return None;
+    let first = contents
+        .exchanges
+        .first()
+        .filter(|first| first.response.status == 200)?;
+    match contents.collector_contract.as_str() {
+        GITHUB_BRANCH_PROTECTION_CONTRACT => {
+            let options = github_options(contents, GithubRemoteResource::BranchProtection, 1)?;
+            let body = serde_json::from_str::<serde_json::Value>(&first.response.body).ok()?;
+            (first.request.url == github_remote_request(&options).2
+                && body.get("protected") == Some(&serde_json::Value::Bool(true)))
+            .then(|| format!("{}/protection", first.request.url))
+        }
+        AZURE_DEVOPS_BRANCH_POLICY_CONTRACT => {
+            let options = azure_devops_options(contents)?;
+            let repository_id = azure_devops_repository_id(&options, first).ok()?;
+            Some(azure_devops_policy_configurations_url(
+                &options,
+                &repository_id,
+            ))
+        }
+        contract => {
+            github_looked_up_resource(contents)?;
+            let per_page = query_parameter(&following?.request.url, "per_page")?
+                .parse()
+                .ok()?;
+            let resource = match contract {
+                GITHUB_CHECK_RUNS_CONTRACT => GithubRemoteResource::CheckRuns,
+                GITHUB_COMMIT_STATUSES_CONTRACT => GithubRemoteResource::CommitStatuses,
+                _ => {
+                    return Some(commits_url(&GithubCapture {
+                        repository: contents.subject.id.strip_prefix("github:")?.into(),
+                        branch: contents.subject.qualifier("branch")?.into(),
+                        interval: contents.requested_scope.clone(),
+                        per_page,
+                        max_pages: 1,
+                        captured_at: OffsetDateTime::UNIX_EPOCH,
+                    }));
+                }
+            };
+            Some(github_remote_request(&github_options(contents, resource, per_page)?).2)
+        }
     }
-    let body: serde_json::Value = serde_json::from_str(&exchange.response.body).ok()?;
-    let id = body.get("id")?.as_str().filter(|id| is_uuid(id))?;
-    let prefix = exchange.request.url.split("/_apis/").next()?;
-    Some(format!(
-        "{prefix}/_apis/git/policy/configurations?repositoryId={}&refName={}&%24top=100&api-version=7.1",
-        percent_encode(id),
-        percent_encode(&format!("refs/heads/{}", branch?)),
-    ))
 }
 
 fn assess_github_result_count(
@@ -2756,16 +2904,35 @@ fn contract_authority(contract: &str) -> Vec<Proposition> {
     }
 }
 
-fn next_request_url(
-    contract: &str,
-    current: &str,
-    headers: &BTreeMap<String, String>,
-) -> Option<String> {
-    if contract.starts_with("azure-devops-") {
-        azure_devops_next_url(current, headers)
+/// the page the collector requests after `exchange`, the zero-based `page` of its population.
+fn next_page_url(contract: &str, exchange: &HttpExchange, page: u64) -> Option<String> {
+    if exchange.response.status != 200 {
+        None
+    } else if contract.starts_with("azure-devops-") {
+        azure_devops_next_page_url(exchange, page)
     } else {
-        next_link(headers)
+        next_link(&exchange.response.headers)
     }
+}
+
+/// the next page of every exchange, counting pages along each population's chain.
+fn next_pages(transcript: &AcquisitionTranscript) -> Vec<Option<String>> {
+    let contract = transcript.contents.collector_contract.as_str();
+    let mut next_pages = Vec::<Option<String>>::new();
+    let mut page = 0;
+    for exchange in &transcript.contents.exchanges {
+        let continues = next_pages
+            .last()
+            .and_then(Option::as_deref)
+            .is_some_and(|next| next == exchange.request.url);
+        page = if continues { page + 1 } else { 0 };
+        next_pages.push(next_page_url(contract, exchange, page));
+    }
+    next_pages
+}
+
+fn truncated_at(next_pages: &[Option<String>], next_url: &str) -> bool {
+    next_pages.last().and_then(Option::as_deref) == Some(next_url)
 }
 
 fn json_item_count(value: &serde_json::Value) -> u64 {
@@ -4037,6 +4204,517 @@ mod tests {
                     "{status} {body:?} {reasons:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn altered_transcripts_cannot_claim_the_collector_plan() {
+        const DIRECT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const MERGE: &str = "cccccccccccccccccccccccccccccccccccccccc";
+        let reseal = |transcript: &AcquisitionTranscript,
+                      alter: &dyn Fn(&mut TranscriptContents)| {
+            let mut contents = transcript.contents.clone();
+            alter(&mut contents);
+            seal_transcript(contents).unwrap()
+        };
+        let history = |url: &str| {
+            let activity = |id, kind, head| {
+                format!(
+                    r#"[{{"id":{id},"ref":"refs/heads/main","timestamp":"2026-09-11T1{id}:00:00Z","after":"{head}","activity_type":"{kind}"}}]"#
+                )
+            };
+            Ok(github_lookup(url).unwrap_or_else(|| {
+                if url.ends_with("&after=cursor2") {
+                    exchange(url, 200, &activity(2, "pr_merge", MERGE), BTreeMap::new())
+                } else if url.contains("/activity?") {
+                    let next = format!("<{url}&after=cursor2>; rel=\"next\"");
+                    let headers = BTreeMap::from([("link".into(), next)]);
+                    exchange(url, 200, &activity(1, "push", DIRECT), headers)
+                } else if url.contains(&format!("/commits/{MERGE}/pulls?")) {
+                    let pulls = format!(r#"[{{"number":7,"merge_commit_sha":"{MERGE}","head":{{"sha":"{REVISION}"}}}}]"#);
+                    exchange(url, 200, &pulls, BTreeMap::new())
+                } else if url.contains("/reviews?") {
+                    exchange(url, 403, r#"{"message":"Resource not accessible"}"#, BTreeMap::new())
+                } else if url.contains("/check-runs?") {
+                    exchange(url, 200, r#"{"total_count":2,"check_runs":[{"name":"lint"},{"name":"build"}]}"#, BTreeMap::new())
+                } else if url.ends_with("/protection") {
+                    exchange(url, 200, r#"{"required_signatures":{"enabled":true}}"#, BTreeMap::new())
+                } else if url.contains("/branches/") {
+                    exchange(url, 200, r#"{"protected":true}"#, BTreeMap::new())
+                } else {
+                    exchange(url, 200, "[]", BTreeMap::new())
+                }
+            }))
+        };
+        let github = |resource, max_pages| {
+            let options = GithubRemoteCapture {
+                max_pages,
+                ..remote(resource)
+            };
+            capture_github_remote_with(&options, history).unwrap()
+        };
+        let commits = capture_github_commits_with(
+            &GithubCapture {
+                repository: "cyberwitchery/divinate".into(),
+                branch: "main".into(),
+                interval: remote(GithubRemoteResource::CheckRuns).interval,
+                per_page: 100,
+                max_pages: 10,
+                captured_at: OffsetDateTime::UNIX_EPOCH,
+            },
+            |url| {
+                let (head, body) = if url == "https://api.github.com/repos/cyberwitchery/divinate" {
+                    (
+                        String::new(),
+                        r#"{"id":123,"full_name":"cyberwitchery/divinate"}"#,
+                    )
+                } else if url.contains("/repos/") {
+                    let next = url.replace("/repos/cyberwitchery/divinate/", "/repositories/123/");
+                    (
+                        format!(
+                            "link: <{}>; rel=\"next\"\n",
+                            next.replace("page=1", "page=2")
+                        ),
+                        r#"[{"sha":"one"}]"#,
+                    )
+                } else {
+                    (String::new(), r#"[{"sha":"two"}]"#)
+                };
+                Ok(std::process::Output {
+                    status: std::process::ExitStatus::default(),
+                    stdout: format!("HTTP/2.0 200 OK\n{head}\n{body}").into_bytes(),
+                    stderr: vec![],
+                })
+            },
+        )
+        .unwrap();
+        let full = (0..100)
+            .map(|id| format!(r#"{{"pushId":{id}}}"#))
+            .collect::<Vec<_>>();
+        let full = format!(r#"{{"value":[{}]}}"#, full.join(","));
+        let azure = |resource, max_pages| {
+            let options = AzureDevopsRemoteCapture {
+                resource,
+                max_pages,
+                ..azure_remote()
+            };
+            let mut fetch = |url: &str| {
+                let body = if url.contains("/pushes?") && url.contains("%24skip=200") {
+                    r#"{"value":[{"pushId":200}]}"#
+                } else if url.contains("/pushes?") {
+                    full.as_str()
+                } else if url.contains("/pullrequests?") {
+                    r#"{"value":[{"pullRequestId":1},{"pullRequestId":2}]}"#
+                } else if url.contains("/threads?") || url.contains("/evaluations?") {
+                    r#"{"value":[{"id":1}]}"#
+                } else if url.contains("/configurations?") {
+                    r#"{"value":[{"id":1,"isBlocking":true}]}"#
+                } else {
+                    r#"{"id":"11111111-2222-3333-4444-555555555555","name":"example-repository","project":{"id":"22222222-3333-4444-5555-666666666666"}}"#
+                };
+                Ok(exchange(url, 200, body, BTreeMap::new()))
+            };
+            if resource == AzureDevopsRemoteResource::BranchPolicy {
+                capture_azure_devops_branch_policy_with(&options, fetch).unwrap()
+            } else {
+                capture_azure_devops_history_with(&options, &mut fetch).unwrap()
+            }
+        };
+        let mutations = github(GithubRemoteResource::RepositoryMutations, 10);
+        let truncated = github(GithubRemoteResource::RepositoryMutations, 1);
+        let denied = github(GithubRemoteResource::PullRequestReviews, 10);
+        let runs = github(GithubRemoteResource::CheckRuns, 10);
+        let protection = github(GithubRemoteResource::BranchProtection, 10);
+        let pushes = azure(AzureDevopsRemoteResource::RepositoryMutations, 10);
+        let skipped = azure(AzureDevopsRemoteResource::RepositoryMutations, 1);
+        let votes = azure(AzureDevopsRemoteResource::PullRequestReviews, 10);
+        let evaluations = azure(AzureDevopsRemoteResource::BuildValidationHistory, 10);
+        let policy = azure(AzureDevopsRemoteResource::BranchPolicy, 10);
+        let chain = |resource, paged: &str| {
+            let heads = [DIRECT, MERGE, "dddddddddddddddddddddddddddddddddddddddd"];
+            let options = GithubRemoteCapture {
+                max_pages: 1,
+                ..remote(resource)
+            };
+            capture_github_remote_with(&options, |url: &str| {
+                if let Some(lookup) = github_lookup(url) {
+                    return Ok(lookup);
+                }
+                let body = if url.contains("/activity?") {
+                    let records = heads.map(|head| {
+                        format!(r#"{{"ref":"refs/heads/main","timestamp":"2026-09-11T10:00:00Z","after":"{head}"}}"#)
+                    });
+                    format!("[{}]", records.join(","))
+                } else if let Some(n) = heads
+                    .iter()
+                    .position(|head| url.contains(&format!("/commits/{head}/pulls?")))
+                {
+                    format!(r#"[{{"number":{}}}]"#, n + 7)
+                } else {
+                    "[]".into()
+                };
+                let mut headers = BTreeMap::new();
+                if url.contains(paged) {
+                    headers.insert("link".into(), format!("<{url}&page=2>; rel=\"next\""));
+                }
+                Ok(exchange(url, 200, &body, headers))
+            })
+            .unwrap()
+        };
+        let reviewed = chain(
+            GithubRemoteResource::PullRequestReviews,
+            "/pulls/9/reviews?",
+        );
+        let pulled = chain(
+            GithubRemoteResource::RepositoryMutations,
+            &format!("/commits/{MERGE}/pulls?"),
+        );
+        let evaluated = capture_azure_devops_history_with(
+            &AzureDevopsRemoteCapture {
+                resource: AzureDevopsRemoteResource::BuildValidationHistory,
+                max_pages: 1,
+                ..azure_remote()
+            },
+            &mut |url: &str| {
+                let body = if url.contains("/pullrequests?") {
+                    r#"{"value":[{"pullRequestId":1},{"pullRequestId":2},{"pullRequestId":3}]}"#
+                } else if url.contains("%2F3&") {
+                    full.as_str()
+                } else if url.contains("/evaluations?") {
+                    r#"{"value":[{"id":1}]}"#
+                } else {
+                    r#"{"id":"11111111-2222-3333-4444-555555555555","name":"example-repository","project":{"id":"22222222-3333-4444-5555-666666666666"}}"#
+                };
+                Ok(exchange(url, 200, body, BTreeMap::new()))
+            },
+        )
+        .unwrap();
+        let complete = EnumerationStatus::Complete;
+        for (transcript, expected) in [
+            (
+                &commits,
+                (complete, vec![Proposition::CommitAncestry], 2, 2),
+            ),
+            (&runs, (complete, vec![Proposition::RevisionChecks], 1, 2)),
+            (
+                &protection,
+                (complete, vec![Proposition::BranchConfiguration], 2, 2),
+            ),
+            (
+                &mutations,
+                (complete, vec![Proposition::RepositoryMutations], 4, 3),
+            ),
+            (
+                &truncated,
+                (
+                    EnumerationStatus::Truncated,
+                    vec![Proposition::RepositoryMutations],
+                    1,
+                    1,
+                ),
+            ),
+            (&denied, (EnumerationStatus::PermissionDenied, vec![], 5, 4)),
+            (
+                &pushes,
+                (complete, vec![Proposition::RepositoryMutations], 4, 203),
+            ),
+            (
+                &skipped,
+                (
+                    EnumerationStatus::Truncated,
+                    vec![Proposition::RepositoryMutations],
+                    1,
+                    100,
+                ),
+            ),
+            (
+                &votes,
+                (complete, vec![Proposition::PullRequestReviews], 3, 4),
+            ),
+            (
+                &evaluations,
+                (complete, vec![Proposition::BuildValidationResults], 3, 4),
+            ),
+            (
+                &policy,
+                (complete, vec![Proposition::BranchConfiguration], 1, 1),
+            ),
+            (
+                &reviewed,
+                (
+                    EnumerationStatus::Truncated,
+                    vec![Proposition::PullRequestReviews],
+                    7,
+                    6,
+                ),
+            ),
+            (
+                &pulled,
+                (
+                    EnumerationStatus::Truncated,
+                    vec![Proposition::RepositoryMutations],
+                    3,
+                    5,
+                ),
+            ),
+            (
+                &evaluated,
+                (
+                    EnumerationStatus::Truncated,
+                    vec![Proposition::BuildValidationResults],
+                    4,
+                    105,
+                ),
+            ),
+        ] {
+            let assessment = assess(transcript, &ContractRegistry::default());
+            let actual = (
+                assessment.enumeration,
+                assessment.authority,
+                assessment.pages,
+                assessment.items,
+            );
+            assert_eq!(
+                actual, expected,
+                "{}",
+                transcript.contents.collector_contract
+            );
+        }
+
+        let url = |transcript: &AcquisitionTranscript, part: &str| {
+            transcript
+                .contents
+                .exchanges
+                .iter()
+                .position(|exchange| exchange.request.url.contains(part))
+                .unwrap()
+        };
+        let pulls = format!("/commits/{DIRECT}/pulls");
+        for (gap, transcript) in [
+            (
+                "azure $skip page dropped",
+                reseal(&pushes, &|c| {
+                    c.exchanges.remove(url(&pushes, "%24skip=100"));
+                }),
+            ),
+            (
+                "truncation onto another resource",
+                reseal(&truncated, &|c| {
+                    c.termination = AcquisitionTermination::Truncated {
+                        next_url: "https://api.github.com/repos/someone/else/pulls?page=9".into(),
+                    };
+                }),
+            ),
+            (
+                "denied run relabelled truncated",
+                reseal(&denied, &|c| {
+                    let denied = c.exchanges.last_mut().unwrap();
+                    let next_url = format!("{}&page=2", denied.request.url);
+                    let link = format!("<{next_url}>; rel=\"next\"");
+                    denied.response.headers.insert("link".into(), link);
+                    c.termination = AcquisitionTermination::Truncated { next_url };
+                }),
+            ),
+            (
+                "first activity page dropped",
+                reseal(&mutations, &|c| {
+                    c.exchanges.retain(|e| {
+                        !e.request.url.ends_with("per_page=100")
+                            || !e.request.url.contains("/activity?")
+                    });
+                    c.exchanges.retain(|e| !e.request.url.contains(&pulls));
+                }),
+            ),
+            (
+                "activity filtered",
+                reseal(&mutations, &|c| {
+                    let filtered = format!("{}&activity_type=pr_merge", c.exchanges[1].request.url);
+                    let merge = c.exchanges[2].response.body.clone();
+                    c.exchanges.retain(|e| {
+                        !e.request.url.contains("/activity?") && !e.request.url.contains(&pulls)
+                    });
+                    c.exchanges
+                        .insert(1, exchange(&filtered, 200, &merge, BTreeMap::new()));
+                }),
+            ),
+            (
+                "first commit page dropped",
+                reseal(&commits, &|c| {
+                    c.exchanges.remove(1);
+                }),
+            ),
+            (
+                "commits from another branch and window",
+                reseal(&commits, &|c| {
+                    let other = c.exchanges[1]
+                        .request
+                        .url
+                        .replace("sha=main", "sha=release")
+                        .replace("since=2026-09-11T00", "since=2026-09-11T23");
+                    c.exchanges.truncate(1);
+                    c.exchanges
+                        .push(exchange(&other, 200, "[]", BTreeMap::new()));
+                }),
+            ),
+            (
+                "check runs filtered by name",
+                reseal(&runs, &|c| {
+                    let lint = c.exchanges[1]
+                        .request
+                        .url
+                        .replace("check-runs?", "check-runs?check_name=lint&");
+                    c.exchanges[1] = exchange(
+                        &lint,
+                        200,
+                        r#"{"total_count":1,"check_runs":[{"name":"lint"}]}"#,
+                        BTreeMap::new(),
+                    );
+                }),
+            ),
+            (
+                "pull requests narrowed",
+                reseal(&votes, &|c| {
+                    let index = url(&votes, "/pullrequests?");
+                    let narrowed = c.exchanges[index]
+                        .request
+                        .url
+                        .replace("minTime=2026-09-11T00", "minTime=2026-09-11T23")
+                        + "&searchCriteria.creatorId=33333333-4444-5555-6666-777777777777";
+                    c.exchanges[index] =
+                        exchange(&narrowed, 200, r#"{"value":[]}"#, BTreeMap::new());
+                    c.exchanges.retain(|e| !e.request.url.contains("/threads?"));
+                }),
+            ),
+            (
+                "vote history of an unlisted pull request",
+                reseal(&votes, &|c| {
+                    let threads = &c.exchanges.last().unwrap().request.url;
+                    let other = threads.replace("/pullRequests/2/", "/pullRequests/999/");
+                    c.exchanges
+                        .push(exchange(&other, 200, r#"{"value":[]}"#, BTreeMap::new()));
+                }),
+            ),
+            (
+                "pushes filtered by pusher",
+                reseal(&pushes, &|c| {
+                    let filtered = c.exchanges[1].request.url.replace(
+                        "includeRefUpdates=true",
+                        "pusherId=33333333-4444-5555-6666-777777777777",
+                    );
+                    c.exchanges.retain(|e| !e.request.url.contains("/pushes?"));
+                    c.exchanges.insert(
+                        1,
+                        exchange(&filtered, 200, r#"{"value":[]}"#, BTreeMap::new()),
+                    );
+                }),
+            ),
+            (
+                "filtered pushes cut at a full page",
+                reseal(&skipped, &|c| {
+                    let filtered = c.exchanges[1].request.url.replace(
+                        "includeRefUpdates=true",
+                        "pusherId=33333333-4444-5555-6666-777777777777",
+                    );
+                    let next_url = filtered.replace("%24skip=0", "%24skip=100");
+                    c.exchanges[1].request.url = filtered;
+                    c.termination = AcquisitionTermination::Truncated { next_url };
+                }),
+            ),
+            (
+                "evaluation from another project",
+                reseal(&evaluations, &|c| {
+                    let index = url(&evaluations, "%2F2&");
+                    let other = c.exchanges[index]
+                        .request
+                        .url
+                        .replace("22222222-3333", "99999999-3333");
+                    c.exchanges[index].request.url = other;
+                }),
+            ),
+            (
+                "evaluation of another pull request",
+                reseal(&evaluations, &|c| {
+                    let index = url(&evaluations, "%2F2&");
+                    let other = c.exchanges[index].request.url.replace("%2F2&", "%2F999&");
+                    c.exchanges[index].request.url = other;
+                }),
+            ),
+            (
+                "protection detail dropped",
+                reseal(&protection, &|c| c.exchanges.truncate(1)),
+            ),
+            (
+                "policy configurations dropped",
+                reseal(&policy, &|c| c.exchanges.truncate(1)),
+            ),
+            (
+                "earlier pull request's reviews dropped before the cut",
+                reseal(&reviewed, &|c| {
+                    c.exchanges.remove(url(&reviewed, "/pulls/8/reviews?"));
+                }),
+            ),
+            (
+                "earlier pull request's evaluation dropped before the cut",
+                reseal(&evaluated, &|c| {
+                    c.exchanges.remove(url(&evaluated, "%2F2&"));
+                }),
+            ),
+            (
+                "earlier head's pulls dropped before the cut",
+                reseal(&pulled, &|c| {
+                    c.exchanges.remove(url(&pulled, &pulls));
+                }),
+            ),
+            (
+                "repository lookup alone relabelled truncated",
+                reseal(&skipped, &|c| {
+                    let next_url = format!("{}&continuationToken=t", c.initial_request.url);
+                    c.exchanges.truncate(1);
+                    let token = ("x-ms-continuationtoken".into(), "t".into());
+                    c.exchanges[0].response.headers.extend([token]);
+                    c.termination = AcquisitionTermination::Truncated { next_url };
+                }),
+            ),
+            (
+                "denied run relabelled exhausted",
+                reseal(&denied, &|c| {
+                    c.termination = AcquisitionTermination::Exhausted;
+                }),
+            ),
+            (
+                "denied protection detail relabelled exhausted",
+                reseal(&protection, &|c| {
+                    let detail = c.exchanges[1].request.url.clone();
+                    c.exchanges[1] =
+                        exchange(&detail, 403, r#"{"message":"Forbidden"}"#, BTreeMap::new());
+                }),
+            ),
+            (
+                "last commit page dropped",
+                reseal(&commits, &|c| {
+                    c.exchanges.pop();
+                }),
+            ),
+            (
+                "protected branch moved to another branch",
+                reseal(&protection, &|c| {
+                    let moved = |url: &str| url.replace("/branches/main", "/branches/release");
+                    c.initial_request.url = moved(&c.initial_request.url);
+                    for exchange in &mut c.exchanges {
+                        exchange.request.url = moved(&exchange.request.url);
+                    }
+                }),
+            ),
+        ] {
+            let assessment = assess(&transcript, &ContractRegistry::default());
+            assert!(
+                assessment.enumeration != EnumerationStatus::Complete
+                    && assessment.authority.is_empty(),
+                "{gap}: {:?} {:?}",
+                assessment.enumeration,
+                assessment.reasons
+            );
         }
     }
 }
