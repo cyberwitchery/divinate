@@ -73,3 +73,8 @@
   refused redirect to azure's sign-in page
 - report a github secondary rate limit, and any rate limit `gh` reports, as rate
   limited instead of as permission denied or a failed collection
+- decide `every_main_change_reviewed` the same in every observation order when
+  several retained records cover one pull request: an incomplete review history
+  no longer overrides a complete one, and records that reach different
+  conclusions leave the claim with insufficient evidence instead of the
+  last-sorted record deciding
