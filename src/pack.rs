@@ -28,7 +28,7 @@ use crate::coverage::{self, CoverageDecision, CoverageOutcome};
 use crate::error::{Error, Result};
 use crate::execution::{BlobRef, ExecutionRequest, NamedPath};
 use crate::model::{EvidenceClass, ObservationKind, Proposition, Severity, Status, Subject};
-use crate::{canonical_json, hex_digest};
+use crate::{canonical_json, credential_like, hex_digest};
 
 /// the pack protocol version this build speaks.
 ///
@@ -945,11 +945,7 @@ fn reject_sensitive_configuration(value: &Value, path: &str) -> Result<()> {
     match value {
         Value::Object(values) => {
             for (key, value) in values {
-                let lowered = key.to_ascii_lowercase();
-                if ["token", "password", "secret", "credential", "authorization"]
-                    .iter()
-                    .any(|word| lowered.contains(word))
-                {
+                if credential_like(key) {
                     return Err(Error::Invalid(format!(
                         "refusing to retain credential-like pack configuration key {path}.{key}"
                     )));

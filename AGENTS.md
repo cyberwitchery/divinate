@@ -42,7 +42,7 @@ this is a security tool. when modifying:
 
 - never execute untrusted code from analyzed projects
 - validate all external tool output before parsing
-- do not retain credentials: authorization headers, cookies, and credential-like argv are refused, not redacted
+- do not retain credentials: authorization headers, cookies, and credential-like argv and environment names are refused, not redacted
 - stdout and stderr are retained byte-exact and unredacted, so never route a secret-printing tool through `run`
 
 ## testing

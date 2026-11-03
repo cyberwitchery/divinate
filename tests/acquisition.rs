@@ -128,6 +128,38 @@ fn response_tampering_is_detected_offline() {
 }
 
 #[test]
+fn credential_bearing_response_headers_fail_verification() {
+    for (header, verified) in [
+        ("authorization", false),
+        ("cookie", false),
+        ("set-cookie", false),
+        ("etag", true),
+    ] {
+        let mut exchange = response("page-1", "[]", None);
+        exchange
+            .response
+            .headers
+            .insert(header.into(), "session=value".into());
+        let transcript =
+            seal_transcript(contents(vec![exchange], AcquisitionTermination::Exhausted)).unwrap();
+        let assessment = assess(&transcript, &ContractRegistry::default());
+        assert_eq!(
+            assessment.integrity == IntegrityStatus::Verified,
+            verified,
+            "{header}"
+        );
+        assert_eq!(
+            assessment
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("credential-bearing header")),
+            !verified,
+            "{header}"
+        );
+    }
+}
+
+#[test]
 fn unsupported_transcript_schema_is_rejected() {
     let mut transcript = seal_transcript(contents(
         vec![response("page-1", "[]", None)],

@@ -2,7 +2,8 @@
 //!
 //! [`capture`] records executable identity, argv, named inputs and outputs, exit
 //! status, and exact streams. commands receive an empty environment plus explicit
-//! values. credential-like arguments are rejected and streams are not redacted.
+//! values. credential-like arguments and environment names are rejected, and
+//! streams are not redacted.
 //! [`verify`] checks the transcript and every referenced blob offline.
 
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
-use crate::{hex_digest, parse_timestamp};
+use crate::{credential_like, hex_digest, parse_timestamp};
 
 /// the execution transcript format version this build reads and writes.
 pub const TRANSCRIPT_SCHEMA_VERSION: &str = "0.1.0";
@@ -112,7 +113,8 @@ pub struct NamedPath {
 /// what to run and what to retain.
 ///
 /// the command runs with an empty environment plus `environment`. ambient
-/// environment is neither passed nor recorded, and credential-like arguments are refused.
+/// environment is neither passed nor recorded, and credential-like arguments and
+/// environment names are refused.
 pub struct ExecutionRequest {
     pub tool_name: String,
     pub reported_version: Option<String>,
@@ -154,8 +156,9 @@ pub enum Integrity {
 ///
 /// # Errors
 ///
-/// returns an error when an input cannot be read, an argument appears to contain a
-/// credential, the command cannot start, or a declared output is absent.
+/// returns an error when an input cannot be read, an argument or environment name
+/// appears to contain a credential, the command cannot start, or a declared output
+/// is absent.
 pub fn capture(request: &ExecutionRequest) -> Result<ExecutionCapture> {
     validate_request(request)?;
     let executable_bytes = read_bytes(&request.executable)?;
@@ -315,18 +318,38 @@ fn validate_request(request: &ExecutionRequest) -> Result<()> {
     if request.tool_name.trim().is_empty() {
         return Err(Error::Invalid("tool name must not be empty".into()));
     }
-    let sensitive = ["token", "password", "secret", "authorization", "credential"];
-    for argument in &request.argv {
+    for (position, argument) in request.argv.iter().enumerate() {
+        if request
+            .inputs
+            .iter()
+            .chain(&request.outputs)
+            .any(|named| named.path.as_os_str() == argument.as_str())
+        {
+            continue;
+        }
         let option = argument
             .trim_start_matches('-')
             .split_once('=')
-            .map_or(argument.as_str(), |(name, _)| name)
-            .to_ascii_lowercase();
-        if sensitive.iter().any(|word| option.contains(word)) {
+            .map_or(argument.as_str(), |(name, _)| name);
+        if credential_like(option) {
+            let name = argument
+                .split_once('=')
+                .filter(|(name, _)| name.starts_with("--"))
+                .map_or_else(String::new, |(name, _)| format!(" ({name})"));
             return Err(Error::Invalid(format!(
-                "refusing to retain credential-like argument: {argument}"
+                "refusing to retain credential-like argument {}{name}",
+                position + 1
             )));
         }
+    }
+    if let Some(name) = request
+        .environment
+        .keys()
+        .find(|name| credential_like(name))
+    {
+        return Err(Error::Invalid(format!(
+            "refusing to retain credential-like environment variable: {name}"
+        )));
     }
     Ok(())
 }

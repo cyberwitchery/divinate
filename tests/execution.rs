@@ -98,6 +98,32 @@ fn verification_detects_tampered_or_missing_blobs() {
 }
 
 #[test]
+fn declared_paths_are_not_checked_as_credential_like_arguments() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkout = directory.path().join("tough-cookie");
+    fs::create_dir(&checkout).unwrap();
+    let input = checkout.join("Cargo.lock");
+    fs::write(&input, b"lock").unwrap();
+    let output = checkout.join("result.bin");
+    let mut request = request(directory.path());
+    request.inputs[0].path = input.clone();
+    request.argv = vec![
+        "-c".into(),
+        "cat \"$1\" > \"$2\"".into(),
+        "test-tool".into(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+    ];
+    request.outputs = vec![NamedPath {
+        name: "result".into(),
+        path: output,
+    }];
+    let capture = execution::capture(&request).unwrap();
+    let digest = &capture.transcript.contents.outputs[0].blob.sha256;
+    assert_eq!(capture.blobs[digest], b"lock");
+}
+
+#[test]
 fn immutable_store_reuses_blobs_and_detects_tampering() {
     let directory = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();
@@ -115,14 +141,72 @@ fn immutable_store_reuses_blobs_and_detects_tampering() {
 }
 
 #[test]
-fn credential_like_argv_is_refused() {
+fn credential_like_arguments_and_environment_names_are_refused() {
     let directory = tempfile::tempdir().unwrap();
-    let mut request = request(directory.path());
-    request.argv = vec!["--token=secret".into()];
-    assert!(execution::capture(&request)
-        .unwrap_err()
-        .to_string()
-        .contains("credential-like argument"));
+    for (argv, variable, refusal) in [
+        (
+            &["--token=ghp_value"][..],
+            None,
+            Some("credential-like argument 1 (--token)"),
+        ),
+        (
+            &["--cookie=ghp_value"],
+            None,
+            Some("credential-like argument 1 (--cookie)"),
+        ),
+        (
+            &["-H", "Authorization: Basic ghp_value=="],
+            None,
+            Some("credential-like argument 2"),
+        ),
+        (
+            &[],
+            Some("GITHUB_TOKEN"),
+            Some("credential-like environment variable: GITHUB_TOKEN"),
+        ),
+        (
+            &[],
+            Some("API_KEY"),
+            Some("credential-like environment variable: API_KEY"),
+        ),
+        (
+            &[],
+            Some("SSH_PRIVATE_KEY"),
+            Some("credential-like environment variable: SSH_PRIVATE_KEY"),
+        ),
+        (
+            &[],
+            Some("COOKIE"),
+            Some("credential-like environment variable: COOKIE"),
+        ),
+        (
+            &[],
+            Some("AZURE_DEVOPS_EXT_PAT"),
+            Some("credential-like environment variable: AZURE_DEVOPS_EXT_PAT"),
+        ),
+        (&[], Some("SORT_KEY"), None),
+    ] {
+        let mut request = request(directory.path());
+        if !argv.is_empty() {
+            request.argv = argv.iter().map(|argument| (*argument).into()).collect();
+        }
+        if let Some(variable) = variable {
+            request
+                .environment
+                .insert(variable.into(), "ghp_value".into());
+        }
+        let result = execution::capture(&request);
+        if let Some(refusal) = refusal {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(refusal), "{error}");
+            assert!(!error.contains("ghp_value"), "{error}");
+        } else {
+            assert_eq!(
+                result.unwrap().transcript.contents.environment,
+                request.environment
+            );
+        }
+    }
 }
 
 #[test]
