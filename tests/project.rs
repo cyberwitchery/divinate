@@ -369,33 +369,44 @@ fn pack_identity_mismatch_is_rejected_from_yaml() {
 
 #[test]
 fn invalid_builtin_configuration_names_its_yaml_path() {
-    let repository = Repository::new();
-    project::store(
-        &repository.path,
-        &ProjectFile {
-            repository: RepositoryConfig {
-                identity: "github:cyberwitchery/example".into(),
-                branch: "main".into(),
-                mirror_of: None,
-            },
-            packs: BTreeMap::new(),
-            sources: BTreeMap::from([(
-                "release-sbom".into(),
-                SourceFileConfig {
-                    provider: SourceFileProvider::Builtin(BuiltinProvider {
-                        builtin: "release-sbom".into(),
-                    }),
-                    required: true,
-                    context: SourceContext::Release,
-                    configuration: serde_json::json!({"executable": "/usr/bin/true"}),
+    for (configuration, expected) in [
+        (
+            serde_json::json!({"executable": "/usr/bin/true"}),
+            "sbom_path",
+        ),
+        (
+            serde_json::json!({"cookie_jar": "not-retained"}),
+            "credential-like pack configuration key configuration.cookie_jar",
+        ),
+    ] {
+        let repository = Repository::new();
+        project::store(
+            &repository.path,
+            &ProjectFile {
+                repository: RepositoryConfig {
+                    identity: "github:cyberwitchery/example".into(),
+                    branch: "main".into(),
+                    mirror_of: None,
                 },
-            )]),
-        },
-    )
-    .unwrap();
-    let error = project::load(&repository.path).unwrap_err();
-    assert!(error.to_string().contains("sources.release-sbom.config"));
-    assert!(error.to_string().contains("sbom_path"));
+                packs: BTreeMap::new(),
+                sources: BTreeMap::from([(
+                    "release-sbom".into(),
+                    SourceFileConfig {
+                        provider: SourceFileProvider::Builtin(BuiltinProvider {
+                            builtin: "release-sbom".into(),
+                        }),
+                        required: true,
+                        context: SourceContext::Release,
+                        configuration,
+                    },
+                )]),
+            },
+        )
+        .unwrap();
+        let error = project::load(&repository.path).unwrap_err().to_string();
+        assert!(error.contains("sources.release-sbom.config"), "{error}");
+        assert!(error.contains(expected), "{error}");
+    }
 }
 
 #[test]

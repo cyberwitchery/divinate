@@ -1633,14 +1633,16 @@ fn pack_timeout_is_bounded() {
 
 #[test]
 fn credential_like_configuration_is_not_sent_or_retained() {
-    let error = pack::describe(&pack_config(
-        example("packs/config-collector/divinate-pack-config-collector"),
-        serde_json::json!({"api_token": "not-retained"}),
-    ))
-    .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("credential-like pack configuration"));
+    for key in ["api_token", "apiKey"] {
+        let error = pack::describe(&pack_config(
+            example("packs/config-collector/divinate-pack-config-collector"),
+            serde_json::json!({key: "not-retained"}),
+        ))
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("credential-like pack configuration"));
+    }
 }
 
 #[test]
