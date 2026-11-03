@@ -89,3 +89,5 @@
 - name a refused credential-like argument by its position and, for a
   `--name=value` option, its name, instead of printing the argument with its
   value
+- count `AZURE_DEVOPS_EXT_PAT`, the azure devops credential divinate reads, as
+  credential-like

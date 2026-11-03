@@ -179,6 +179,11 @@ fn credential_like_arguments_and_environment_names_are_refused() {
             Some("COOKIE"),
             Some("credential-like environment variable: COOKIE"),
         ),
+        (
+            &[],
+            Some("AZURE_DEVOPS_EXT_PAT"),
+            Some("credential-like environment variable: AZURE_DEVOPS_EXT_PAT"),
+        ),
         (&[], Some("SORT_KEY"), None),
     ] {
         let mut request = request(directory.path());

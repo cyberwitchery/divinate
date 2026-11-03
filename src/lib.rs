@@ -322,7 +322,7 @@ pub(crate) fn credential_like(name: &str) -> bool {
         .filter(|character| !matches!(character, '-' | '_'))
         .collect::<String>()
         .to_ascii_lowercase();
-    CREDENTIAL_WORDS.iter().any(|word| name.contains(word))
+    name == "azuredevopsextpat" || CREDENTIAL_WORDS.iter().any(|word| name.contains(word))
 }
 
 /// serialize a value as pretty json and write it to a file.
