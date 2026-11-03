@@ -318,7 +318,7 @@ fn validate_request(request: &ExecutionRequest) -> Result<()> {
     if request.tool_name.trim().is_empty() {
         return Err(Error::Invalid("tool name must not be empty".into()));
     }
-    for argument in &request.argv {
+    for (position, argument) in request.argv.iter().enumerate() {
         if request
             .inputs
             .iter()
@@ -332,8 +332,13 @@ fn validate_request(request: &ExecutionRequest) -> Result<()> {
             .split_once('=')
             .map_or(argument.as_str(), |(name, _)| name);
         if credential_like(option) {
+            let name = argument
+                .split_once('=')
+                .filter(|(name, _)| name.starts_with("--"))
+                .map_or_else(String::new, |(name, _)| format!(" ({name})"));
             return Err(Error::Invalid(format!(
-                "refusing to retain credential-like argument: {argument}"
+                "refusing to retain credential-like argument {}{name}",
+                position + 1
             )));
         }
     }

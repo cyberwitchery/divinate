@@ -143,42 +143,47 @@ fn immutable_store_reuses_blobs_and_detects_tampering() {
 #[test]
 fn credential_like_arguments_and_environment_names_are_refused() {
     let directory = tempfile::tempdir().unwrap();
-    for (argument, variable, refusal) in [
+    for (argv, variable, refusal) in [
         (
-            Some("--token=secret"),
+            &["--token=ghp_value"][..],
             None,
-            Some("credential-like argument: --token=secret"),
+            Some("credential-like argument 1 (--token)"),
         ),
         (
-            Some("--cookie=session"),
+            &["--cookie=ghp_value"],
             None,
-            Some("credential-like argument: --cookie=session"),
+            Some("credential-like argument 1 (--cookie)"),
         ),
         (
+            &["-H", "Authorization: Basic ghp_value=="],
             None,
+            Some("credential-like argument 2"),
+        ),
+        (
+            &[],
             Some("GITHUB_TOKEN"),
             Some("credential-like environment variable: GITHUB_TOKEN"),
         ),
         (
-            None,
+            &[],
             Some("API_KEY"),
             Some("credential-like environment variable: API_KEY"),
         ),
         (
-            None,
+            &[],
             Some("SSH_PRIVATE_KEY"),
             Some("credential-like environment variable: SSH_PRIVATE_KEY"),
         ),
         (
-            None,
+            &[],
             Some("COOKIE"),
             Some("credential-like environment variable: COOKIE"),
         ),
-        (None, Some("SORT_KEY"), None),
+        (&[], Some("SORT_KEY"), None),
     ] {
         let mut request = request(directory.path());
-        if let Some(argument) = argument {
-            request.argv = vec![argument.into()];
+        if !argv.is_empty() {
+            request.argv = argv.iter().map(|argument| (*argument).into()).collect();
         }
         if let Some(variable) = variable {
             request

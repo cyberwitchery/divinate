@@ -86,3 +86,6 @@
 - stop refusing a command argument that is exactly a declared input or output
   path, so collection works in a checkout whose path contains a credential-like
   word such as `token`
+- name a refused credential-like argument by its position and, for a
+  `--name=value` option, its name, instead of printing the argument with its
+  value
