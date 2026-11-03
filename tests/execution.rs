@@ -115,14 +115,62 @@ fn immutable_store_reuses_blobs_and_detects_tampering() {
 }
 
 #[test]
-fn credential_like_argv_is_refused() {
+fn credential_like_arguments_and_environment_names_are_refused() {
     let directory = tempfile::tempdir().unwrap();
-    let mut request = request(directory.path());
-    request.argv = vec!["--token=secret".into()];
-    assert!(execution::capture(&request)
-        .unwrap_err()
-        .to_string()
-        .contains("credential-like argument"));
+    for (argument, variable, refusal) in [
+        (
+            Some("--token=secret"),
+            None,
+            Some("credential-like argument: --token=secret"),
+        ),
+        (
+            Some("--cookie=session"),
+            None,
+            Some("credential-like argument: --cookie=session"),
+        ),
+        (
+            None,
+            Some("GITHUB_TOKEN"),
+            Some("credential-like environment variable: GITHUB_TOKEN"),
+        ),
+        (
+            None,
+            Some("API_KEY"),
+            Some("credential-like environment variable: API_KEY"),
+        ),
+        (
+            None,
+            Some("SSH_PRIVATE_KEY"),
+            Some("credential-like environment variable: SSH_PRIVATE_KEY"),
+        ),
+        (
+            None,
+            Some("COOKIE"),
+            Some("credential-like environment variable: COOKIE"),
+        ),
+        (None, Some("SORT_KEY"), None),
+    ] {
+        let mut request = request(directory.path());
+        if let Some(argument) = argument {
+            request.argv = vec![argument.into()];
+        }
+        if let Some(variable) = variable {
+            request
+                .environment
+                .insert(variable.into(), "ghp_value".into());
+        }
+        let result = execution::capture(&request);
+        if let Some(refusal) = refusal {
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains(refusal), "{error}");
+            assert!(!error.contains("ghp_value"), "{error}");
+        } else {
+            assert_eq!(
+                result.unwrap().transcript.contents.environment,
+                request.environment
+            );
+        }
+    }
 }
 
 #[test]

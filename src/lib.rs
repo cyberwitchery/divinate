@@ -303,6 +303,28 @@ pub fn hex_digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+const CREDENTIAL_WORDS: [&str; 8] = [
+    "token",
+    "password",
+    "secret",
+    "authorization",
+    "credential",
+    "apikey",
+    "privatekey",
+    "cookie",
+];
+
+/// whether an argument, environment, or configuration name looks like it holds a
+/// credential, ignoring case, `-`, and `_`.
+pub(crate) fn credential_like(name: &str) -> bool {
+    let name = name
+        .chars()
+        .filter(|character| !matches!(character, '-' | '_'))
+        .collect::<String>()
+        .to_ascii_lowercase();
+    CREDENTIAL_WORDS.iter().any(|word| name.contains(word))
+}
+
 /// serialize a value as pretty json and write it to a file.
 ///
 /// # Errors

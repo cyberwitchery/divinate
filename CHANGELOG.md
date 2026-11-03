@@ -81,3 +81,5 @@
   no longer overrides a complete one, and records that reach different
   conclusions leave the claim with insufficient evidence instead of the
   last-sorted record deciding
+- refuse credential-like `run --environment` names, and count api key, private
+  key, and cookie names as credential-like in arguments and configuration keys
