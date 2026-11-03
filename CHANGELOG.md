@@ -83,3 +83,6 @@
   last-sorted record deciding
 - refuse credential-like `run --environment` names, and count api key, private
   key, and cookie names as credential-like in arguments and configuration keys
+- stop refusing a command argument that is exactly a declared input or output
+  path, so collection works in a checkout whose path contains a credential-like
+  word such as `token`

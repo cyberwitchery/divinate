@@ -98,6 +98,32 @@ fn verification_detects_tampered_or_missing_blobs() {
 }
 
 #[test]
+fn declared_paths_are_not_checked_as_credential_like_arguments() {
+    let directory = tempfile::tempdir().unwrap();
+    let checkout = directory.path().join("tough-cookie");
+    fs::create_dir(&checkout).unwrap();
+    let input = checkout.join("Cargo.lock");
+    fs::write(&input, b"lock").unwrap();
+    let output = checkout.join("result.bin");
+    let mut request = request(directory.path());
+    request.inputs[0].path = input.clone();
+    request.argv = vec![
+        "-c".into(),
+        "cat \"$1\" > \"$2\"".into(),
+        "test-tool".into(),
+        input.to_string_lossy().into_owned(),
+        output.to_string_lossy().into_owned(),
+    ];
+    request.outputs = vec![NamedPath {
+        name: "result".into(),
+        path: output,
+    }];
+    let capture = execution::capture(&request).unwrap();
+    let digest = &capture.transcript.contents.outputs[0].blob.sha256;
+    assert_eq!(capture.blobs[digest], b"lock");
+}
+
+#[test]
 fn immutable_store_reuses_blobs_and_detects_tampering() {
     let directory = tempfile::tempdir().unwrap();
     let state = tempfile::tempdir().unwrap();

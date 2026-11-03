@@ -319,6 +319,14 @@ fn validate_request(request: &ExecutionRequest) -> Result<()> {
         return Err(Error::Invalid("tool name must not be empty".into()));
     }
     for argument in &request.argv {
+        if request
+            .inputs
+            .iter()
+            .chain(&request.outputs)
+            .any(|named| named.path.as_os_str() == argument.as_str())
+        {
+            continue;
+        }
         let option = argument
             .trim_start_matches('-')
             .split_once('=')
