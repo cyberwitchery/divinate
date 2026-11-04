@@ -240,6 +240,75 @@ fn run_requesting_another_branch_than_its_transcript_is_rejected() {
 }
 
 #[test]
+fn run_outcome_and_observed_scope_must_be_what_the_transcript_supports() {
+    type Edit = fn(&mut CollectionRun, &mut TranscriptContents);
+    let failed: Edit = |_, contents| {
+        contents.termination = AcquisitionTermination::Failed {
+            diagnostic: "HTTP 500".into(),
+        };
+    };
+    let rows: [(&str, Edit, bool); 6] = [
+        (
+            "partial",
+            |run, _| run.outcome = CollectionOutcome::Partial,
+            false,
+        ),
+        (
+            "no observed scope",
+            |run, _| run.observed_scope = None,
+            false,
+        ),
+        (
+            "observed past the request",
+            |run, _| {
+                run.observed_scope.as_mut().unwrap().interval.until = "2026-09-05T00:00:00Z".into();
+            },
+            false,
+        ),
+        (
+            "observed from later",
+            |run, _| {
+                run.observed_scope.as_mut().unwrap().interval.from = "2026-09-03T01:00:00Z".into();
+            },
+            false,
+        ),
+        ("complete over a failed transcript", failed, false),
+        (
+            "failed over a failed transcript",
+            |run, contents| {
+                contents.termination = AcquisitionTermination::Failed {
+                    diagnostic: "HTTP 500".into(),
+                };
+                run.outcome = CollectionOutcome::Failed;
+                run.observed_scope = None;
+            },
+            true,
+        ),
+    ];
+    for (row, edit, accepted) in rows {
+        let (mut corpus, transcript) = linked();
+        let mut contents = transcript.contents;
+        edit(corpus.collections.last_mut().unwrap(), &mut contents);
+        let transcript = seal_transcript(contents).unwrap();
+        corpus
+            .collections
+            .last_mut()
+            .unwrap()
+            .acquisition_transcript_ids = vec![transcript.id.clone()];
+        match verify_collection_links(&corpus, &[transcript], &ContractRegistry::default()) {
+            Ok(_) => assert!(accepted, "{row}"),
+            Err(error) => {
+                assert!(!accepted, "{row}: {error}");
+                assert!(
+                    error.to_string().contains("does not support"),
+                    "{row}: {error}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn assertion_traverses_collection_transcript_and_source_bytes() {
     let (corpus, transcript) = linked();
     let target = EvaluationTarget {

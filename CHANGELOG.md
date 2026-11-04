@@ -91,3 +91,10 @@
   value
 - count `AZURE_DEVOPS_EXT_PAT`, the azure devops credential divinate reads, as
   credential-like
+- reject a collection run in `verify` whose recorded outcome or observed scope
+  is not what its acquisition transcript supports
+- keep a regressed claim whole in the technical-controls review instead of
+  cutting it at its first `: `
+- leave a release review count with insufficient evidence, not a
+  contradiction, when approvals without a usable submission time could make up
+  the shortfall

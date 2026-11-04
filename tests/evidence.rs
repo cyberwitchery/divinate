@@ -247,6 +247,45 @@ fn release_reviews_use_policy_observed_for_each_merge() {
 }
 
 #[test]
+fn release_approvals_without_a_usable_time_are_insufficient_evidence() {
+    for (approvals, expected) in [
+        (
+            json!([{"actor":"bob","state":"approved","submitted_at":"2026-09-02T09:00:00Z"}, {"actor":"carol","state":"approved","submitted_at":"yesterday"}]),
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            json!([{"actor":"bob","state":"approved","submitted_at":"2026-09-02T09:00:00Z"}, {"actor":"carol","state":"approved","submitted_at":null}]),
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            json!([{"actor":"bob","state":"approved","submitted_at":"2026-09-02T09:00:00Z"}, {"actor":"carol","state":"approved"}]),
+            Outcome::InsufficientEvidence,
+        ),
+        (
+            json!([{"actor":"carol","state":"approved","submitted_at":"yesterday"}]),
+            Outcome::Contradicted,
+        ),
+    ] {
+        let mut corpus = corpus();
+        let review = corpus
+            .observations
+            .iter_mut()
+            .find(|item| item.kind == ObservationKind::ReviewRecord)
+            .unwrap();
+        review.data["pull_requests"][0]["approvals"] = approvals.clone();
+        let assertion = evaluate_release_reviews(&corpus, &target(), latest_capture()).unwrap();
+        assert_eq!(assertion.outcome, expected, "{approvals}");
+        if expected == Outcome::InsufficientEvidence {
+            assert_eq!(
+                assertion.missing[0].requirement, "dated_pull_request_approval",
+                "{approvals}"
+            );
+            assert!(assertion.missing[0].reason.contains("#101"), "{approvals}");
+        }
+    }
+}
+
+#[test]
 fn snapshots_do_not_substitute_for_complete_policy_history() {
     let mut corpus = corpus();
     corpus

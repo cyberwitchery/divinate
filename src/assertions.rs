@@ -859,22 +859,42 @@ fn evaluate_pull_request(
             ("branch", &target.branch),
         ],
     ));
-    let approvals = pull_request
+    let mut approvals = BTreeSet::new();
+    let mut undated = BTreeMap::new();
+    for approval in pull_request
         .approvals
         .iter()
         .filter(|approval| approval.state == "approved" && approval.actor != pull_request.author)
-        .filter_map(|approval| {
-            approval
-                .submitted_at
-                .as_deref()
-                .and_then(|submitted_at| parse_timestamp(submitted_at).ok())
-                .filter(|submitted| *submitted <= merged_at)
-                .map(|_| approval.actor.as_str())
-        })
-        .collect::<BTreeSet<_>>();
+    {
+        match approval.submitted_at.as_deref().map(parse_timestamp) {
+            Some(Ok(submitted)) if submitted <= merged_at => {
+                approvals.insert(approval.actor.as_str());
+            }
+            Some(Ok(_)) => {}
+            _ => {
+                undated.insert(approval.actor.as_str(), approval.submitted_at.as_deref());
+            }
+        }
+    }
+    undated.retain(|actor, _| !approvals.contains(actor));
     let approval_count = u64::try_from(approvals.len())
         .map_err(|_| Error::Invalid("approval count does not fit in u64".into()))?;
-    if approval_count < required_approvals {
+    let undated_count = u64::try_from(undated.len())
+        .map_err(|_| Error::Invalid("approval count does not fit in u64".into()))?;
+    if approval_count < required_approvals
+        && approval_count.saturating_add(undated_count) >= required_approvals
+    {
+        let times = undated
+            .values()
+            .map(|value| value.map_or_else(|| "missing".to_owned(), |value| format!("{value:?}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assertion.missing.push(MissingEvidence {
+            requirement: "dated_pull_request_approval".into(),
+            subject: format!("{}#pull/{number}", target.repository),
+            reason: format!("pull request #{number} had {approval_count} qualifying approval(s) against the configured {required_approvals}; {undated_count} more cannot be placed before the merge (submitted_at {times})"),
+        });
+    } else if approval_count < required_approvals {
         assertion.contradictions.push(use_evidence(review, &format!("pull request #{number} had {approval_count} qualifying approval(s), fewer than the configured {required_approvals}")));
     }
     assertion.reasoning.push(step("pull_request_review_count", &format!("pull request #{number} had {approval_count} qualifying approval(s); effective policy history required {required_approvals}"), &[review, configuration]));
