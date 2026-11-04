@@ -9,12 +9,14 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::acquisition::{
-    self, AcquisitionTranscript, ContractRegistry, ContractStatus, IntegrityStatus,
+    self, AcquisitionTranscript, ContractRegistry, ContractStatus, EnumerationStatus,
+    IntegrityStatus,
 };
 use crate::error::{Error, Result};
 use crate::execution::{self, ExecutionTranscript, Integrity as ExecutionIntegrity};
 use crate::model::{
-    CollectionLimitation, CollectionLimitationKind, CollectionOutcome, Corpus, Proposition,
+    CollectionLimitation, CollectionLimitationKind, CollectionOutcome, CollectionRun, Corpus,
+    Proposition,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -223,6 +225,7 @@ pub fn verify_collection_links(
                     run.id
                 )));
             }
+            check_recorded_scope(run, transcript, assessment.enumeration)?;
             let owner = run_links.len();
             for exchange in &transcript.contents.exchanges {
                 digest_owner.insert(exchange.response.body_sha256.clone(), owner);
@@ -271,6 +274,74 @@ pub fn verify_collection_links(
         links.extend(run_links);
     }
     Ok(links)
+}
+
+fn check_recorded_scope(
+    run: &CollectionRun,
+    transcript: &AcquisitionTranscript,
+    enumeration: EnumerationStatus,
+) -> Result<()> {
+    let (outcome, observed_from) = supported_scope(transcript, enumeration)?;
+    let supported = run.outcome == outcome
+        && match (&run.observed_scope, observed_from) {
+            (None, None) => true,
+            (Some(scope), Some(from)) => {
+                scope.proposition == run.requested_scope.proposition
+                    && scope.branch == run.requested_scope.branch
+                    && crate::parse_timestamp(&scope.interval.from)? == from
+                    && crate::parse_timestamp(&scope.interval.until)?
+                        <= crate::parse_timestamp(&run.requested_scope.interval.until)?
+            }
+            _ => false,
+        };
+    if supported {
+        return Ok(());
+    }
+    Err(Error::Invalid(format!(
+        "collection {} records an outcome or observed scope that acquisition {} does not support",
+        run.id, transcript.id
+    )))
+}
+
+/// the outcome a transcript supports, and where its observed scope starts if it has one.
+fn supported_scope(
+    transcript: &AcquisitionTranscript,
+    enumeration: EnumerationStatus,
+) -> Result<(CollectionOutcome, Option<time::OffsetDateTime>)> {
+    let outcome = match enumeration {
+        EnumerationStatus::Complete => CollectionOutcome::Complete,
+        EnumerationStatus::Truncated => CollectionOutcome::Partial,
+        EnumerationStatus::PermissionDenied | EnumerationStatus::Unauthenticated => {
+            CollectionOutcome::PermissionDenied
+        }
+        EnumerationStatus::NotFound
+        | EnumerationStatus::RateLimited
+        | EnumerationStatus::Failed => CollectionOutcome::Failed,
+    };
+    if outcome != CollectionOutcome::Complete {
+        return Ok((outcome, None));
+    }
+    let requested = &transcript.contents.requested_scope;
+    let from = crate::parse_timestamp(&requested.from)?;
+    if !matches!(
+        transcript.contents.collector_contract.as_str(),
+        acquisition::GITHUB_REPOSITORY_MUTATIONS_CONTRACT
+            | acquisition::GITHUB_PULL_REQUEST_REVIEWS_CONTRACT
+            | acquisition::GITHUB_BUILD_VALIDATION_HISTORY_CONTRACT
+    ) {
+        return Ok((outcome, Some(from)));
+    }
+    let retained_from =
+        crate::parse_timestamp(&transcript.contents.captured_at)? - time::Duration::days(365);
+    Ok(
+        if crate::parse_timestamp(&requested.until)? <= retained_from {
+            (CollectionOutcome::RetentionLimited, None)
+        } else if from < retained_from {
+            (CollectionOutcome::RetentionLimited, Some(retained_from))
+        } else {
+            (outcome, Some(from))
+        },
+    )
 }
 
 /// withdraw a declared mirror's authority for the propositions it cannot establish.

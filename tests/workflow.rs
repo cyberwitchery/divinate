@@ -280,6 +280,34 @@ fn structured_isms_change_detection_notices_control_and_coverage_regression() {
 }
 
 #[test]
+fn isms_markdown_keeps_claims_whole_and_drops_only_the_gap_requirement() {
+    let corpus = corpus();
+    let previous = assertions::evaluate_all(&corpus, &target(), latest_capture()).unwrap();
+    let mut degraded = corpus.clone();
+    degraded
+        .collections
+        .retain(|run| run.requested_scope.proposition != Proposition::RepositoryMutations);
+    let mut current = assertions::evaluate_all(&degraded, &target(), latest_capture()).unwrap();
+    for assertion in &mut current {
+        assertion.claim = format!("scope: {}", assertion.claim);
+    }
+    let update = views::isms_update(&previous, &current);
+    let markdown = views::render_isms(&update);
+    let (gaps, regressions) = markdown
+        .split_once("## authority or coverage regressions")
+        .unwrap();
+    for claim in &update.coverage_regressions {
+        assert!(regressions.contains(&format!("- {claim}\n")), "{markdown}");
+    }
+    for gap in &update.new_gaps {
+        let (requirement, reason) = gap.split_once(": ").unwrap();
+        assert!(gaps.contains(&format!("- {reason}\n")), "{markdown}");
+        assert!(!gaps.contains(&format!("- {requirement}: ")), "{markdown}");
+    }
+    assert!(!update.coverage_regressions.is_empty() && !update.new_gaps.is_empty());
+}
+
+#[test]
 fn review_pairs_claims_whose_interval_end_advanced() {
     let corpus = corpus();
     let previous = assertions::evaluate_all(&corpus, &target(), latest_capture()).unwrap();

@@ -244,11 +244,18 @@ pub fn render_isms(update: &IsmsUpdate) -> String {
         .unwrap();
         writeln!(out, "  - {}", change.reason).unwrap();
     }
-    render_strings(&mut out, "new evidence gaps", &update.new_gaps);
+    render_strings(
+        &mut out,
+        "new evidence gaps",
+        update.new_gaps.iter().map(|gap| {
+            gap.split_once(": ")
+                .map_or(gap.as_str(), |(_requirement, reason)| reason)
+        }),
+    );
     render_strings(
         &mut out,
         "authority or coverage regressions",
-        &update.coverage_regressions,
+        update.coverage_regressions.iter().map(String::as_str),
     );
     out
 }
@@ -332,21 +339,14 @@ fn human_name(value: &str) -> String {
     value.replace('_', " ")
 }
 
-fn render_strings(out: &mut String, heading: &str, values: &[String]) {
+fn render_strings<'a>(out: &mut String, heading: &str, values: impl Iterator<Item = &'a str>) {
     writeln!(out, "\n## {heading}\n").unwrap();
-    if values.is_empty() {
+    let mut values = values.peekable();
+    if values.peek().is_none() {
         out.push_str("- none\n");
-    } else {
-        for value in values {
-            writeln!(
-                out,
-                "- {}",
-                value
-                    .split_once(": ")
-                    .map_or(value.as_str(), |(_, reason)| reason)
-            )
-            .unwrap();
-        }
+    }
+    for value in values {
+        writeln!(out, "- {value}").unwrap();
     }
 }
 
