@@ -1,9 +1,9 @@
 # workflows
 
-## recurring repository maintenance
+## recurring collection
 
-`divinate.yaml` contains choices that stay stable across collection cycles.
-normal use is:
+`divinate.yaml` holds the choices that stay the same from one collection to the
+next. the recurring loop is:
 
 ```sh
 divinate collect
@@ -11,15 +11,52 @@ divinate status
 divinate review
 ```
 
-`collect` prepares enabled source results before merging their evidence. a
-required source or provenance validation failure aborts that prepared increment.
-optional source failures are reported separately. after a valid
-increment is retained, evaluation publishes new `current` assertions and dossier
-files while preserving the prior evaluation as `previous`.
+run it on a schedule, in ci, or before you need to answer. each collection adds
+evidence and answers every question again over its whole period, so answers stay
+current and `review` shows what changed since last time.
 
-retained evidence is independently meaningful. if evidence persistence succeeds
-but evaluation fails, divinate reports that distinction instead of claiming the
-whole cycle was transactional.
+`collect` prepares every source's results before saving any of them. a failed
+required source, or evidence that fails validation, stops the collection and
+nothing is saved. a failed optional source is reported and the rest is saved.
+after the evidence is saved, the new answers become `current` and the previous
+ones are kept as `previous`.
+
+if the evidence is saved but answering fails, divinate reports exactly that. the
+saved evidence is still valid and the next collection will answer from it.
+
+## answering for an audit period
+
+auditors and questionnaires usually ask about a specific period, such as a
+quarter or the year before a certification. collect and answer for exactly that
+period:
+
+```sh
+divinate collect --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
+divinate export dd
+```
+
+`from` is included and `until` is not. questions about history, such as "did
+every change get reviewed?", are answered for that period only. questions about
+configuration, such as "is review required?", are answered from the settings as
+they are when you collect; divinate cannot read past settings from GitHub or
+Azure DevOps.
+
+the next `divinate collect` replaces `current`. to keep the period's answers
+under their own name, save a named evaluation and export it:
+
+```sh
+divinate evaluate --label 2026-q3 \
+  --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
+divinate export dd --evaluation 2026-q3 --output 2026-q3
+```
+
+this writes `.evidence/views/2026-q3.md`. the evaluation uses all evidence
+collected so far. archive `.evidence/` with it so the answers stay verifiable.
+
+GitHub keeps about one year of repository activity. collect at least once a
+year, and ideally on a regular schedule, so that the history an auditor may ask
+about is retained in `.evidence/` before GitHub drops it. retained evidence
+stays usable after the provider has forgotten it.
 
 ## release dependency evidence
 
@@ -76,33 +113,29 @@ sources run in deterministic source-id order. presence means enabled and they
 are required by default. divinate does not schedule them or infer dependencies
 between them.
 
-## authenticated github evidence
+## authenticated provider evidence
 
-the in-tree GitHub pack declares branch-protection, check-run, and commit-status
-acquisition intent. core verifies repository, branch, and revision context,
-obtains the local GitHub credential, performs the requests, and retains
-sanitized transcripts.
-"observed GitHub revision results acceptable" joins complete check-run and
-commit-status evidence on the exact revision. required-context configuration
-remains a separate claim.
-the pack receives only exact retained response bodies for normalization.
+the GitHub and Azure DevOps packs say which provider records they need. divinate
+itself checks the repository, branch, and commit, obtains the local credential,
+makes the requests, and keeps sanitized records of every exchange. the packs
+receive only the retained responses, never the credential.
 
-authenticate once with `gh auth login`, or set `GITHUB_TOKEN`, then use the
-normal workflow:
+authenticate once with `gh auth login` (or set `GITHUB_TOKEN`) for GitHub, or
+`az login` (or set `AZURE_DEVOPS_EXT_PAT`) for Azure DevOps, then use the normal
+loop.
 
-```sh
-divinate collect
-divinate status
-```
+a denied permission, a rate limit, or an incomplete list of results is recorded
+as an incomplete source result. it is never read as "the branch is
+unprotected" or "there were no checks": the answers that need that evidence
+become **insufficient evidence** and name the gap. `divinate verify` later
+checks everything retained without network access or a credential.
 
-permission denial is a recorded incomplete source result. it is never treated as
-an unprotected branch or an empty check-run population. `divinate verify` later
-checks the retained graph without GitHub access or a credential.
+## answering as of a past date
 
-## explicit historical evaluation
-
-normal collection manages `current` and `previous`. use named evaluations when
-the time, release, or source-contract registry must be explicit:
+normal collection manages `current` and `previous`. a named evaluation can also
+answer as divinate would have at an earlier time. `--at` limits the answer to
+evidence that had been collected by then, so later collections cannot leak into
+it:
 
 ```sh
 divinate evaluate --label september --release v1.5.0 \

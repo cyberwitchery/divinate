@@ -15,7 +15,7 @@ use divinate::model::{CollectionOutcome, Corpus, Observation, ObservationKind};
 use divinate::{collect, load_corpus, parse_timestamp, read_json, source_bytes, write_json};
 
 #[derive(Parser)]
-#[command(about = "preserve technical security evidence and derive traceable claims")]
+#[command(about = "answer technical compliance questions with evidence anyone can verify")]
 struct Cli {
     #[command(subcommand)]
     command: Command,

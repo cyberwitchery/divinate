@@ -2,6 +2,14 @@
 
 ## unreleased
 
+- describe divinate by the compliance questions it answers, for whoever has to
+  answer them
+- document every question divinate answers, what each result means, and what
+  it never establishes, in `docs/questions.md`, and how to read and hand over an
+  answer in `docs/answers.md`
+- add an agent skill, `skills/divinate`, for setting up divinate, collecting
+  evidence, and reporting answers without overstating them
+- give every visible cli option a help line
 - add configuration-driven collection with automatic current evaluation
 - add saved-state status and parameterless review
 - keep explicit collection, historical evaluation, and provenance commands as
