@@ -11,6 +11,13 @@ cargo clippy --all-targets --all-features -- -D warnings
 echo "==> test"
 cargo test --all-features
 
+echo "==> msrv"
+if rustup toolchain list 2>/dev/null | grep -q '^1\.95'; then
+    cargo +1.95 check --all-targets --all-features
+else
+    echo "skipped: rustup toolchain install 1.95"
+fi
+
 echo "==> doc"
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 
