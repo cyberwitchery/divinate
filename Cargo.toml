@@ -5,12 +5,12 @@ edition = "2021"
 default-run = "divinate"
 rust-version = "1.95"
 license = "Apache-2.0"
-description = "Preserve technical security evidence with provenance and derive traceable typed claims from it."
+description = "Answer technical compliance questions about a repository with evidence anyone can verify, and name the gap when the evidence cannot answer."
 repository = "https://github.com/cyberwitchery/divinate"
 homepage = "https://github.com/cyberwitchery/divinate"
 documentation = "https://docs.rs/divinate"
 readme = "README.md"
-keywords = ["security", "evidence", "provenance", "sbom", "audit"]
+keywords = ["compliance", "audit", "security", "evidence", "provenance"]
 categories = ["command-line-utilities", "development-tools"]
 
 # the example corpus exceeds the crates.io package limit. its integration test is

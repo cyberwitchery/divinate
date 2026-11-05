@@ -1,129 +1,93 @@
 # getting started
 
-this guide declares a repository's evidence sources, runs collection, and opens
-the resulting human-readable views.
+this guide takes a GitHub or Azure DevOps repository to its first answers: is
+review required, and did every change actually get reviewed?
 
-## initialize a new repository
+## install
 
-run this from a Git checkout with a supported `origin`:
+divinate requires rust 1.95 or newer. from a checkout of this repository:
+
+```sh
+cargo install --path .
+```
+
+this installs three executables on your `PATH`: `divinate`, and the reference
+packs `divinate-pack-github` and `divinate-pack-azure-devops`. packs are the
+plug-ins that know how to read each provider.
+
+## initialize the repository
+
+run this from a checkout of the repository you need to answer for:
 
 ```sh
 divinate init
-$EDITOR divinate.yaml
 ```
 
-init infers the normalized repository identity and symbolic branch, creates
-local `.evidence/` state, and writes a minimal `divinate.yaml`. commit the YAML
-file. it is project intent, not collected evidence.
+init reads the git `origin`, writes a minimal `divinate.yaml`, and creates the
+local `.evidence/` directory. commit `divinate.yaml`: it declares which evidence
+the repository collects, and reviewers should see changes to it.
 
-common GitHub SSH and HTTPS origins normalize to `github:owner/name`. Azure
-DevOps SSH and HTTPS origins normalize to
-`azure-devops:organization/project/repository`. divinate verifies that the
-checkout still matches the identity in YAML before using it.
-
-accepted Azure forms are
+GitHub origins become `github:owner/name`. Azure DevOps origins become
+`azure-devops:organization/project/repository`; accepted forms are
 `git@ssh.dev.azure.com:v3/organization/project/repository`,
 `ssh://git@ssh.dev.azure.com/v3/organization/project/repository`,
-`https://dev.azure.com/organization/project/_git/repository`, and the equivalent
-`organization.visualstudio.com` HTTPS form.
+`https://dev.azure.com/organization/project/_git/repository`, and the
+equivalent `organization.visualstudio.com` HTTPS form. divinate checks that the
+checkout still matches this identity every time it collects.
 
-## declare sources
+## choose the questions
 
-the built-in release SBOM source needs two release tags, a CycloneDX SBOM for
-each release, and its configured comparison executable:
+each question needs specific evidence, and each piece of evidence comes from a
+*source*: one collector of one pack. pick the questions you need from
+[questions divinate answers](questions.md) and declare their sources:
 
-```yaml
-repository:
-  identity: github:cyberwitchery/example
-  branch: main
+| question | GitHub collectors | Azure DevOps collectors |
+|---|---|---|
+| is approval required before merging? | `branch-protection` | `branch-policy` |
+| did every change get an approving review? | `repository-mutations` and `pull-request-reviews` | `repository-mutations` and `pull-request-reviews` |
+| does the branch require named status checks? | `branch-protection` | — |
+| did ci pass for the current commit? | `check-runs` and `commit-statuses` | — |
+| does the branch have blocking build validation? | — | `branch-policy` |
 
-sources:
-  release-sbom:
-    provider:
-      builtin: release-sbom
-    required: true
-    config:
-      executable: sbom-diff
-      sbom_path: dist/{release}.cdx.json
-```
-
-the `{release}` placeholder is required. the source substitutes the resolved
-tag and validates the SBOM's embedded identity. it does not infer identity from
-the filename.
-
-external collectors declare an executable pack and select a collector:
+### GitHub
 
 ```yaml
 repository:
-  identity: github:cyberwitchery/example
+  identity: github:example/service
   branch: main
 
-packs:
-  example.github:
-    executable: divinate-pack-github
-
-sources:
-  github-repository:
-    provider:
-      pack: example.github
-      collector: repository
-    required: true
-```
-
-source IDs are repository-owned stable names. presence means enabled. set
-`required: false` for a source whose failure may leave a visible incomplete
-cycle. use `context: release` only when an external collector needs
-core-resolved release context.
-
-plain executable names resolve through `PATH`; explicit absolute or
-repository-relative paths are also accepted. divinate has no local override
-file in this release because PATH covers the current machine-local requirement.
-do not put secrets in YAML. credential-like configuration keys are rejected.
-
-the divinate repository's own [`divinate.yaml`](../divinate.yaml) is a complete
-example. it configures the in-tree Cargo.lock and GitHub packs through
-repository-relative executable paths. the GitHub source needs an authenticated
-`gh` installation or `GITHUB_TOKEN`; neither credential is declared in YAML.
-
-an authenticated GitHub source is declared like any other pack source:
-
-```yaml
 packs:
   cyberwitchery.github:
     executable: divinate-pack-github
 
 sources:
-  github-branch-protection:
+  branch-protection:
     provider:
       pack: cyberwitchery.github
       collector: branch-protection
-    required: true
-  github-check-runs:
+  branch-changes:
+    provider:
+      pack: cyberwitchery.github
+      collector: repository-mutations
+  reviews:
+    provider:
+      pack: cyberwitchery.github
+      collector: pull-request-reviews
+  check-runs:
     provider:
       pack: cyberwitchery.github
       collector: check-runs
-    required: true
-  github-commit-statuses:
+  commit-statuses:
     provider:
       pack: cyberwitchery.github
       collector: commit-statuses
-    required: true
 ```
 
-core obtains a token from `gh auth token`, then falls back to `GITHUB_TOKEN`.
-packs receive neither the token nor ambient environment. acquisition transcripts
-retain sanitized request metadata and exact response bodies.
+divinate gets a GitHub token from `gh auth token`, or from `GITHUB_TOKEN` if
+`gh` is not available. authenticate once with `gh auth login`. reading branch
+protection needs more permission than reading a public repository.
 
-"observed GitHub revision results acceptable" considers both Checks API check
-runs and classic commit statuses for the same revision. it supports only when
-both populations are completely enumerated, at least one result exists, and
-every result is terminal and acceptable. `success`, plus the Checks API's
-`neutral` and `skipped` conclusions, are acceptable. failures contradict the
-claim. pending, unknown, absent, or incomplete results leave it insufficient.
-this is an observed-result claim; it does not assert that every
-branch-protection-required context ran.
-
-an Azure DevOps branch-policy source uses the same declarative model:
+### Azure DevOps
 
 ```yaml
 repository:
@@ -135,97 +99,110 @@ packs:
     executable: divinate-pack-azure-devops
 
 sources:
-  azure-branch-policy:
+  branch-policy:
     provider:
       pack: cyberwitchery.azure-devops
       collector: branch-policy
-    required: true
-```
-
-core asks Azure DevOps for the repository identity and policies applying to the
-configured branch. it obtains an access token from `az account
-get-access-token`, then falls back to `AZURE_DEVOPS_EXT_PAT`. neither credential
-appears in YAML or pack input. the resulting assertions describe current
-configured blocking policies, approval before merge, and build validation. the
-approval assertion is provider-neutral; its reasoning and provenance identify
-Azure DevOps. these assertions do not establish historical operating
-effectiveness, pull-request review history, pipeline existence, or pipeline
-results.
-
-to collect historical approving-review evidence, add these collectors to the
-same provider pack. the GitHub pack uses the same collector names:
-
-```yaml
-sources:
-  branch-mutations:
+  branch-changes:
     provider:
       pack: cyberwitchery.azure-devops
       collector: repository-mutations
-    required: true
-  approving-reviews:
+  reviews:
     provider:
       pack: cyberwitchery.azure-devops
       collector: pull-request-reviews
-    required: true
 ```
 
-use an explicit interval for the first historical collection:
+divinate gets an Azure DevOps token from `az account get-access-token`, or from
+`AZURE_DEVOPS_EXT_PAT`. authenticate once with `az login`.
 
-```sh
-divinate collect --from 2025-01-01T00:00:00Z --until 2025-02-01T00:00:00Z
-divinate status
-divinate review
-```
+### rules for `divinate.yaml`
 
-the historical claim asks whether every branch integration went through a PR
-with at least one recorded approval before integration. complete PR/review
-history alone cannot establish it without branch-mutation coverage. direct
-pushes contradict; missing populations or ambiguous associations remain
-insufficient. current configured policy remains a separate claim. see
-[historical review semantics](packs.md#historical-approving-review).
+- source names, such as `branch-changes`, are yours to choose. keep them
+  stable: they identify the source in history.
+- a declared source is enabled. sources are required by default: if a required
+  source fails, the whole collection stops and nothing is saved. add
+  `required: false` to let collection continue and record the failure instead.
+- never put a token or password in `divinate.yaml`. divinate refuses
+  credential-like keys, and it keeps an exact copy of the file with the
+  evidence. packs never receive credentials either; divinate fetches from the
+  provider itself and hands packs only the responses.
+- plain executable names are looked up on `PATH`. absolute and
+  repository-relative paths also work.
 
-the GitHub and Azure reference pack executables are built with `cargo build
---bins` and installed by `cargo install --path .`. put the build directory on
-`PATH` when running a development checkout; no Python runtime is needed for
-these two packs.
+this repository's own [`divinate.yaml`](../divinate.yaml) is a working GitHub
+configuration.
 
-## collect and evaluate
+## collect and answer
 
 ```sh
 divinate collect
 ```
 
-normal collection:
-
-1. strictly validates `divinate.yaml` and repository identity;
-2. resolves repository and release context requested by the sources;
-3. validates and runs each declared source in deterministic order;
-4. retains normalized evidence, exact transcripts, and the configuration used;
-5. evaluates the current scope; and
-6. writes `.evidence/dossiers/current.md`.
-
-a release evaluation starts at the preceding release's commit time. a
-repository-scoped evaluation starts at the unique Git root commit; a
-multiple-root history requires `--from`. every collection re-evaluates the
-whole interval over all retained evidence. the evaluation ends at collection
-time.
-
-when a release value is not unique, collection stops before committing the
-prepared increment:
+divinate validates `divinate.yaml`, runs each source, keeps everything it read,
+answers every question its sources support, and writes the answers to
+`.evidence/dossiers/current.md`. the output has this shape; the sources and
+counts depend on your configuration:
 
 ```text
-error: cannot determine previous release for v1.5.0; candidates are stable, v1.4.0; choose one with --base-release
+Collected
+  branch-changes                       complete (evidence recorded)
+  ...
+
+Evaluation
+  supported                2
+  insufficient evidence    1
+  contradicted             0
+  stale                    0
+  not automatable          0
+
+dossier: .evidence/dossiers/current.md
 ```
 
-resolve it explicitly:
+questions about history, such as "did every change get reviewed?", cover
+everything since the repository's first commit by default. GitHub keeps about a
+year of activity, so on an older repository part of that period cannot be read
+and the answer is **insufficient evidence** for that reason. for an audit or a
+questionnaire, answer for the period that was asked about:
 
 ```sh
-divinate collect --release v1.5.0 --base-release v1.4.0
+divinate collect --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
 ```
 
-## clone an already configured repository
+`--until` cannot be later than now. times are rfc 3339.
 
-if `divinate.yaml` is committed, init is not required:
+## read the answers
+
+```sh
+divinate status       # summary: results, source health, open gaps
+divinate export dd    # the answers as a document: .evidence/views/dd-response.md
+```
+
+`.evidence/dossiers/current.md` has the full reasoning for every answer.
+[reading an answer](answers.md) explains each part and how to repeat an answer
+accurately.
+
+after the next collection, see what changed:
+
+```sh
+divinate collect
+divinate review       # .evidence/views/review.md
+```
+
+## hand the answers over
+
+```sh
+divinate verify
+```
+
+verify rechecks every answer against the records it came from, offline. give
+someone the `.evidence/` directory and they can run the same check without
+access to your repository or provider. it contains provider responses byte for
+byte, including pull request text, so share it as you would the repository.
+
+## a repository that is already configured
+
+when `divinate.yaml` is committed, nobody needs to run `init` again:
 
 ```sh
 git clone <repository>
@@ -233,60 +210,13 @@ cd <repository>
 divinate collect
 ```
 
-collect creates `.evidence/` and records the verified repository identity when
-state is absent. the checkout must also have the declared packs and tools on
-`PATH`, plus any external credentials handled outside YAML.
+collect creates `.evidence/` if it is missing. the packs and tools named in
+`divinate.yaml` must be on `PATH`, and the provider credential must be
+available.
 
-## inspect and review
+## release questions
 
-```sh
-divinate status
-```
-
-status reads saved structured state and YAML. it reports claim counts, evidence
-gaps, degraded collections, configured sources that are current, stale, failed,
-or never collected, and historical sources removed from current configuration.
-it does not rerun evaluators.
-
-after another collection cycle:
-
-```sh
-divinate collect
-divinate review
-```
-
-normal collection preserves the former `current` evaluation as `previous`.
-parameterless review compares that explicit pair. the first collection has no
-predecessor and review asks for `--since` rather than guessing.
-
-export a due-diligence response with:
-
-```sh
-divinate export dd
-```
-
-## verify and inspect provenance
-
-```sh
-divinate verify
-divinate provenance <assertion-id>
-divinate extract <execution-id> --output retained-output.json
-```
-
-verification is offline. each normal collection records a content-addressed
-snapshot of the exact YAML and links its collection cycle and evaluation to that
-digest. later YAML edits do not rewrite old evidence.
-
-projectless execution state is also verifiable:
-
-```sh
-divinate run --tool derive ./derive -- input
-divinate verify
-```
-
-when `corpus.json` is absent, verify checks retained executions, blobs,
-acquisitions, pack invocations, and their available links directly. it does not
-create a corpus or repository identity.
-
-review `.evidence/` before committing, sharing, or archiving it. retained source
-content, stdout, and stderr are byte-exact and may contain sensitive data.
+questions about a release, such as "which dependencies did this release change,
+and did they pass policy?", need the built-in `release-sbom` source, a
+CycloneDX sbom for each release, and release tags. see
+[workflows](workflows.md#release-dependency-evidence).

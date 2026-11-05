@@ -14,7 +14,10 @@ authorization, cookie, and set-cookie headers rather than storing redacted forms
 these checks reduce obvious mistakes; they are not a general secret detector.
 
 protect `.evidence/` according to the sensitivity of the collected systems and
-outputs. review it before committing, sharing, or archiving it.
+outputs. review it before committing, sharing, or archiving it. when you hand it
+to an auditor so they can verify your answers, you are handing over every
+retained response, including pull request titles, descriptions, and review
+comments.
 
 the historical PR/review resources use the existing core-only provider
 credentials. their request plans contain named resources, never URLs or auth
@@ -69,8 +72,9 @@ falls back to `GITHUB_TOKEN`. helper output and the environment value exist only
 in core memory. they are not execution evidence, configuration, pack input,
 logs, content-addressed blobs, or acquisition transcripts.
 
-GitHub packs can request only named branch-protection, check-run, or
-commit-status resources.
+GitHub packs can request only the named resources listed in
+[packs](packs.md#protocol): branch protection, check runs, commit statuses,
+repository mutations, pull-request reviews, and build-validation history.
 core constructs `https://api.github.com` URLs, injects the authorization header,
 and retains only allowlisted non-secret response headers. redirects are disabled,
 so credentials are never forwarded to another host. packs receive an empty
@@ -78,8 +82,7 @@ environment and never receive the credential.
 
 permission denial, missing resources, unauthenticated responses, rate limits,
 unsafe redirects, and incomplete pagination remain distinct transcript outcomes.
-none is interpreted as an empty protected-branch, check-run, or commit-status
-population. retained
+none is interpreted as an empty population. retained
 GitHub evidence verifies offline without a network connection or credential.
 
 for Azure DevOps, core asks Azure CLI for an in-memory access token and falls
@@ -88,10 +91,11 @@ operational plumbing and is not captured as an execution. PAT authentication is
 constructed in memory. the raw credential and Authorization value are rejected
 if reflected in a response.
 
-Azure DevOps packs can currently request only the named branch-policy resource.
-core constructs URLs under the verified organization's
-`https://dev.azure.com` path, resolves the repository name to Azure's repository
-ID, and fetches policies applying to the configured branch. only pagination and
+Azure DevOps packs can request only the named resources listed in
+[packs](packs.md#protocol): branch policy, repository mutations, pull-request
+reviews, and build-validation history. core constructs URLs under the verified
+organization's `https://dev.azure.com` path and resolves the repository name to
+Azure's repository ID before any repository-scoped request. only pagination and
 diagnostic response headers are retained. redirects are disabled. permission
 failure remains an evidence gap rather than evidence that no policy exists.
 retained Azure evidence verifies without Azure CLI, a PAT, or network access.
