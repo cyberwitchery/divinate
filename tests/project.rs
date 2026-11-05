@@ -324,7 +324,7 @@ fn pack_identity_mismatch_is_rejected_from_yaml() {
     let executable = repository.path.join("pack");
     executable_file(
         &executable,
-        b"#!/bin/sh\nprintf '%s' '{\"ok\":true,\"result\":{\"id\":\"actual\",\"version\":\"1\",\"protocol_version\":1,\"collectors\":[\"one\"],\"evaluators\":[],\"evaluator_inputs\":{},\"evaluator_propositions\":{},\"source_contracts\":[],\"configuration_schema\":{}}}'\n",
+        b"#!/bin/sh\ncat >/dev/null\nprintf '%s' '{\"ok\":true,\"result\":{\"id\":\"actual\",\"version\":\"1\",\"protocol_version\":1,\"collectors\":[\"one\"],\"evaluators\":[],\"evaluator_inputs\":{},\"evaluator_propositions\":{},\"source_contracts\":[],\"configuration_schema\":{}}}'\n",
     );
     project::store(
         &repository.path,
