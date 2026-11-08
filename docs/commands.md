@@ -19,10 +19,6 @@ repository identity comes from the normalized Git `origin`; branch defaults to
 the current symbolic branch. GitHub and Azure DevOps origins are supported. an
 existing YAML file is validated, not replaced.
 
-if YAML is absent and legacy `.evidence/config.json` exists, init converts its
-live pack and source configuration to YAML. it leaves the legacy file in place
-so retained historical state remains verifiable.
-
 ### `divinate collect`
 
 ```text
@@ -173,9 +169,7 @@ its exact retained stream.
 
 `source add`, `source configure`, `source enable`, `pack add`, and `pack
 configure` have been removed. declare packs and sources in `divinate.yaml`
-instead. `divinate init` performs the straightforward one-time conversion from
-legacy live `.evidence/config.json` when YAML does not yet exist. historical
-evidence formats remain verifiable.
+instead. historical evidence formats remain verifiable.
 
 the former scanner-specific `collect release` compatibility command has also
 been removed. declare `release-sbom` in YAML and use `collect --release` for an

@@ -32,6 +32,14 @@ fn pack_config(executable: PathBuf, configuration: serde_json::Value) -> pack::P
     }
 }
 
+fn pack_file(executable: PathBuf, configuration: serde_json::Value) -> project::PackFileConfig {
+    project::PackFileConfig {
+        executable,
+        configuration,
+        timeout_seconds: 30,
+    }
+}
+
 #[test]
 fn a_pack_runs_in_a_private_directory_that_does_not_outlive_it() {
     let scratch = std::env::temp_dir().join(format!("divinate-cwd-probe-{}", std::process::id()));
@@ -669,14 +677,16 @@ fn open_sbom_integration_collects_through_the_pack_boundary() {
     fs::write(&target, b"target").unwrap();
     configure_project(
         state.path(),
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             sources: BTreeMap::default(),
             packs: BTreeMap::from([(
                 "example.sbom-release-diff".into(),
-                pack_config(
+                pack_file(
                     example("packs/sbom-collector/divinate-pack-sbom-collector"),
                     serde_json::json!({
                         "repository": "github:cyberwitchery/example",
@@ -739,34 +749,34 @@ fn configured_pack_collector_runs_and_evaluates_in_normal_collect() {
     fs::write(&target, b"target").unwrap();
     configure_project(
         state.path(),
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             sources: BTreeMap::from([
                 (
                     "release-diff".into(),
-                    workflow::SourceConfig {
-                        provider: workflow::SourceProvider::Pack {
+                    project::SourceFileConfig {
+                        provider: project::SourceFileProvider::Pack(project::PackProvider {
                             pack: "example.sbom-release-diff".into(),
                             collector: "release-diff".into(),
-                        },
-                        configuration: serde_json::Value::Null,
+                        }),
+                        configuration: serde_json::json!({}),
                         context: workflow::SourceContext::Repository,
-                        enabled: true,
                         required: true,
                     },
                 ),
                 (
                     "optional".into(),
-                    workflow::SourceConfig {
-                        provider: workflow::SourceProvider::Pack {
+                    project::SourceFileConfig {
+                        provider: project::SourceFileProvider::Pack(project::PackProvider {
                             pack: "example.optional".into(),
                             collector: "extra".into(),
-                        },
-                        configuration: serde_json::Value::Null,
+                        }),
+                        configuration: serde_json::json!({}),
                         context: workflow::SourceContext::Repository,
-                        enabled: true,
                         required: false,
                     },
                 ),
@@ -774,7 +784,7 @@ fn configured_pack_collector_runs_and_evaluates_in_normal_collect() {
             packs: BTreeMap::from([
                 (
                     "example.sbom-release-diff".into(),
-                    pack_config(
+                    pack_file(
                         example("packs/sbom-collector/divinate-pack-sbom-collector"),
                         serde_json::json!({
                             "repository": "github:cyberwitchery/example",
@@ -788,7 +798,7 @@ fn configured_pack_collector_runs_and_evaluates_in_normal_collect() {
                 ),
                 (
                     "example.optional".into(),
-                    pack_config(optional, serde_json::Value::Null),
+                    pack_file(optional, serde_json::json!({})),
                 ),
             ]),
         },
@@ -831,26 +841,27 @@ fn required_pack_failure_is_named_and_writes_no_canonical_evidence() {
     executable(&crashing, b"#!/bin/sh\nexit 7\n");
     configure_project(
         state.path(),
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             sources: BTreeMap::from([(
                 "crash".into(),
-                workflow::SourceConfig {
-                    provider: workflow::SourceProvider::Pack {
+                project::SourceFileConfig {
+                    provider: project::SourceFileProvider::Pack(project::PackProvider {
                         pack: "example.crash".into(),
                         collector: "anything".into(),
-                    },
-                    configuration: serde_json::Value::Null,
+                    }),
+                    configuration: serde_json::json!({}),
                     context: workflow::SourceContext::Repository,
-                    enabled: true,
                     required: true,
                 },
             )]),
             packs: BTreeMap::from([(
                 "example.crash".into(),
-                pack_config(crashing, serde_json::Value::Null),
+                pack_file(crashing, serde_json::json!({})),
             )]),
         },
     )
@@ -875,10 +886,12 @@ fn collection_refuses_an_interval_ending_after_it_starts() {
     let state = tempfile::tempdir().unwrap();
     configure_project(
         state.path(),
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             sources: BTreeMap::default(),
             packs: BTreeMap::default(),
         },
@@ -915,10 +928,12 @@ fn status_reports_saved_incomplete_collection_without_reinterpreting_it() {
     let state = tempfile::tempdir().unwrap();
     configure_project(
         state.path(),
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             sources: BTreeMap::default(),
             packs: BTreeMap::default(),
         },
@@ -1000,27 +1015,28 @@ print(json.dumps({"ok":True,"result":x},separators=(",",":")))
     );
     configure_project(
         &repository,
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             packs: BTreeMap::from([(
                 "example.context".into(),
-                pack_config(context_pack, serde_json::json!({})),
+                pack_file(context_pack, serde_json::json!({})),
             )]),
             sources: [("first", "one"), ("second", "two")]
                 .into_iter()
                 .map(|(id, label)| {
                     (
                         id.into(),
-                        workflow::SourceConfig {
-                            provider: workflow::SourceProvider::Pack {
+                        project::SourceFileConfig {
+                            provider: project::SourceFileProvider::Pack(project::PackProvider {
                                 pack: "example.context".into(),
                                 collector: "release".into(),
-                            },
+                            }),
                             configuration: serde_json::json!({"label": label}),
                             context: workflow::SourceContext::Release,
-                            enabled: true,
                             required: true,
                         },
                     )
@@ -1075,7 +1091,7 @@ fn pack_collection_and_external_assertion_keep_core_provenance() {
     ))
     .unwrap();
     executable(&evaluator_path, &evaluator_bytes);
-    let collector = pack_config(
+    let collector = pack_file(
         example("packs/config-collector/divinate-pack-config-collector"),
         serde_json::json!({
             "repository": "github:cyberwitchery/example",
@@ -1084,13 +1100,15 @@ fn pack_collection_and_external_assertion_keep_core_provenance() {
             "observed_at": "2026-09-08T12:00:00Z"
         }),
     );
-    let evaluator = pack_config(evaluator_path.clone(), serde_json::Value::Null);
+    let evaluator = pack_file(evaluator_path.clone(), serde_json::json!({}));
     configure_project(
         state.path(),
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
             sources: BTreeMap::default(),
             packs: BTreeMap::from([
                 ("example.backup-control".into(), collector),
@@ -2023,13 +2041,11 @@ fn git(repository: &Path, args: &[&str]) {
     );
 }
 
-fn configure_project(root: &Path, config: &workflow::ProjectConfig) -> divinate::error::Result<()> {
+fn configure_project(root: &Path, config: &project::ProjectFile) -> divinate::error::Result<()> {
     if !root.join(".git").exists() {
         git(root, &["init", "-q"]);
-        let repository = config
-            .repository
-            .strip_prefix("github:")
-            .unwrap_or(&config.repository);
+        let identity = &config.repository.identity;
+        let repository = identity.strip_prefix("github:").unwrap_or(identity);
         git(
             root,
             &[
@@ -2044,5 +2060,5 @@ fn configure_project(root: &Path, config: &workflow::ProjectConfig) -> divinate:
         git(root, &["add", "-A"]);
         git(root, &["commit", "--allow-empty", "-qm", "fixture"]);
     }
-    project::store(root, &project::from_legacy(config))
+    project::store(root, config)
 }

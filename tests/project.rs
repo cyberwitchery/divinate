@@ -55,7 +55,6 @@ fn init_creates_strict_minimal_yaml() {
     assert_eq!(file.repository.identity, "github:cyberwitchery/example");
     assert!(file.sources.is_empty());
     assert!(state.join("repository.json").is_file());
-    assert!(!state.join("config.json").exists());
 
     let mut malformed = String::from_utf8(bytes).unwrap();
     malformed.push_str("unknown: true\n");
@@ -168,30 +167,6 @@ sources:
             && error.to_string().contains("duplicate mapping key: release"),
         "{error}"
     );
-}
-
-#[test]
-fn init_migrates_legacy_live_configuration_to_yaml() {
-    let repository = Repository::new();
-    let state = repository.directory.path().join("state");
-    divinate::workflow::init(&state).unwrap();
-    divinate::write_json(
-        &divinate::workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "main".into(),
-            mirror_of: None,
-            packs: BTreeMap::new(),
-            sources: BTreeMap::new(),
-        },
-        &state.join(divinate::workflow::CONFIG_FILE),
-    )
-    .unwrap();
-    let output = cli(&repository.path, &state, &["init"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    let loaded = project::load(&repository.path).unwrap();
-    assert_eq!(loaded.config.repository, "github:cyberwitchery/example");
-    assert!(state.join("config.json").is_file());
-    assert!(repository.path.join(project::PROJECT_FILE).is_file());
 }
 
 #[test]

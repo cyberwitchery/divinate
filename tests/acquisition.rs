@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use divinate as evidence_spike;
 use evidence_spike::acquisition::{
-    assess, compare, seal_transcript, AcquisitionTermination, ContractInvalidation,
-    ContractRegistry, ContractStatus, EnumerationStatus, HttpExchange, HttpRequest, HttpResponse,
-    IntegrityStatus, RerunOutcome, TranscriptContents, GITHUB_COMMITS_CONTRACT,
+    assess, seal_transcript, AcquisitionTermination, ContractInvalidation, ContractRegistry,
+    ContractStatus, EnumerationStatus, HttpExchange, HttpRequest, HttpResponse, IntegrityStatus,
+    TranscriptContents, GITHUB_COMMITS_CONTRACT,
 };
 use evidence_spike::hex_digest;
 use evidence_spike::model::{Proposition, Subject, TimeRange};
@@ -241,42 +241,4 @@ fn unknown_contract_version_cannot_reuse_an_old_authority_decision() {
     let assessment = assess(&transcript, &ContractRegistry::default());
     assert_eq!(assessment.contract, ContractStatus::Unsupported);
     assert_eq!(assessment.authority, []);
-}
-
-#[test]
-fn fixed_scope_reruns_expose_disappearing_source_records() {
-    let left = seal_transcript(contents(
-        vec![response(
-            "page-1",
-            "[{\"sha\":\"one\"},{\"sha\":\"two\"}]",
-            None,
-        )],
-        AcquisitionTermination::Exhausted,
-    ))
-    .unwrap();
-    let right = seal_transcript(contents(
-        vec![response("page-1", "[{\"sha\":\"two\"}]", None)],
-        AcquisitionTermination::Exhausted,
-    ))
-    .unwrap();
-    let comparison = compare(&left, &right);
-    assert_eq!(comparison.outcome, RerunOutcome::ContentChanged);
-    assert_eq!(comparison.removed_identities, vec!["one"]);
-    assert_eq!(comparison.added_identities, [] as [String; 0]);
-}
-
-#[test]
-fn different_scopes_are_not_misclassified_as_inconsistent_reruns() {
-    let left = seal_transcript(contents(
-        vec![response("page-1", "[]", None)],
-        AcquisitionTermination::Exhausted,
-    ))
-    .unwrap();
-    let mut different = contents(
-        vec![response("page-1", "[]", None)],
-        AcquisitionTermination::Exhausted,
-    );
-    different.requested_scope.until = "2026-09-02T00:00:00Z".into();
-    let right = seal_transcript(different).unwrap();
-    assert_eq!(compare(&left, &right).outcome, RerunOutcome::NotComparable);
 }

@@ -200,70 +200,6 @@ pub fn store(repository_root: &Path, file: &ProjectFile) -> Result<()> {
     Ok(())
 }
 
-/// convert the pre-YAML project configuration for one-time migration.
-#[must_use]
-pub fn from_legacy(config: &ProjectConfig) -> ProjectFile {
-    let packs = config
-        .packs
-        .iter()
-        .map(|(id, pack)| {
-            (
-                id.clone(),
-                PackFileConfig {
-                    executable: pack.executable.clone(),
-                    configuration: normalized_configuration(&pack.configuration),
-                    timeout_seconds: pack.timeout_seconds,
-                },
-            )
-        })
-        .collect();
-    let sources = config
-        .sources
-        .iter()
-        .map(|(id, source)| {
-            let provider = match &source.provider {
-                SourceProvider::Builtin { source } => {
-                    SourceFileProvider::Builtin(BuiltinProvider {
-                        builtin: source.clone(),
-                    })
-                }
-                SourceProvider::Pack { pack, collector } => {
-                    SourceFileProvider::Pack(PackProvider {
-                        pack: pack.clone(),
-                        collector: collector.clone(),
-                    })
-                }
-            };
-            (
-                id.clone(),
-                SourceFileConfig {
-                    provider,
-                    required: source.required,
-                    context: source.context,
-                    configuration: normalized_configuration(&source.configuration),
-                },
-            )
-        })
-        .collect();
-    ProjectFile {
-        repository: RepositoryConfig {
-            identity: config.repository.clone(),
-            branch: config.branch.clone(),
-            mirror_of: None,
-        },
-        packs,
-        sources,
-    }
-}
-
-fn normalized_configuration(value: &Value) -> Value {
-    if value.is_null() {
-        empty_object()
-    } else {
-        value.clone()
-    }
-}
-
 fn resolve(repository_root: &Path, file: ProjectFile) -> Result<ProjectConfig> {
     let mut packs = BTreeMap::new();
     for (id, pack) in file.packs {
@@ -334,7 +270,6 @@ fn resolve(repository_root: &Path, file: ProjectFile) -> Result<ProjectConfig> {
                 provider,
                 configuration: source.configuration,
                 context,
-                enabled: true,
                 required: source.required,
             },
         );

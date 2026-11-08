@@ -451,23 +451,24 @@ fn configured_collect_reports_a_missing_executable_before_writing_evidence() {
     let state = tempfile::tempdir().unwrap();
     configure_project(
         &fixture.repository,
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: "master".into(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "master".into(),
+                mirror_of: None,
+            },
             packs: BTreeMap::default(),
             sources: BTreeMap::from([(
                 "release-sbom".into(),
-                workflow::SourceConfig {
-                    provider: workflow::SourceProvider::Builtin {
-                        source: "release-sbom".into(),
-                    },
+                project::SourceFileConfig {
+                    provider: project::SourceFileProvider::Builtin(project::BuiltinProvider {
+                        builtin: "release-sbom".into(),
+                    }),
                     configuration: serde_json::json!({
                         "executable": fixture.repository.join("missing-sbom-diff"),
                         "sbom_path": "dist/{release}.cdx.json"
                     }),
                     context: workflow::SourceContext::Release,
-                    enabled: true,
                     required: true,
                 },
             )]),
@@ -595,7 +596,6 @@ fn declarative_source_configuration_controls_release_collection() {
     project::store(&fixture.repository, &file).unwrap();
     let collect = product_collect(&fixture, state.path(), "2030-01-01T00:00:00Z");
     assert!(collect.status.success(), "{}", stderr(&collect));
-    assert!(!state.path().join("config.json").exists());
     let first_corpus = fs::read(workflow::corpus_path(state.path())).unwrap();
     let first_cycles = workflow::load_collection_cycles(state.path()).unwrap();
     assert_eq!(first_cycles.len(), 1);
@@ -667,23 +667,24 @@ fn configure_release(fixture: &Fixture, state: &Path, sbom_path: &str) {
     assert!(initialized.status.success(), "{}", stderr(&initialized));
     configure_project(
         &fixture.repository,
-        &workflow::ProjectConfig {
-            repository: "github:cyberwitchery/example".into(),
-            branch: release::current_branch(&fixture.repository).unwrap(),
-            mirror_of: None,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: release::current_branch(&fixture.repository).unwrap(),
+                mirror_of: None,
+            },
             packs: BTreeMap::new(),
             sources: BTreeMap::from([(
                 "release-sbom".into(),
-                workflow::SourceConfig {
-                    provider: workflow::SourceProvider::Builtin {
-                        source: "release-sbom".into(),
-                    },
+                project::SourceFileConfig {
+                    provider: project::SourceFileProvider::Builtin(project::BuiltinProvider {
+                        builtin: "release-sbom".into(),
+                    }),
                     configuration: serde_json::json!({
                         "executable": fixture.executable,
                         "sbom_path": sbom_path,
                     }),
                     context: workflow::SourceContext::Release,
-                    enabled: true,
                     required: true,
                 },
             )]),
@@ -785,6 +786,6 @@ fn revision(repository: &Path, tag: &str) -> String {
     String::from_utf8(output.stdout).unwrap().trim().into()
 }
 
-fn configure_project(root: &Path, config: &workflow::ProjectConfig) -> divinate::error::Result<()> {
-    project::store(root, &project::from_legacy(config))
+fn configure_project(root: &Path, config: &project::ProjectFile) -> divinate::error::Result<()> {
+    project::store(root, config)
 }

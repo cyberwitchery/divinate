@@ -232,8 +232,8 @@ an evaluator receives only:
 
 the response supplies assertion type, claim, subject, outcome, evaluation time,
 validity, evidence uses, gaps, identity joins, reasoning, limitations, and
-coverage. core computes assertion and derivation identity. legacy `id` and
-`derivation` response fields are ignored.
+coverage. core computes assertion and derivation identity; a response that
+carries `id` or `derivation` is refused.
 
 each coverage decision must name a declared proposition and equal core's own
 assessment. a supported coverage-backed assertion requires a non-empty interval

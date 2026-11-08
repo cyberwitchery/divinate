@@ -21,8 +21,6 @@ use time::OffsetDateTime;
 pub const CORPUS_FILE: &str = "corpus.json";
 /// the current contract invalidations, relative to the state directory.
 pub const CONTRACTS_FILE: &str = "contracts.json";
-/// the legacy live configuration filename, retained for migration only.
-pub const CONFIG_FILE: &str = "config.json";
 /// the repository identity bound to this evidence state.
 pub const REPOSITORY_FILE: &str = "repository.json";
 
@@ -105,8 +103,6 @@ pub struct SourceConfig {
     pub configuration: Value,
     #[serde(default)]
     pub context: SourceContext,
-    #[serde(default = "enabled_source")]
-    pub enabled: bool,
     #[serde(default = "required_source")]
     pub required: bool,
 }
@@ -172,16 +168,6 @@ pub fn ensure_repository_identity(root: &Path, repository: &str) -> Result<()> {
             )));
         }
         return Ok(());
-    }
-    let legacy = root.join(CONFIG_FILE);
-    if legacy.exists() {
-        let state: ProjectConfig = read_json(&legacy)?;
-        if state.repository != repository {
-            return Err(Error::Provenance(format!(
-                "evidence state identifies repository {}, not {repository}",
-                state.repository
-            )));
-        }
     }
     write_json(
         &RepositoryState {
@@ -447,22 +433,6 @@ pub fn load_pack_invocations(root: &Path) -> Result<Vec<crate::pack::PackInvocat
     load_json_directory(&root.join("pack-invocations"))
 }
 
-/// load the pre-YAML project configuration for migration.
-///
-/// # Errors
-///
-/// returns an error when configuration is absent or invalid.
-pub fn load_legacy_config(root: &Path) -> Result<ProjectConfig> {
-    let path = root.join(CONFIG_FILE);
-    if !path.exists() {
-        return Err(Error::Invalid(format!(
-            "missing legacy configuration {}",
-            path.display()
-        )));
-    }
-    read_json(&path)
-}
-
 /// append a corpus increment and acquisition transcripts.
 ///
 /// # Errors
@@ -712,12 +682,10 @@ pub fn merge(left: &Corpus, right: &Corpus) -> Result<Corpus> {
 
 /// derive a corpus-only historical view without modifying accumulated evidence.
 ///
-/// persisted evaluations should use [`as_of_with_provenance`].
-///
 /// # Errors
 ///
 /// returns an error when an observation or collection timestamp is invalid.
-pub fn as_of(corpus: &Corpus, at: OffsetDateTime) -> Result<Corpus> {
+fn as_of(corpus: &Corpus, at: OffsetDateTime) -> Result<Corpus> {
     let mut observations = corpus
         .observations
         .iter()
@@ -905,51 +873,6 @@ fn execution_times(executions: &[ExecutionTranscript]) -> Result<BTreeMap<&str, 
         .collect()
 }
 
-/// return the single most recently observed release at or before an evaluation time.
-///
-/// # Errors
-///
-/// returns an error when no release evidence exists or equally recent evidence
-/// identifies more than one release.
-pub fn latest_release(corpus: &Corpus, at: OffsetDateTime) -> Result<String> {
-    let mut candidates = Vec::new();
-    for observation in &corpus.observations {
-        let Some(release) = observation.subject.qualifier("release") else {
-            continue;
-        };
-        let observed_at = crate::parse_timestamp(&observation.observed_at)?;
-        if observed_at <= at {
-            candidates.push((observed_at, release));
-        }
-    }
-    let latest = candidates
-        .iter()
-        .map(|(observed_at, _)| *observed_at)
-        .max()
-        .ok_or_else(|| {
-            Error::Invalid(
-                "--release is required because repository state contains no release evidence"
-                    .into(),
-            )
-        })?;
-    let releases = candidates
-        .iter()
-        .filter(|(observed_at, _)| *observed_at == latest)
-        .map(|(_, release)| *release)
-        .collect::<std::collections::BTreeSet<_>>();
-    if releases.len() != 1 {
-        return Err(Error::Invalid(format!(
-            "--release is required because equally recent evidence identifies: {}",
-            releases.into_iter().collect::<Vec<_>>().join(", ")
-        )));
-    }
-    releases
-        .into_iter()
-        .next()
-        .map(str::to_owned)
-        .ok_or_else(|| Error::Invalid("latest release selection was empty".into()))
-}
-
 fn merge_objects<T, F>(left: &[T], right: &[T], id: F, kind: &str) -> Result<Vec<T>>
 where
     T: Clone + PartialEq,
@@ -998,10 +921,6 @@ pub fn corpus_path(root: &Path) -> PathBuf {
 
 fn default_branch() -> String {
     "main".into()
-}
-
-const fn enabled_source() -> bool {
-    true
 }
 
 const fn required_source() -> bool {

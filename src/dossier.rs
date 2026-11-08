@@ -124,14 +124,13 @@ pub struct ControlEntry {
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-/// one piece of evidence with its digest and a command to recover it.
+/// one piece of evidence with its digest.
 pub struct DossierEvidence {
     pub observation_id: String,
     pub source_id: String,
     pub source_sha256: String,
     pub collection_run_id: Option<String>,
     pub reason: String,
-    pub drill_down: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -374,7 +373,6 @@ fn evidence(corpus: &Corpus, item: &EvidenceUse) -> Result<DossierEvidence> {
         source_sha256: source.sha256.clone(),
         collection_run_id: observation.collection_run_id.clone(),
         reason: item.reason.clone(),
-        drill_down: format!("divinate source .evidence/corpus.json {}", observation.id),
     })
 }
 

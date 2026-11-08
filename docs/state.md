@@ -169,21 +169,12 @@ derived label does not alter retained evidence.
 copy or archive `.evidence/` as one unit. moving it does not break internal
 links. partial copies can leave provenance incomplete.
 
-## migration
-
-`.evidence/config.json` is the pre-YAML live configuration. if no YAML exists,
-`divinate init` converts it to `divinate.yaml`. the old file is retained as
-historical input but is no longer authoritative for subsequent collection.
-verification does not require a current YAML file, so pre-migration evidence
-remains verifiable offline.
-
 ## schemas
 
 the `schema/` directory publishes draft 2020-12 schemas for project
 configuration, configuration provenance, evidence corpora, transcripts,
 contract registries, assertions, dossiers, pack protocol messages, and views.
-`project-config.schema.json` describes the YAML data model;
-`legacy-project-config.schema.json` describes old state configuration.
+`project-config.schema.json` describes the YAML data model.
 
 schema validity is not semantic verification. `divinate verify` also checks
 identities, content digests, retained bytes, and cross-object links.

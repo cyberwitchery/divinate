@@ -3,16 +3,13 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use divinate::acquisition::{
-    self, AcquisitionTranscript, ContractInvalidation, ContractRegistry,
-    GithubBranchProtectionCapture, GithubCapture, GITHUB_COMMITS_CONTRACT,
-};
+use divinate::acquisition::{self, AcquisitionTranscript, ContractRegistry};
 use divinate::assertions::{self, DerivedAssertion, EvaluationTarget};
 use divinate::dossier;
 use divinate::error::{Error, Result};
 use divinate::execution::{self, ExecutionRequest, NamedPath};
-use divinate::model::{CollectionOutcome, Corpus, Observation, ObservationKind};
-use divinate::{collect, load_corpus, parse_timestamp, read_json, source_bytes, write_json};
+use divinate::model::{CollectionOutcome, Corpus, Observation};
+use divinate::{collect, load_corpus, parse_timestamp, read_json, write_json};
 
 #[derive(Parser)]
 #[command(about = "answer technical compliance questions with evidence anyone can verify")]
@@ -173,108 +170,6 @@ enum Command {
         /// path to write the stream to
         #[arg(short, long)]
         output: PathBuf,
-    },
-    /// query observations
-    #[command(hide = true)]
-    Query {
-        corpus: PathBuf,
-        #[arg(long)]
-        revision: Option<String>,
-        #[arg(long)]
-        tool: Option<String>,
-        #[arg(long)]
-        kind: Option<Kind>,
-    },
-    /// list evidence producers
-    #[command(hide = true)]
-    Tools { corpus: PathBuf },
-    /// extract an observation's verified source
-    #[command(name = "source-bytes", hide = true)]
-    SourceBytes {
-        corpus: PathBuf,
-        evidence_id: String,
-    },
-    /// derive assertions from a corpus
-    #[command(hide = true)]
-    Assertions {
-        corpus: PathBuf,
-        #[command(flatten)]
-        target: TargetArgs,
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-    },
-    /// explain an assertion from a standalone corpus
-    #[command(hide = true)]
-    Explain {
-        corpus: PathBuf,
-        assertion_id: String,
-        #[command(flatten)]
-        target: TargetArgs,
-        #[arg(long)]
-        json: bool,
-    },
-    /// inspect collection runs
-    #[command(hide = true)]
-    Collections {
-        corpus: PathBuf,
-        #[arg(long)]
-        incomplete: bool,
-    },
-    /// inspect an assertion's coverage
-    #[command(hide = true)]
-    Coverage {
-        corpus: PathBuf,
-        assertion_id: String,
-        #[command(flatten)]
-        target: TargetArgs,
-    },
-    /// capture a github commit transcript
-    #[command(hide = true)]
-    CaptureGithub(CaptureArgs),
-    /// capture a github branch-protection transcript
-    #[command(hide = true)]
-    CaptureBranchProtection(CaptureBranchArgs),
-    /// extract an acquisition response body
-    #[command(hide = true)]
-    AcquisitionSource {
-        transcript: PathBuf,
-        #[arg(default_value_t = 0)]
-        exchange: usize,
-        #[arg(short, long)]
-        output: PathBuf,
-    },
-    /// verify an acquisition transcript offline
-    #[command(hide = true)]
-    ReplayAcquisition {
-        transcript: PathBuf,
-        #[arg(long)]
-        invalidate_at: Option<String>,
-        #[arg(long)]
-        invalidate_reason: Option<String>,
-    },
-    /// compare equal-scope acquisitions
-    #[command(hide = true)]
-    CompareAcquisitions { left: PathBuf, right: PathBuf },
-    /// build a technical-controls dossier
-    #[command(hide = true)]
-    Dossier {
-        corpus: PathBuf,
-        #[command(flatten)]
-        target: TargetArgs,
-        #[arg(long = "acquisition")]
-        acquisitions: Vec<PathBuf>,
-        #[arg(long)]
-        markdown: PathBuf,
-        #[arg(long)]
-        json_output: PathBuf,
-    },
-    /// append a corpus increment and acquisitions
-    #[command(hide = true)]
-    StateRecord {
-        state: PathBuf,
-        increment: PathBuf,
-        #[arg(long = "acquisition")]
-        acquisitions: Vec<PathBuf>,
     },
 }
 
@@ -460,42 +355,6 @@ struct StatusChanges {
 }
 
 #[derive(Args)]
-struct CaptureArgs {
-    #[arg(long)]
-    repository: String,
-    #[arg(long, default_value = "main")]
-    branch: String,
-    #[arg(long)]
-    from: String,
-    #[arg(long)]
-    until: String,
-    #[arg(long, default_value_t = 100)]
-    per_page: u16,
-    #[arg(long, default_value_t = 100)]
-    max_pages: u16,
-    #[arg(long)]
-    at: Option<String>,
-    #[arg(short, long)]
-    output: PathBuf,
-}
-
-#[derive(Args)]
-struct CaptureBranchArgs {
-    #[arg(long)]
-    repository: String,
-    #[arg(long, default_value = "main")]
-    branch: String,
-    #[arg(long)]
-    from: String,
-    #[arg(long)]
-    until: String,
-    #[arg(long)]
-    at: Option<String>,
-    #[arg(short, long)]
-    output: PathBuf,
-}
-
-#[derive(Args)]
 struct TargetArgs {
     /// repository identity; defaults to divinate.yaml
     #[arg(long)]
@@ -518,34 +377,9 @@ struct TargetArgs {
 }
 
 #[derive(Clone, Copy, ValueEnum)]
-enum Kind {
-    ChangeSet,
-    ConfigurationHistory,
-    ConfigurationSnapshot,
-    MutationHistory,
-    PolicyCheck,
-    ReleaseMembership,
-    ReviewRecord,
-}
-
-#[derive(Clone, Copy, ValueEnum)]
 enum Stream {
     Stdout,
     Stderr,
-}
-
-impl From<Kind> for ObservationKind {
-    fn from(value: Kind) -> Self {
-        match value {
-            Kind::ChangeSet => Self::ChangeSet,
-            Kind::ConfigurationHistory => Self::ConfigurationHistory,
-            Kind::ConfigurationSnapshot => Self::ConfigurationSnapshot,
-            Kind::MutationHistory => Self::MutationHistory,
-            Kind::PolicyCheck => Self::PolicyCheck,
-            Kind::ReleaseMembership => Self::ReleaseMembership,
-            Kind::ReviewRecord => Self::ReviewRecord,
-        }
-    }
 }
 
 fn main() {
@@ -661,95 +495,7 @@ fn run(cli: Cli) -> Result<()> {
             stream,
             output,
         } => extract_stream(&state, &execution_id, stream, &output),
-        Command::Query {
-            corpus,
-            revision,
-            tool,
-            kind,
-        } => query(&corpus, revision.as_deref(), tool.as_deref(), kind),
-        Command::Tools { corpus } => list_tools(&corpus),
-        Command::SourceBytes {
-            corpus,
-            evidence_id,
-        } => recover_source(&corpus, &evidence_id),
-        Command::Assertions {
-            corpus,
-            target,
-            output,
-        } => derive_assertions(&corpus, target, output.as_deref()),
-        Command::Explain {
-            corpus,
-            assertion_id,
-            target,
-            json,
-        } => {
-            let corpus = load_corpus(&corpus)?;
-            let (target, at) = evaluation(target)?;
-            let derived = assertions::evaluate_all(&corpus, &target, at)?;
-            let assertion = derived
-                .iter()
-                .find(|item| item.id == assertion_id)
-                .ok_or_else(|| Error::Invalid(format!("unknown assertion id: {assertion_id}")))?;
-            if json {
-                print_json(assertion)
-            } else {
-                explain(assertion)
-            }
-        }
-        Command::Collections { corpus, incomplete } => list_collections(&corpus, incomplete),
-        Command::Coverage {
-            corpus,
-            assertion_id,
-            target,
-        } => {
-            let corpus = load_corpus(&corpus)?;
-            let (target, at) = evaluation(target)?;
-            let derived = assertions::evaluate_all(&corpus, &target, at)?;
-            let assertion = derived
-                .iter()
-                .find(|item| item.id == assertion_id)
-                .ok_or_else(|| Error::Invalid(format!("unknown assertion id: {assertion_id}")))?;
-            print_json(&assertion.coverage)
-        }
-        Command::CaptureGithub(args) => capture_github(args),
-        Command::CaptureBranchProtection(args) => capture_branch_protection(args),
-        Command::AcquisitionSource {
-            transcript,
-            exchange,
-            output,
-        } => acquisition_source(&transcript, exchange, &output),
-        Command::ReplayAcquisition {
-            transcript,
-            invalidate_at,
-            invalidate_reason,
-        } => replay_acquisition(&transcript, invalidate_at, invalidate_reason),
-        Command::CompareAcquisitions { left, right } => compare_acquisitions(&left, &right),
-        Command::Dossier {
-            corpus,
-            target,
-            acquisitions,
-            markdown,
-            json_output,
-        } => generate_dossier(&corpus, target, &acquisitions, &markdown, &json_output),
-        Command::StateRecord {
-            state,
-            increment,
-            acquisitions,
-        } => record_state(&state, &increment, &acquisitions),
     }
-}
-
-fn list_tools(corpus_path: &std::path::Path) -> Result<()> {
-    let corpus = load_corpus(corpus_path)?;
-    let tools = corpus
-        .observations
-        .iter()
-        .map(|item| (&item.producer.name, &item.producer.version))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|(name, version)| serde_json::json!({"name": name, "version": version}))
-        .collect::<Vec<_>>();
-    print_json(&tools)
 }
 
 fn init_repository(
@@ -763,22 +509,7 @@ fn init_repository(
     divinate::workflow::init(state)?;
     divinate::workflow::ensure_repository_identity(state, &repository)?;
     let project_path = repository_path.join(divinate::project::PROJECT_FILE);
-    let created = if project_path.exists() {
-        divinate::project::load(repository_path)?;
-        false
-    } else if state.join(divinate::workflow::CONFIG_FILE).exists() {
-        let legacy = divinate::workflow::load_legacy_config(state)?;
-        if legacy.repository != repository {
-            return Err(Error::Provenance(format!(
-                "legacy configuration identifies repository {}, not {repository}",
-                legacy.repository
-            )));
-        }
-        divinate::project::store(repository_path, &divinate::project::from_legacy(&legacy))?;
-        true
-    } else {
-        divinate::project::initialize(repository_path, &repository, &branch)?
-    };
+    let created = divinate::project::initialize(repository_path, &repository, &branch)?;
     let branch = divinate::project::load(repository_path)?.config.branch;
     if json {
         print_json(&serde_json::json!({
@@ -826,11 +557,7 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
         )));
     }
     let revision = divinate::release::head_revision(&args.repository_path)?;
-    let enabled = config
-        .sources
-        .iter()
-        .filter(|(_, source)| source.enabled)
-        .collect::<Vec<_>>();
+    let enabled = config.sources.iter().collect::<Vec<_>>();
     if enabled.is_empty() {
         return Err(Error::Invalid(
             "divinate.yaml defines no evidence sources; add one under sources".into(),
@@ -1296,90 +1023,6 @@ fn render_collection_report(report: &ProductCollectionReport) -> Result<()> {
         .map_err(stdout_error)?;
     }
     writeln!(out, "\ndossier: {}", report.dossier).map_err(stdout_error)
-}
-
-fn list_collections(corpus_path: &std::path::Path, incomplete: bool) -> Result<()> {
-    let corpus = load_corpus(corpus_path)?;
-    let runs = corpus
-        .collections
-        .iter()
-        .filter(|run| !incomplete || run.outcome != CollectionOutcome::Complete)
-        .collect::<Vec<_>>();
-    print_json(&runs)
-}
-
-fn recover_source(corpus_path: &std::path::Path, evidence_id: &str) -> Result<()> {
-    let corpus = load_corpus(corpus_path)?;
-    io::stdout()
-        .write_all(source_bytes(&corpus, evidence_id)?)
-        .map_err(stdout_error)
-}
-
-fn derive_assertions(
-    corpus_path: &std::path::Path,
-    target: TargetArgs,
-    output: Option<&std::path::Path>,
-) -> Result<()> {
-    let corpus = load_corpus(corpus_path)?;
-    let (target, at) = evaluation(target)?;
-    let derived = assertions::evaluate_all(&corpus, &target, at)?;
-    output.map_or_else(|| print_json(&derived), |path| write_json(&derived, path))
-}
-
-fn query(
-    corpus_path: &std::path::Path,
-    revision: Option<&str>,
-    tool: Option<&str>,
-    kind: Option<Kind>,
-) -> Result<()> {
-    let corpus = load_corpus(corpus_path)?;
-    let observations = corpus
-        .observations
-        .iter()
-        .filter(|item| matches_query(item, revision, tool, kind))
-        .collect::<Vec<_>>();
-    print_json(&observations)
-}
-
-fn generate_dossier(
-    corpus_path: &std::path::Path,
-    target: TargetArgs,
-    acquisition_paths: &[PathBuf],
-    markdown: &std::path::Path,
-    json_output: &std::path::Path,
-) -> Result<()> {
-    let corpus = load_corpus(corpus_path)?;
-    let (target, at) = evaluation(target)?;
-    let assertions = assertions::evaluate_all(&corpus, &target, at)?;
-    let acquisitions = acquisition_paths
-        .iter()
-        .map(|path| read_json(path))
-        .collect::<Result<Vec<AcquisitionTranscript>>>()?;
-    let dossier = dossier::build(&corpus, &assertions, &acquisitions, &target, at)?;
-    write_json(&dossier, json_output)?;
-    std::fs::write(markdown, dossier::render_markdown(&dossier)).map_err(|source| Error::Io {
-        path: markdown.into(),
-        source,
-    })
-}
-
-fn record_state(
-    state: &std::path::Path,
-    increment_path: &std::path::Path,
-    acquisition_paths: &[PathBuf],
-) -> Result<()> {
-    let increment = load_corpus(increment_path)?;
-    let acquisitions = acquisition_paths
-        .iter()
-        .map(|path| read_json(path))
-        .collect::<Result<Vec<AcquisitionTranscript>>>()?;
-    let corpus = divinate::workflow::accumulate(state, &increment, &acquisitions)?;
-    print_json(&serde_json::json!({
-        "collections": corpus.collections.len(),
-        "observations": corpus.observations.len(),
-        "sources": corpus.sources.len(),
-        "transcripts": divinate::workflow::load_transcripts(state)?.len(),
-    }))
 }
 
 fn record_increment(
@@ -2717,113 +2360,6 @@ fn write_view<T: serde::Serialize>(
     std::fs::write(&path, markdown).map_err(|source| Error::Io { path, source })
 }
 
-fn compare_acquisitions(left: &std::path::Path, right: &std::path::Path) -> Result<()> {
-    let left: AcquisitionTranscript = read_json(left)?;
-    let right: AcquisitionTranscript = read_json(right)?;
-    print_json(&acquisition::compare(&left, &right))
-}
-
-fn capture_github(args: CaptureArgs) -> Result<()> {
-    parse_timestamp(&args.from)?;
-    parse_timestamp(&args.until)?;
-    let captured_at = args.at.map_or_else(
-        || Ok(time::OffsetDateTime::now_utc()),
-        |value| parse_timestamp(&value),
-    )?;
-    let transcript = acquisition::capture_github_commits(&GithubCapture {
-        repository: args.repository,
-        branch: args.branch,
-        interval: divinate::model::TimeRange {
-            from: args.from,
-            until: args.until,
-        },
-        per_page: args.per_page,
-        max_pages: args.max_pages,
-        captured_at,
-    })?;
-    write_json(&transcript, &args.output)
-}
-
-fn capture_branch_protection(args: CaptureBranchArgs) -> Result<()> {
-    parse_timestamp(&args.from)?;
-    parse_timestamp(&args.until)?;
-    let captured_at = args.at.map_or_else(
-        || Ok(time::OffsetDateTime::now_utc()),
-        |value| parse_timestamp(&value),
-    )?;
-    let transcript =
-        acquisition::capture_github_branch_protection(&GithubBranchProtectionCapture {
-            repository: args.repository,
-            branch: args.branch,
-            interval: divinate::model::TimeRange {
-                from: args.from,
-                until: args.until,
-            },
-            captured_at,
-        })?;
-    write_json(&transcript, &args.output)
-}
-
-fn acquisition_source(
-    path: &std::path::Path,
-    exchange: usize,
-    output: &std::path::Path,
-) -> Result<()> {
-    let transcript: AcquisitionTranscript = read_json(path)?;
-    let body = transcript
-        .contents
-        .exchanges
-        .get(exchange)
-        .ok_or_else(|| Error::Invalid(format!("acquisition has no exchange {exchange}")))?
-        .response
-        .body
-        .as_bytes();
-    std::fs::write(output, body).map_err(|source| Error::Io {
-        path: output.into(),
-        source,
-    })
-}
-
-fn replay_acquisition(
-    path: &std::path::Path,
-    invalidate_at: Option<String>,
-    invalidate_reason: Option<String>,
-) -> Result<()> {
-    let transcript: AcquisitionTranscript = read_json(path)?;
-    let mut registry = ContractRegistry::default();
-    if let Some(discovered_at) = invalidate_at {
-        parse_timestamp(&discovered_at)?;
-        registry.invalidations.push(ContractInvalidation {
-            contract: GITHUB_COMMITS_CONTRACT.into(),
-            discovered_at,
-            reason: invalidate_reason.unwrap_or_else(|| {
-                "collector contract no longer establishes exhaustive enumeration".into()
-            }),
-        });
-    }
-    print_json(&acquisition::assess(&transcript, &registry))
-}
-
-fn evaluation(args: TargetArgs) -> Result<(EvaluationTarget, time::OffsetDateTime)> {
-    let at = args.at.map_or_else(
-        || Ok(time::OffsetDateTime::now_utc()),
-        |value| parse_timestamp(&value),
-    )?;
-    Ok((
-        EvaluationTarget {
-            repository: args.repository.ok_or_else(|| {
-                Error::Invalid("--repository is required outside repository-local state".into())
-            })?,
-            branch: args.branch.unwrap_or_else(|| "main".into()),
-            release: args.release,
-            from: args.from,
-            until: args.until,
-            mirror_of: None,
-        },
-        at,
-    ))
-}
-
 fn evaluation_in_project(
     config: &divinate::workflow::ProjectConfig,
     args: TargetArgs,
@@ -3126,98 +2662,6 @@ fn parse_metadata(value: &str) -> std::result::Result<(String, String), String> 
         return Err("metadata name must not be empty".into());
     }
     Ok((name.into(), value.into()))
-}
-
-fn matches_query(
-    observation: &Observation,
-    revision: Option<&str>,
-    tool: Option<&str>,
-    kind: Option<Kind>,
-) -> bool {
-    revision.is_none_or(|revision| observation.subject.qualifier("revision") == Some(revision))
-        && tool.is_none_or(|tool| observation.producer.name == tool)
-        && kind.is_none_or(|kind| observation.kind == kind.into())
-}
-
-fn explain(assertion: &DerivedAssertion) -> Result<()> {
-    let mut out = io::stdout().lock();
-    writeln!(out, "assertion: {}", assertion.claim).map_err(stdout_error)?;
-    writeln!(out, "id: {}", assertion.id).map_err(stdout_error)?;
-    writeln!(out, "result: {:?}", assertion.outcome).map_err(stdout_error)?;
-    writeln!(out, "evaluator: {}", assertion.derivation.version).map_err(stdout_error)?;
-    explain_evidence(&mut out, "support", &assertion.support)?;
-    explain_evidence(&mut out, "contradictions", &assertion.contradictions)?;
-    explain_evidence(&mut out, "considered", &assertion.considered)?;
-    if !assertion.coverage.is_empty() {
-        writeln!(out, "coverage:").map_err(stdout_error)?;
-        for decision in &assertion.coverage {
-            writeln!(
-                out,
-                "  {:?}: {:?} for {} .. {}",
-                decision.requirement.proposition,
-                decision.outcome,
-                decision.requirement.interval.from,
-                decision.requirement.interval.until
-            )
-            .map_err(stdout_error)?;
-            for run in &decision.collection_runs {
-                writeln!(
-                    out,
-                    "    {}: {:?}: {}",
-                    run.collection_run_id, run.disposition, run.reason
-                )
-                .map_err(stdout_error)?;
-            }
-            for gap in &decision.uncovered_intervals {
-                writeln!(out, "    uncovered: {} .. {}", gap.from, gap.until)
-                    .map_err(stdout_error)?;
-            }
-        }
-    }
-    if !assertion.missing.is_empty() {
-        writeln!(out, "missing:").map_err(stdout_error)?;
-        for item in &assertion.missing {
-            writeln!(out, "  {}: {}", item.requirement, item.reason).map_err(stdout_error)?;
-        }
-    }
-    if !assertion.identity_joins.is_empty() {
-        writeln!(out, "identity joins:").map_err(stdout_error)?;
-        for join in &assertion.identity_joins {
-            writeln!(
-                out,
-                "  {} + {}: {:?}",
-                join.left_observation_id, join.right_observation_id, join.fields
-            )
-            .map_err(stdout_error)?;
-        }
-    }
-    if !assertion.limitations.is_empty() {
-        writeln!(out, "limitations:").map_err(stdout_error)?;
-        for limitation in &assertion.limitations {
-            writeln!(out, "  {limitation}").map_err(stdout_error)?;
-        }
-    }
-    Ok(())
-}
-
-fn explain_evidence(
-    out: &mut impl Write,
-    heading: &str,
-    evidence: &[assertions::EvidenceUse],
-) -> Result<()> {
-    if evidence.is_empty() {
-        return Ok(());
-    }
-    writeln!(out, "{heading}:").map_err(stdout_error)?;
-    for item in evidence {
-        writeln!(
-            out,
-            "  {} -> {}: {}",
-            item.observation_id, item.source_id, item.reason
-        )
-        .map_err(stdout_error)?;
-    }
-    Ok(())
 }
 
 fn print_json<T: serde::Serialize>(value: &T) -> Result<()> {
