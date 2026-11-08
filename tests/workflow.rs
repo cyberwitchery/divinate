@@ -129,8 +129,14 @@ fn separate_cycle_increments_accumulate_without_rewriting_earlier_evidence() {
 #[test]
 fn historical_view_excludes_later_observations_without_removing_them() {
     let corpus = corpus();
-    let historical =
-        workflow::as_of(&corpus, parse_timestamp("2026-09-02T00:00:00Z").unwrap()).unwrap();
+    let historical = workflow::as_of_with_provenance(
+        &corpus,
+        &[],
+        &[],
+        parse_timestamp("2026-09-02T00:00:00Z").unwrap(),
+    )
+    .unwrap()
+    .corpus;
     assert!(historical
         .observations
         .iter()
@@ -221,42 +227,6 @@ fn historical_graph_excludes_observations_until_their_provenance_exists() {
     assert_eq!(available.corpus.collections.len(), 1);
     assert_eq!(available.corpus.observations.len(), 1);
     assert_eq!(available.acquisitions, [acquisition]);
-}
-
-#[test]
-fn latest_release_is_inferred_only_when_unambiguous() {
-    let corpus = corpus();
-    let at = latest_capture();
-    assert_eq!(workflow::latest_release(&corpus, at).unwrap(), "v1.4");
-
-    let mut ambiguous = corpus.clone();
-    let mut competing = ambiguous
-        .observations
-        .iter()
-        .filter(|item| item.subject.qualifier("release").is_some())
-        .max_by_key(|item| &item.observed_at)
-        .unwrap()
-        .clone();
-    competing.id = "competing-release".into();
-    competing.subject.id = "github:cyberwitchery/example:v2.0".into();
-    competing
-        .subject
-        .qualifiers
-        .insert("release".into(), serde_json::json!("v2.0"));
-    ambiguous.observations.push(competing);
-    assert!(workflow::latest_release(&ambiguous, at)
-        .unwrap_err()
-        .to_string()
-        .contains("equally recent evidence"));
-
-    let mut absent = corpus;
-    absent
-        .observations
-        .retain(|item| item.subject.qualifier("release").is_none());
-    assert!(workflow::latest_release(&absent, at)
-        .unwrap_err()
-        .to_string()
-        .contains("contains no release evidence"));
 }
 
 #[test]

@@ -33,7 +33,6 @@ def pairs() -> list[tuple[str, str, bool]]:
     """(schema name, document path, document is a list of instances)"""
     items = [
         ("evidence-corpus", f"{STATE}/corpus.json", False),
-        ("legacy-project-config", f"{STATE}/config.json", False),
         ("contract-registry", f"{STATE}/contracts.json", False),
         ("isms-update", f"{STATE}/views/isms-update.json", False),
         ("dd-response", f"{STATE}/views/dd-response.json", False),

@@ -295,16 +295,12 @@ pub struct NormalizedObservation {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PackAssertion {
-    #[serde(default, rename = "id")]
-    _legacy_id: Option<String>,
     assertion_type: AssertionType,
     claim: String,
     subject: AssertionSubject,
     outcome: Outcome,
     evaluated_at: String,
     validity: Validity,
-    #[serde(default, rename = "derivation")]
-    _legacy_derivation: Option<Derivation>,
     support: Vec<EvidenceUse>,
     contradictions: Vec<EvidenceUse>,
     considered: Vec<EvidenceUse>,

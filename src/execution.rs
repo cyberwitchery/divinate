@@ -147,7 +147,6 @@ pub struct Verification {
 /// whether a transcript and its blobs still verify.
 pub enum Integrity {
     Verified,
-    Failed,
 }
 
 /// execute a command with an explicit environment and retain exact bytes.

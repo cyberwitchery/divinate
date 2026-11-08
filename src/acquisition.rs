@@ -5,8 +5,7 @@
 //! applies its versioned source contract. [`ContractRegistry`] can withdraw
 //! current authority without changing retained evidence.
 //!
-//! authorization headers and cookies are invalid transcript data. [`compare`]
-//! requires equal contracts, subjects, propositions, scopes, and initial requests.
+//! authorization headers and cookies are invalid transcript data.
 
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -96,26 +95,6 @@ pub struct AzureDevopsRemoteCapture {
     pub subject: Subject,
     pub interval: TimeRange,
     pub max_pages: u16,
-    pub captured_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone)]
-/// options for capturing a github commit enumeration.
-pub struct GithubCapture {
-    pub repository: String,
-    pub branch: String,
-    pub interval: TimeRange,
-    pub per_page: u16,
-    pub max_pages: u16,
-    pub captured_at: OffsetDateTime,
-}
-
-#[derive(Debug, Clone)]
-/// options for capturing one github branch-protection response.
-pub struct GithubBranchProtectionCapture {
-    pub repository: String,
-    pub branch: String,
-    pub interval: TimeRange,
     pub captured_at: OffsetDateTime,
 }
 
@@ -262,178 +241,6 @@ pub struct ContractInvalidation {
     pub contract: String,
     pub discovered_at: String,
     pub reason: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-/// the result of comparing two acquisitions of the same fixed scope.
-pub struct RerunComparison {
-    pub left_transcript_id: String,
-    pub right_transcript_id: String,
-    pub outcome: RerunOutcome,
-    pub added_identities: Vec<String>,
-    pub removed_identities: Vec<String>,
-    pub reasons: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-/// how two reruns of one scope relate.
-///
-/// records that disappeared between equal-scope runs.
-pub enum RerunOutcome {
-    Consistent,
-    ContentChanged,
-    CoverageChanged,
-    NotComparable,
-}
-
-/// capture an authenticated github commit enumeration through the local `gh` cli.
-///
-/// # Errors
-///
-/// returns an error when options are invalid, `gh` cannot execute, a response
-/// cannot be parsed, or pagination leaves the requested repository's commits.
-pub fn capture_github_commits(options: &GithubCapture) -> Result<AcquisitionTranscript> {
-    capture_github_commits_with(options, |url| {
-        Command::new("gh")
-            .args(["api", "--include", url])
-            .output()
-            .map_err(|source| Error::Io {
-                path: "gh".into(),
-                source,
-            })
-    })
-}
-
-fn capture_github_commits_with<G>(
-    options: &GithubCapture,
-    mut gh: G,
-) -> Result<AcquisitionTranscript>
-where
-    G: FnMut(&str) -> Result<std::process::Output>,
-{
-    if options.per_page == 0 || options.max_pages == 0 {
-        return Err(Error::Invalid(
-            "per-page and max-pages must be positive".into(),
-        ));
-    }
-    let captured_at = format_time(options.captured_at)?;
-    let initial_url = format!("{GITHUB_API_ORIGIN}/repos/{}", options.repository);
-    let first_page = commits_url(options);
-    let mut url = initial_url.clone();
-    let mut exchanges = Vec::new();
-    let mut alias = None;
-    let termination;
-
-    loop {
-        let output = gh(&url)?;
-        if !output.status.success() {
-            termination = classify_gh_failure(&output.stderr);
-            break;
-        }
-
-        let exchange = parse_exchange(&url, &output.stdout)?;
-        let next = next_link(&exchange.response.headers);
-        exchanges.push(exchange);
-        if exchanges.len() == 1 {
-            alias = Some(
-                github_repository_alias(&exchanges, &options.repository).ok_or_else(|| {
-                    Error::Provenance(format!(
-                        "github did not identify repository {} by id",
-                        options.repository
-                    ))
-                })?,
-            );
-            url.clone_from(&first_page);
-            continue;
-        }
-        if let Some(next_url) = next {
-            let alias = alias.as_deref().map(|alias| (initial_url.as_str(), alias));
-            ensure_github_next_url(&first_page, &next_url, alias)?;
-            if exchanges.len() - 1 == usize::from(options.max_pages) {
-                termination = AcquisitionTermination::Truncated { next_url };
-                break;
-            }
-            url = next_url;
-        } else {
-            termination = AcquisitionTermination::Exhausted;
-            break;
-        }
-    }
-
-    seal_transcript(TranscriptContents {
-        collector_contract: GITHUB_COMMITS_CONTRACT.into(),
-        collector_version: env!("CARGO_PKG_VERSION").into(),
-        subject: Subject {
-            kind: "repository".into(),
-            id: format!("github:{}", options.repository),
-            qualifiers: BTreeMap::from([(
-                "branch".into(),
-                serde_json::Value::String(options.branch.clone()),
-            )]),
-        },
-        proposition: Proposition::CommitAncestry,
-        requested_scope: options.interval.clone(),
-        captured_at,
-        initial_request: HttpRequest {
-            method: "GET".into(),
-            url: initial_url,
-        },
-        exchanges,
-        termination,
-    })
-}
-
-/// capture one branch-protection response and its acquisition conditions.
-///
-/// # Errors
-///
-/// returns an error when `gh` cannot execute or emits an invalid response.
-pub fn capture_github_branch_protection(
-    options: &GithubBranchProtectionCapture,
-) -> Result<AcquisitionTranscript> {
-    let captured_at = format_time(options.captured_at)?;
-    let url = format!(
-        "repos/{}/branches/{}/protection",
-        options.repository,
-        percent_encode(&options.branch)
-    );
-    let output = Command::new("gh")
-        .args(["api", "--include", &url])
-        .output()
-        .map_err(|source| Error::Io {
-            path: "gh".into(),
-            source,
-        })?;
-    let (exchanges, termination) = if output.status.success() {
-        (
-            vec![parse_exchange(&url, &output.stdout)?],
-            AcquisitionTermination::Exhausted,
-        )
-    } else {
-        (vec![], classify_gh_failure(&output.stderr))
-    };
-    seal_transcript(TranscriptContents {
-        collector_contract: GITHUB_BRANCH_PROTECTION_CONTRACT.into(),
-        collector_version: env!("CARGO_PKG_VERSION").into(),
-        subject: Subject {
-            kind: "repository".into(),
-            id: format!("github:{}", options.repository),
-            qualifiers: BTreeMap::from([(
-                "branch".into(),
-                serde_json::Value::String(options.branch.clone()),
-            )]),
-        },
-        proposition: Proposition::BranchConfiguration,
-        requested_scope: options.interval.clone(),
-        captured_at,
-        initial_request: HttpRequest {
-            method: "GET".into(),
-            url,
-        },
-        exchanges,
-        termination,
-    })
 }
 
 /// acquire one narrow github resource with credentials held only by core.
@@ -1085,25 +892,6 @@ fn github_rate_limited(diagnostic: &str, headers: &BTreeMap<String, String>) -> 
         || mentions_rate_limit(diagnostic)
 }
 
-fn classify_gh_failure(stderr: &[u8]) -> AcquisitionTermination {
-    let diagnostic = sanitize_diagnostic(&String::from_utf8_lossy(stderr));
-    if diagnostic.contains("HTTP 429")
-        || (diagnostic.contains("HTTP 403") && mentions_rate_limit(&diagnostic))
-    {
-        AcquisitionTermination::RateLimited {
-            diagnostic,
-            reset_at: None,
-        }
-    } else if diagnostic.to_ascii_lowercase().contains("authentication")
-        || diagnostic.contains("HTTP 401")
-        || diagnostic.contains("HTTP 403")
-    {
-        AcquisitionTermination::PermissionDenied { diagnostic }
-    } else {
-        AcquisitionTermination::Failed { diagnostic }
-    }
-}
-
 fn mentions_rate_limit(diagnostic: &str) -> bool {
     diagnostic.to_ascii_lowercase().contains("rate limit")
 }
@@ -1136,23 +924,6 @@ pub fn capture_azure_devops_remote(
             capture_azure_devops_history_with(options, &mut fetch)
         }
     }
-}
-
-/// acquire current branch policy through the provider-aware azure path.
-///
-/// # Errors
-///
-/// returns an error unless branch-policy acquisition succeeds or records a
-/// provider failure.
-pub fn capture_azure_devops_branch_policy(
-    options: &AzureDevopsRemoteCapture,
-) -> Result<AcquisitionTranscript> {
-    if options.resource != AzureDevopsRemoteResource::BranchPolicy {
-        return Err(Error::Invalid(
-            "branch-policy capture requires the branch-policy resource".into(),
-        ));
-    }
-    capture_azure_devops_remote(options)
 }
 
 fn capture_azure_devops_branch_policy_with<F>(
@@ -1943,50 +1714,6 @@ fn github_looked_up_resource(contents: &TranscriptContents) -> Option<String> {
     Some(format!("{lookup}/commits/{revision}/{suffix}"))
 }
 
-/// compare two acquisitions only when their contract, subject, proposition, and
-/// requested scope match exactly.
-#[must_use]
-pub fn compare(left: &AcquisitionTranscript, right: &AcquisitionTranscript) -> RerunComparison {
-    let mut result = RerunComparison {
-        left_transcript_id: left.id.clone(),
-        right_transcript_id: right.id.clone(),
-        outcome: RerunOutcome::Consistent,
-        added_identities: vec![],
-        removed_identities: vec![],
-        reasons: vec![],
-    };
-    if left.contents.collector_contract != right.contents.collector_contract
-        || left.contents.subject != right.contents.subject
-        || left.contents.proposition != right.contents.proposition
-        || left.contents.requested_scope != right.contents.requested_scope
-        || left.contents.initial_request != right.contents.initial_request
-    {
-        result.outcome = RerunOutcome::NotComparable;
-        result
-            .reasons
-            .push("contract, subject, proposition, scope, or request identity differs".into());
-        return result;
-    }
-    if left.contents.termination != right.contents.termination {
-        result.outcome = RerunOutcome::CoverageChanged;
-        result
-            .reasons
-            .push("the acquisition attempts ended with different coverage states".into());
-        return result;
-    }
-    let left_ids = observed_identities(left);
-    let right_ids = observed_identities(right);
-    result.added_identities = right_ids.difference(&left_ids).cloned().collect();
-    result.removed_identities = left_ids.difference(&right_ids).cloned().collect();
-    if !result.added_identities.is_empty() || !result.removed_identities.is_empty() {
-        result.outcome = RerunOutcome::ContentChanged;
-        result.reasons.push(
-            "the same fixed acquisition scope returned a different identity population".into(),
-        );
-    }
-    result
-}
-
 fn verify_integrity(
     transcript: &AcquisitionTranscript,
     reasons: &mut Vec<String>,
@@ -2031,24 +1758,6 @@ fn verify_integrity(
         }
     }
     IntegrityStatus::Verified
-}
-
-fn observed_identities(transcript: &AcquisitionTranscript) -> std::collections::BTreeSet<String> {
-    transcript
-        .contents
-        .exchanges
-        .iter()
-        .filter_map(|exchange| {
-            serde_json::from_str::<serde_json::Value>(&exchange.response.body).ok()
-        })
-        .filter_map(|body| body.as_array().cloned())
-        .flatten()
-        .filter_map(|item| {
-            item.get("sha")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .collect()
 }
 
 fn assess_contract(
@@ -2831,14 +2540,12 @@ fn planned_successor(
                 GITHUB_CHECK_RUNS_CONTRACT => GithubRemoteResource::CheckRuns,
                 GITHUB_COMMIT_STATUSES_CONTRACT => GithubRemoteResource::CommitStatuses,
                 _ => {
-                    return Some(commits_url(&GithubCapture {
-                        repository: contents.subject.id.strip_prefix("github:")?.into(),
-                        branch: contents.subject.qualifier("branch")?.into(),
-                        interval: contents.requested_scope.clone(),
+                    return Some(commits_url(
+                        contents.subject.id.strip_prefix("github:")?,
+                        contents.subject.qualifier("branch")?,
+                        &contents.requested_scope,
                         per_page,
-                        max_pages: 1,
-                        captured_at: OffsetDateTime::UNIX_EPOCH,
-                    }));
+                    ));
                 }
             };
             Some(github_remote_request(&github_options(contents, resource, per_page)?).2)
@@ -2968,14 +2675,12 @@ pub fn seal_transcript(contents: TranscriptContents) -> Result<AcquisitionTransc
     })
 }
 
-fn commits_url(options: &GithubCapture) -> String {
+fn commits_url(repository: &str, branch: &str, interval: &TimeRange, per_page: u16) -> String {
     format!(
-        "{GITHUB_API_ORIGIN}/repos/{}/commits?sha={}&since={}&until={}&per_page={}&page=1",
-        options.repository,
-        percent_encode(&options.branch),
-        percent_encode(&options.interval.from),
-        percent_encode(&options.interval.until),
-        options.per_page
+        "{GITHUB_API_ORIGIN}/repos/{repository}/commits?sha={}&since={}&until={}&per_page={per_page}&page=1",
+        percent_encode(branch),
+        percent_encode(&interval.from),
+        percent_encode(&interval.until),
     )
 }
 
@@ -3023,36 +2728,6 @@ fn response_item_count(status: u16, body: &str) -> serde_json::Result<u64> {
         Err(_) if !(200..300).contains(&status) => Ok(0),
         Err(error) => Err(error),
     }
-}
-
-fn parse_exchange(url: &str, bytes: &[u8]) -> Result<HttpExchange> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|error| Error::Invalid(format!("gh emitted non-utf8 response: {error}")))?;
-    let (head, body) = text
-        .split_once("\r\n\r\n")
-        .or_else(|| text.split_once("\n\n"))
-        .ok_or_else(|| Error::Invalid("gh response did not contain HTTP headers".into()))?;
-    let mut lines = head.lines();
-    let status = lines
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|value| value.parse::<u16>().ok())
-        .ok_or_else(|| Error::Invalid("gh response had no HTTP status".into()))?;
-    let allowed = [
-        "date",
-        "etag",
-        "link",
-        "x-accepted-oauth-scopes",
-        "x-github-api-version-selected",
-        "x-github-request-id",
-        "x-oauth-scopes",
-    ];
-    let headers = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_string()))
-        .filter(|(name, _)| allowed.contains(&name.as_str()))
-        .collect::<BTreeMap<_, _>>();
-    build_exchange(url, status, headers, body.into(), "github")
 }
 
 fn next_link(headers: &BTreeMap<String, String>) -> Option<String> {
@@ -3153,6 +2828,36 @@ mod tests {
         })
     }
 
+    fn github_commits(interval: TimeRange) -> AcquisitionTranscript {
+        let lookup = "https://api.github.com/repos/cyberwitchery/divinate";
+        let first = commits_url("cyberwitchery/divinate", "main", &interval, 100);
+        let second = "https://api.github.com/repositories/123/commits?sha=main&per_page=100&page=2";
+        let next = BTreeMap::from([("link".into(), format!("<{second}>; rel=\"next\""))]);
+        seal_transcript(TranscriptContents {
+            collector_contract: GITHUB_COMMITS_CONTRACT.into(),
+            collector_version: env!("CARGO_PKG_VERSION").into(),
+            subject: Subject {
+                kind: "repository".into(),
+                id: "github:cyberwitchery/divinate".into(),
+                qualifiers: BTreeMap::from([("branch".into(), "main".into())]),
+            },
+            proposition: Proposition::CommitAncestry,
+            requested_scope: interval,
+            captured_at: "1970-01-01T00:00:00Z".into(),
+            initial_request: HttpRequest {
+                method: "GET".into(),
+                url: lookup.into(),
+            },
+            exchanges: vec![
+                github_lookup(lookup).unwrap(),
+                exchange(&first, 200, r#"[{"sha":"one"}]"#, next),
+                exchange(second, 200, r#"[{"sha":"two"}]"#, BTreeMap::new()),
+            ],
+            termination: AcquisitionTermination::Exhausted,
+        })
+        .unwrap()
+    }
+
     #[test]
     fn next_link_is_extracted() {
         let headers = BTreeMap::from([(
@@ -3162,27 +2867,6 @@ mod tests {
         assert_eq!(
             next_link(&headers).as_deref(),
             Some("https://api.github.com/example?page=2")
-        );
-    }
-
-    #[test]
-    fn response_parser_preserves_body_digest() {
-        let exchange = parse_exchange(
-            "repos/example/commits?page=1",
-            b"HTTP/2.0 200 OK\nLink: <next>; rel=\"next\"\nETag: abc\nAuthorization: secret\n\n[{\"sha\":\"abc\"}]\n",
-        )
-        .unwrap();
-        assert_eq!(exchange.response.item_count, 1);
-        assert_eq!(
-            exchange.response.headers,
-            BTreeMap::from([
-                ("etag".to_string(), "abc".to_string()),
-                ("link".to_string(), "<next>; rel=\"next\"".to_string()),
-            ])
-        );
-        assert_eq!(
-            exchange.response.body_sha256,
-            "8e9f2a40345f2095a34defa137e8774cab55317ec2de3bbd388c92629eedc628"
         );
     }
 
@@ -3386,22 +3070,6 @@ mod tests {
             AcquisitionTermination::NotFound { .. }
         ));
         assert!(ensure_github_url("https://evil.invalid/steal").is_err());
-    }
-
-    #[test]
-    fn gh_rate_limits_are_not_permission_denials() {
-        for (stderr, kind) in [
-            ("gh: API rate limit exceeded for user ID 1. (HTTP 403)\n", "rate_limited"),
-            ("gh: API rate limit exceeded for user ID 1. (HTTP 429)\n", "rate_limited"),
-            ("gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 403)\n", "rate_limited"),
-            ("gh: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (HTTP 429)\n", "rate_limited"),
-            ("gh: Resource not accessible by integration (HTTP 403)\n", "permission_denied"),
-            ("gh: Bad credentials (HTTP 401)\n", "permission_denied"),
-            ("gh: Not Found (HTTP 404)\n", "failed"),
-        ] {
-            let outcome = serde_json::to_value(classify_gh_failure(stderr.as_bytes())).unwrap();
-            assert_eq!(outcome["kind"], kind, "{stderr}");
-        }
     }
 
     #[test]
@@ -3897,40 +3565,10 @@ mod tests {
 
     #[test]
     fn github_commit_pagination_stays_on_the_proven_repository() {
-        let options = GithubCapture {
-            repository: "cyberwitchery/divinate".into(),
-            branch: "main".into(),
-            interval: TimeRange {
-                from: "2026-09-11T00:00:00Z".into(),
-                until: "2026-09-12T00:00:00Z".into(),
-            },
-            per_page: 100,
-            max_pages: 10,
-            captured_at: OffsetDateTime::UNIX_EPOCH,
-        };
-        let gh = |repository_id: u64| {
-            move |url: &str| {
-                let (link, body) = if url == "https://api.github.com/repos/cyberwitchery/divinate" {
-                    (
-                        String::new(),
-                        r#"{"id":123,"full_name":"cyberwitchery/divinate"}"#,
-                    )
-                } else if url.contains("/repos/") {
-                    (
-                        format!("link: <https://api.github.com/repositories/{repository_id}/commits?sha=main&per_page=100&page=2>; rel=\"next\"\n"),
-                        r#"[{"sha":"one"}]"#,
-                    )
-                } else {
-                    (String::new(), r#"[{"sha":"two"}]"#)
-                };
-                Ok(std::process::Output {
-                    status: std::process::ExitStatus::default(),
-                    stdout: format!("HTTP/2.0 200 OK\n{link}\n{body}").into_bytes(),
-                    stderr: vec![],
-                })
-            }
-        };
-        let transcript = capture_github_commits_with(&options, gh(123)).unwrap();
+        let transcript = github_commits(TimeRange {
+            from: "2026-09-11T00:00:00Z".into(),
+            until: "2026-09-12T00:00:00Z".into(),
+        });
         let assessment = assess(&transcript, &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::Complete);
         assert_eq!(assessment.items, 2);
@@ -3941,24 +3579,18 @@ mod tests {
         let assessment = assess(&seal_transcript(gap).unwrap(), &ContractRegistry::default());
         assert_eq!(assessment.enumeration, EnumerationStatus::Failed);
 
-        let one_page = GithubCapture {
-            max_pages: 1,
-            ..options.clone()
-        };
-        let truncated = capture_github_commits_with(&one_page, gh(123)).unwrap();
-        assert!(matches!(
-            truncated.contents.termination,
-            AcquisitionTermination::Truncated { .. }
-        ));
-        assert_eq!(truncated.contents.exchanges.len(), 2);
-
-        let error = capture_github_commits_with(&options, gh(999)).unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("github pagination changed the requested resource"),
-            "{error}"
+        let mut moved = transcript.contents.clone();
+        let other = moved.exchanges[2].request.url.replace("/123/", "/999/");
+        moved.exchanges[1]
+            .response
+            .headers
+            .insert("link".into(), format!("<{other}>; rel=\"next\""));
+        moved.exchanges[2].request.url = other;
+        let assessment = assess(
+            &seal_transcript(moved).unwrap(),
+            &ContractRegistry::default(),
         );
+        assert_eq!(assessment.enumeration, EnumerationStatus::Failed);
     }
 
     #[test]
@@ -4254,41 +3886,7 @@ mod tests {
             };
             capture_github_remote_with(&options, history).unwrap()
         };
-        let commits = capture_github_commits_with(
-            &GithubCapture {
-                repository: "cyberwitchery/divinate".into(),
-                branch: "main".into(),
-                interval: remote(GithubRemoteResource::CheckRuns).interval,
-                per_page: 100,
-                max_pages: 10,
-                captured_at: OffsetDateTime::UNIX_EPOCH,
-            },
-            |url| {
-                let (head, body) = if url == "https://api.github.com/repos/cyberwitchery/divinate" {
-                    (
-                        String::new(),
-                        r#"{"id":123,"full_name":"cyberwitchery/divinate"}"#,
-                    )
-                } else if url.contains("/repos/") {
-                    let next = url.replace("/repos/cyberwitchery/divinate/", "/repositories/123/");
-                    (
-                        format!(
-                            "link: <{}>; rel=\"next\"\n",
-                            next.replace("page=1", "page=2")
-                        ),
-                        r#"[{"sha":"one"}]"#,
-                    )
-                } else {
-                    (String::new(), r#"[{"sha":"two"}]"#)
-                };
-                Ok(std::process::Output {
-                    status: std::process::ExitStatus::default(),
-                    stdout: format!("HTTP/2.0 200 OK\n{head}\n{body}").into_bytes(),
-                    stderr: vec![],
-                })
-            },
-        )
-        .unwrap();
+        let commits = github_commits(remote(GithubRemoteResource::CheckRuns).interval);
         let full = (0..100)
             .map(|id| format!(r#"{{"pushId":{id}}}"#))
             .collect::<Vec<_>>();

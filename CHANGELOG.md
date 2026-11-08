@@ -82,8 +82,8 @@
 - report a wrong or expired azure devops credential as permission denied, with
   azure's own `TF400813` message, instead of as a failed collection citing a
   refused redirect to azure's sign-in page
-- report a github secondary rate limit, and any rate limit `gh` reports, as rate
-  limited instead of as permission denied or a failed collection
+- report a github secondary rate limit as rate limited instead of as
+  permission denied or a failed collection
 - decide `every_main_change_reviewed` the same in every observation order when
   several retained records cover one pull request: an incomplete review history
   no longer overrides a complete one, and records that reach different
@@ -106,3 +106,10 @@
 - leave a release review count with insufficient evidence, not a
   contradiction, when approvals without a usable submission time could make up
   the shortfall
+- remove the hidden commands (`query`, `tools`, `source-bytes`, `assertions`,
+  `explain`, `collections`, `coverage`, `capture-github`,
+  `capture-branch-protection`, `acquisition-source`, `replay-acquisition`,
+  `compare-acquisitions`, `dossier`, `state-record`) and `init`'s conversion of
+  a legacy `.evidence/config.json`; dossiers no longer carry a `drill_down`
+  hint, and a pack assertion response that carries `id` or `derivation` is
+  refused
