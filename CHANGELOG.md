@@ -113,8 +113,7 @@
   a legacy `.evidence/config.json`; dossiers no longer carry a `drill_down`
   hint, and a pack assertion response that carries `id` or `derivation` is
   refused
-- verify the whole evidence graph before writing any of an increment, so a
-  failed `collect manifest` no longer leaves transcripts or a new state
+- verify the whole evidence graph before `collect` writes any of an increment,
+  so a failed `collect manifest` no longer leaves transcripts or a new state
   directory behind
-- check every evidence link in `provenance`, and refuse to `run` into a state
-  whose links are broken
+- check every evidence link in `provenance`
