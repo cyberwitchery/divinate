@@ -2586,6 +2586,9 @@ fn collection_error(error: Error) -> Error {
 }
 
 fn provenance_error(error: Error) -> Error {
+    if matches!(error, Error::Provenance(_)) {
+        return error;
+    }
     let message = error.to_string();
     drop(error);
     Error::Provenance(message)
