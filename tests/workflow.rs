@@ -100,6 +100,57 @@ fn repeated_recording_reuses_content_addressed_objects() {
     fs::remove_dir_all(state).unwrap();
 }
 
+fn snapshot(root: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let mut entries = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        if !path.exists() {
+            continue;
+        }
+        let relative = path.strip_prefix(root).unwrap().to_path_buf();
+        if path.is_dir() {
+            entries.push((relative, None));
+            pending.extend(
+                fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else {
+            entries.push((relative, Some(hex_digest(&fs::read(&path).unwrap()))));
+        }
+    }
+    entries.sort();
+    entries
+}
+
+#[test]
+fn failed_commit_leaves_the_state_directory_untouched() {
+    let mut broken = corpus();
+    broken.collections[0].acquisition_transcript_ids = vec!["acq_missing".into()];
+    let empty = evidence_spike::model::Corpus {
+        collections: vec![],
+        observations: vec![],
+        schema_version: evidence_spike::SCHEMA_VERSION.into(),
+        sources: vec![],
+    };
+    for seeded in [false, true] {
+        let parent = tempfile::tempdir().unwrap();
+        let state = parent.path().join("state");
+        if seeded {
+            workflow::accumulate(&state, &empty, &[]).unwrap();
+        }
+        let before = snapshot(&state);
+        let error = workflow::accumulate(&state, &broken, &[transcript()]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("references missing acquisition transcript acq_missing"),
+            "{error}"
+        );
+        assert_eq!(snapshot(&state), before, "seeded: {seeded}");
+    }
+}
+
 #[test]
 fn separate_cycle_increments_accumulate_without_rewriting_earlier_evidence() {
     let complete = corpus();

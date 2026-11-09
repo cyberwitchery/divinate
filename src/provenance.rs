@@ -40,6 +40,47 @@ pub struct ObservationExecutionLink {
     pub output: String,
 }
 
+/// one evidence graph: a corpus and every retained object it may link to.
+#[derive(Debug, Clone, Copy)]
+pub struct EvidenceGraph<'a> {
+    pub corpus: &'a Corpus,
+    pub acquisitions: &'a [AcquisitionTranscript],
+    pub executions: &'a [ExecutionTranscript],
+    pub pack_invocations: &'a [crate::pack::PackInvocation],
+    pub blobs: &'a BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// the links [`verify_graph`] resolved.
+pub struct GraphLinks {
+    pub collections: Vec<CollectionTranscriptLink>,
+    pub executions: Vec<ObservationExecutionLink>,
+}
+
+/// verify every link in the graph: pack invocation to transcript, collection to
+/// acquisition, observation to execution, then observation to pack invocation.
+///
+/// # Errors
+///
+/// returns the first broken link, in that order.
+pub fn verify_graph(graph: EvidenceGraph<'_>, registry: &ContractRegistry) -> Result<GraphLinks> {
+    for invocation in graph.pack_invocations {
+        crate::pack::verify_transcript_links(invocation, graph.executions, graph.acquisitions)?;
+    }
+    let collections = verify_collection_links(graph.corpus, graph.acquisitions, registry)?;
+    let executions = verify_execution_links(graph.corpus, graph.executions, graph.blobs)?;
+    crate::pack::verify_observation_links(
+        graph.corpus,
+        graph.pack_invocations,
+        graph.executions,
+        graph.blobs,
+    )?;
+    Ok(GraphLinks {
+        collections,
+        executions,
+    })
+}
+
 /// resolve observation-to-execution links through exact retained output bytes.
 ///
 /// # Errors
