@@ -47,6 +47,7 @@ pub struct EvidenceGraph<'a> {
     pub acquisitions: &'a [AcquisitionTranscript],
     pub executions: &'a [ExecutionTranscript],
     pub pack_invocations: &'a [crate::pack::PackInvocation],
+    /// stored under their own digest, as [`crate::workflow::load_blobs`] returns them.
     pub blobs: &'a BTreeMap<String, Vec<u8>>,
 }
 
@@ -81,7 +82,9 @@ pub fn verify_graph(graph: EvidenceGraph<'_>, registry: &ContractRegistry) -> Re
     })
 }
 
-/// resolve observation-to-execution links through exact retained output bytes.
+/// resolve observation-to-execution links through exact retained output bytes,
+/// against blobs stored under their own digest, as
+/// [`crate::workflow::load_blobs`] returns them.
 ///
 /// # Errors
 ///
@@ -121,7 +124,7 @@ pub fn verify_execution_links(
                     observation.id
                 ))
             })?;
-            execution::verify(transcript, blobs)?;
+            execution::verify_stored(transcript, blobs)?;
             let output = if transcript.contents.stdout.sha256 == source.sha256 {
                 "stdout".to_owned()
             } else if transcript.contents.stderr.sha256 == source.sha256 {

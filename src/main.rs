@@ -2288,11 +2288,11 @@ fn verify_state(state: &std::path::Path) -> Result<()> {
         }
     }
     for transcript in &executions {
-        execution::verify(transcript, &blobs).map_err(provenance_error)?;
+        execution::verify_stored(transcript, &blobs).map_err(provenance_error)?;
     }
     let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
     for invocation in &pack_invocations {
-        divinate::pack::verify(invocation, &blobs).map_err(provenance_error)?;
+        divinate::pack::verify_stored(invocation, &blobs).map_err(provenance_error)?;
     }
     let empty = empty_corpus();
     let links = divinate::provenance::verify_graph(
@@ -2519,7 +2519,7 @@ fn extract_stream(
         .iter()
         .find(|transcript| transcript.id == execution_id)
         .ok_or_else(|| Error::Provenance(format!("missing execution transcript {execution_id}")))?;
-    execution::verify(transcript, &blobs).map_err(provenance_error)?;
+    execution::verify_stored(transcript, &blobs).map_err(provenance_error)?;
     let bytes = match stream {
         Stream::Stdout => execution::stdout_bytes(transcript),
         Stream::Stderr => execution::stderr_bytes(transcript),

@@ -379,21 +379,16 @@ fn verify_evaluation_configurations(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// store verified pack invocations and their executable blobs.
+/// store verified pack invocations and their executable blobs. only the new
+/// objects and their links are checked, not the stored graph.
 ///
 /// # Errors
 ///
-/// returns an error for invalid provenance, a content-address collision, or a
-/// broken link in the stored graph; nothing is written in that case.
+/// returns an error for invalid provenance, a content-address collision, or an
+/// invocation naming a transcript that is not stored; nothing is written in
+/// that case.
 pub fn store_pack_invocations(root: &Path, captures: &[crate::pack::PackCapture]) -> Result<()> {
-    commit(
-        root,
-        Increment {
-            packs: captures,
-            ..Increment::default()
-        },
-    )
-    .map(drop)
+    store_objects(root, &[], captures)
 }
 
 /// load every retained pack invocation.
@@ -443,20 +438,43 @@ pub fn accumulate_with_executions(
 }
 
 /// store an execution transcript and its content-addressed blobs immutably.
+/// only the new objects are checked, not the stored graph.
 ///
 /// # Errors
 ///
-/// returns an error when integrity verification or immutable storage fails, or
-/// when the stored graph has a broken link; nothing is written in that case.
+/// returns an error when integrity verification or immutable storage fails;
+/// nothing is written in that case.
 pub fn store_execution(root: &Path, capture: &ExecutionCapture) -> Result<()> {
-    commit(
-        root,
-        Increment {
-            executions: std::slice::from_ref(capture),
-            ..Increment::default()
-        },
-    )
-    .map(drop)
+    store_objects(root, std::slice::from_ref(capture), &[])
+}
+
+fn store_objects(
+    root: &Path,
+    executions: &[ExecutionCapture],
+    packs: &[crate::pack::PackCapture],
+) -> Result<()> {
+    let mut stage = Stage::default();
+    for capture in executions {
+        stage.execution(root, capture)?;
+    }
+    for capture in packs {
+        stage.pack(root, capture)?;
+    }
+    for capture in packs {
+        crate::pack::check_transcript_links(
+            &capture.invocation,
+            |id| {
+                stage.executions.iter().any(|item| item.id == id)
+                    || is_stored(root, "executions", id)
+            },
+            |id| is_stored(root, "acquisitions", id),
+        )?;
+    }
+    stage.write(root)
+}
+
+fn is_stored(root: &Path, directory: &str, id: &str) -> bool {
+    root.join(directory).join(format!("{id}.json")).is_file()
 }
 
 /// one increment of evidence for [`commit`].
@@ -495,13 +513,13 @@ pub fn commit(root: &Path, increment: Increment<'_>) -> Result<Corpus> {
     };
     let mut stage = Stage::load(root)?;
     for transcript in increment.acquisitions {
-        stage.acquisition(transcript, &registry)?;
+        stage.acquisition(root, transcript, &registry)?;
     }
     for capture in increment.executions {
-        stage.execution(capture)?;
+        stage.execution(root, capture)?;
     }
     for capture in increment.packs {
-        stage.pack(capture)?;
+        stage.pack(root, capture)?;
     }
     let merged = increment
         .corpus
@@ -527,6 +545,7 @@ pub fn commit(root: &Path, increment: Increment<'_>) -> Result<Corpus> {
     }
 }
 
+#[derive(Default)]
 struct Stage {
     acquisitions: Vec<AcquisitionTranscript>,
     executions: Vec<ExecutionTranscript>,
@@ -557,6 +576,7 @@ impl Stage {
 
     fn acquisition(
         &mut self,
+        root: &Path,
         transcript: &AcquisitionTranscript,
         registry: &ContractRegistry,
     ) -> Result<()> {
@@ -567,6 +587,7 @@ impl Stage {
             )));
         }
         stage_object(
+            &root.join("acquisitions"),
             &mut self.acquisitions,
             transcript,
             |item| item.id.as_str(),
@@ -574,7 +595,7 @@ impl Stage {
         )
     }
 
-    fn execution(&mut self, capture: &ExecutionCapture) -> Result<()> {
+    fn execution(&mut self, root: &Path, capture: &ExecutionCapture) -> Result<()> {
         execution::verify(&capture.transcript, &capture.blobs)?;
         for (digest, bytes) in &capture.blobs {
             if crate::hex_digest(bytes) != *digest {
@@ -582,9 +603,10 @@ impl Stage {
                     "execution capture contains misaddressed blob: {digest}"
                 )));
             }
-            self.blob(digest, bytes)?;
+            self.blob(root, digest, bytes)?;
         }
         stage_object(
+            &root.join("executions"),
             &mut self.executions,
             &capture.transcript,
             |item| item.id.as_str(),
@@ -592,14 +614,15 @@ impl Stage {
         )
     }
 
-    fn pack(&mut self, capture: &crate::pack::PackCapture) -> Result<()> {
+    fn pack(&mut self, root: &Path, capture: &crate::pack::PackCapture) -> Result<()> {
         let digest = crate::hex_digest(&capture.executable_bytes);
         if digest != capture.invocation.contents.executable.sha256 {
             return Err(Error::Provenance("pack executable digest mismatch".into()));
         }
-        self.blob(&digest, &capture.executable_bytes)?;
-        crate::pack::verify(&capture.invocation, &self.blobs)?;
+        self.blob(root, &digest, &capture.executable_bytes)?;
+        crate::pack::verify_stored(&capture.invocation, &self.blobs)?;
         stage_object(
+            &root.join("pack-invocations"),
             &mut self.pack_invocations,
             &capture.invocation,
             |item| item.id.as_str(),
@@ -607,7 +630,12 @@ impl Stage {
         )
     }
 
-    fn blob(&mut self, digest: &str, bytes: &[u8]) -> Result<()> {
+    fn blob(&mut self, root: &Path, digest: &str, bytes: &[u8]) -> Result<()> {
+        let path = root.join("blobs").join(digest);
+        if !self.blobs.contains_key(digest) && path.exists() {
+            let stored = fs::read(&path).map_err(|source| Error::Io { path, source })?;
+            self.blobs.insert(digest.to_owned(), stored);
+        }
         match self.blobs.get(digest) {
             Some(existing) if existing != bytes => {
                 Err(Error::Invalid(format!("blob collision: {digest}")))
@@ -655,20 +683,30 @@ impl Stage {
     }
 }
 
-fn stage_object<T, F>(items: &mut Vec<T>, item: &T, id: F, kind: &str) -> Result<()>
+fn stage_object<T, F>(
+    directory: &Path,
+    items: &mut Vec<T>,
+    item: &T,
+    id: F,
+    kind: &str,
+) -> Result<()>
 where
-    T: Clone + PartialEq,
+    T: Clone + PartialEq + serde::de::DeserializeOwned,
     F: Fn(&T) -> &str,
 {
-    match items.iter().find(|existing| id(existing) == id(item)) {
-        Some(existing) if existing != item => {
-            Err(Error::Invalid(format!("{kind} id collision: {}", id(item))))
-        }
-        Some(_) => Ok(()),
+    let path = directory.join(format!("{}.json", id(item)));
+    let same = match items.iter().find(|existing| id(existing) == id(item)) {
+        Some(existing) => existing == item,
+        None if path.exists() => read_json::<T>(&path)? == *item,
         None => {
             items.push(item.clone());
-            Ok(())
+            return Ok(());
         }
+    };
+    if same {
+        Ok(())
+    } else {
+        Err(Error::Invalid(format!("{kind} id collision: {}", id(item))))
     }
 }
 

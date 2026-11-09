@@ -466,3 +466,64 @@ fn initialization_is_idempotent_but_does_not_retarget_a_repository() {
             .contains("evidence state identifies repository")
     );
 }
+
+fn printf_capture() -> execution::ExecutionCapture {
+    execution::capture(&ExecutionRequest {
+        tool_name: "unrelated-tool".into(),
+        reported_version: None,
+        executable: "/usr/bin/printf".into(),
+        argv: vec!["output".into()],
+        working_directory: None,
+        environment: BTreeMap::new(),
+        inputs: vec![],
+        outputs: vec![],
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_missing_object_blocks_accumulate_but_not_store_execution() {
+    for (kind, id) in [
+        ("execution transcript", "exec_missing"),
+        ("pack invocation", "packrun_missing"),
+    ] {
+        let mut broken = corpus();
+        broken.collections.clear();
+        broken.observations.truncate(1);
+        let source_id = broken.observations[0].provenance.source_id.clone();
+        broken.sources.retain(|source| source.id == source_id);
+        if kind == "execution transcript" {
+            broken.observations[0].execution_transcript_ids = vec![id.into()];
+        } else {
+            broken.observations[0].pack_invocation_ids = vec![id.into()];
+        }
+        let state = tempfile::tempdir().unwrap();
+        let error = workflow::accumulate(state.path(), &broken, &[]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("references missing {kind} {id}")),
+            "{error}"
+        );
+        evidence_spike::write_json(&broken, &workflow::corpus_path(state.path())).unwrap();
+        let capture = printf_capture();
+        workflow::store_execution(state.path(), &capture).unwrap();
+        assert_eq!(
+            workflow::load_executions(state.path()).unwrap(),
+            [capture.transcript]
+        );
+    }
+}
+
+#[test]
+fn store_execution_refuses_a_capture_without_its_blobs() {
+    let state = tempfile::tempdir().unwrap();
+    let mut capture = printf_capture();
+    capture.blobs.clear();
+    let error = workflow::store_execution(state.path(), &capture).unwrap_err();
+    assert!(
+        error.to_string().contains("missing execution blob"),
+        "{error}"
+    );
+    assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0);
+}
