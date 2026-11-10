@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use divinate as evidence_spike;
@@ -482,7 +483,7 @@ fn printf_capture() -> execution::ExecutionCapture {
 }
 
 #[test]
-fn a_missing_object_blocks_accumulate_but_not_store_execution() {
+fn a_missing_object_blocks_accumulate() {
     for (kind, id) in [
         ("execution transcript", "exec_missing"),
         ("pack invocation", "packrun_missing"),
@@ -505,13 +506,22 @@ fn a_missing_object_blocks_accumulate_but_not_store_execution() {
                 .contains(&format!("references missing {kind} {id}")),
             "{error}"
         );
-        evidence_spike::write_json(&broken, &workflow::corpus_path(state.path())).unwrap();
+    }
+}
+
+#[test]
+fn store_execution_reads_no_unrelated_stored_file() {
+    let unrelated_blob = format!("blobs/{}", "0".repeat(64));
+    for unrelated in [unrelated_blob.as_str(), "executions/exec_unrelated.json"] {
+        let state = tempfile::tempdir().unwrap();
+        let path = state.path().join(unrelated);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
         let capture = printf_capture();
         workflow::store_execution(state.path(), &capture).unwrap();
-        assert_eq!(
-            workflow::load_executions(state.path()).unwrap(),
-            [capture.transcript]
-        );
+        let stored = format!("executions/{}.json", capture.transcript.id);
+        assert!(state.path().join(stored).is_file(), "{unrelated}");
     }
 }
 

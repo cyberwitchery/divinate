@@ -636,7 +636,7 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
     let merged = divinate::workflow::commit(
         &args.state,
         divinate::workflow::Increment {
-            corpus: Some(&increment),
+            corpus: &increment,
             acquisitions: &acquisitions,
             executions: &executions,
             packs: &invocations,
@@ -1104,7 +1104,7 @@ fn collect_pack(
     divinate::workflow::commit(
         state,
         divinate::workflow::Increment {
-            corpus: Some(&prepared.corpus),
+            corpus: &prepared.corpus,
             acquisitions: &prepared.acquisitions,
             executions: &prepared.executions,
             packs: &prepared.invocations,

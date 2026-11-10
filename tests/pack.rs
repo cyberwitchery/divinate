@@ -168,15 +168,35 @@ fn store_refuses_an_invocation_naming_a_missing_transcript() {
     });
     let (_, planned) = pack::plan(&config, &metadata, "check-runs", &context).unwrap();
     let bound = pack::bind_acquisitions(planned, &["acq_missing".into()]).unwrap();
-    let state = tempfile::tempdir().unwrap();
-    let error = workflow::store_pack_invocations(state.path(), &[bound]).unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("pack invocation references missing acquisition transcript acq_missing"),
-        "{error}"
-    );
-    assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0);
+    let packs = std::slice::from_ref(&bound);
+    let empty = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![],
+        observations: vec![],
+        sources: vec![],
+    };
+    for through_commit in [false, true] {
+        let state = tempfile::tempdir().unwrap();
+        let error = if through_commit {
+            let increment = workflow::Increment {
+                corpus: &empty,
+                acquisitions: &[],
+                executions: &[],
+                packs,
+            };
+            workflow::commit(state.path(), increment).map(drop)
+        } else {
+            workflow::store_pack_invocations(state.path(), packs)
+        }
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pack invocation references missing acquisition transcript acq_missing"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0);
+    }
 }
 
 #[test]

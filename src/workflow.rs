@@ -429,7 +429,7 @@ pub fn accumulate_with_executions(
     commit(
         root,
         Increment {
-            corpus: Some(increment),
+            corpus: increment,
             acquisitions: transcripts,
             executions,
             packs: &[],
@@ -478,10 +478,10 @@ fn is_stored(root: &Path, directory: &str, id: &str) -> bool {
 }
 
 /// one increment of evidence for [`commit`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct Increment<'a> {
-    /// merged into the stored corpus; `None` leaves `corpus.json` untouched.
-    pub corpus: Option<&'a Corpus>,
+    /// merged into the stored corpus.
+    pub corpus: &'a Corpus,
     pub acquisitions: &'a [AcquisitionTranscript],
     pub executions: &'a [ExecutionCapture],
     pub packs: &'a [crate::pack::PackCapture],
@@ -521,13 +521,10 @@ pub fn commit(root: &Path, increment: Increment<'_>) -> Result<Corpus> {
     for capture in increment.packs {
         stage.pack(root, capture)?;
     }
-    let merged = increment
-        .corpus
-        .map(|corpus| merge(&base, corpus))
-        .transpose()?;
+    let merged = merge(&base, increment.corpus)?;
     crate::provenance::verify_graph(
         crate::provenance::EvidenceGraph {
-            corpus: merged.as_ref().unwrap_or(&base),
+            corpus: &merged,
             acquisitions: &stage.acquisitions,
             executions: &stage.executions,
             pack_invocations: &stage.pack_invocations,
@@ -536,13 +533,8 @@ pub fn commit(root: &Path, increment: Increment<'_>) -> Result<Corpus> {
         &registry,
     )?;
     stage.write(root)?;
-    match merged {
-        Some(merged) => {
-            write_json(&merged, &corpus_path)?;
-            Ok(merged)
-        }
-        None => Ok(base),
-    }
+    write_json(&merged, &corpus_path)?;
+    Ok(merged)
 }
 
 #[derive(Default)]
