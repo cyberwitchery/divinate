@@ -263,6 +263,28 @@ pub fn verify(
     transcript: &ExecutionTranscript,
     blobs: &BTreeMap<String, Vec<u8>>,
 ) -> Result<Verification> {
+    verify_blobs(transcript, blobs, true)
+}
+
+/// verify a transcript against blobs already stored under their own digest, as
+/// [`crate::workflow::load_blobs`] returns them, without hashing them again.
+///
+/// # Errors
+///
+/// returns an error when a referenced blob is missing or has another size, or
+/// the transcript was changed.
+pub fn verify_stored(
+    transcript: &ExecutionTranscript,
+    blobs: &BTreeMap<String, Vec<u8>>,
+) -> Result<Verification> {
+    verify_blobs(transcript, blobs, false)
+}
+
+fn verify_blobs(
+    transcript: &ExecutionTranscript,
+    blobs: &BTreeMap<String, Vec<u8>>,
+    rehash: bool,
+) -> Result<Verification> {
     let sealed = seal(transcript.contents.clone())?;
     if sealed.id != transcript.id || transcript.schema_version != TRANSCRIPT_SCHEMA_VERSION {
         return Err(Error::Invalid(format!(
@@ -278,7 +300,12 @@ pub fn verify(
         let bytes = blobs.get(&reference.sha256).ok_or_else(|| {
             Error::Invalid(format!("missing execution blob: {}", reference.sha256))
         })?;
-        if blob_ref(bytes)? != *reference {
+        let intact = if rehash {
+            blob_ref(bytes)? == *reference
+        } else {
+            u64::try_from(bytes.len()).ok() == Some(reference.size)
+        };
+        if !intact {
             return Err(Error::Invalid(format!(
                 "execution blob failed integrity: {}",
                 reference.sha256

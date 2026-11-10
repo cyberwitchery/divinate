@@ -996,6 +996,25 @@ fn seal(contents: PackInvocationContents) -> Result<PackInvocation> {
 ///
 /// returns an error when its identity, executable, request, or response changed.
 pub fn verify(invocation: &PackInvocation, blobs: &BTreeMap<String, Vec<u8>>) -> Result<()> {
+    verify_blobs(invocation, blobs, true)
+}
+
+/// verify one invocation against blobs already stored under their own digest,
+/// as [`crate::workflow::load_blobs`] returns them, without hashing them again.
+///
+/// # Errors
+///
+/// returns an error when its identity, executable size, request, or response
+/// changed, or its executable is missing.
+pub fn verify_stored(invocation: &PackInvocation, blobs: &BTreeMap<String, Vec<u8>>) -> Result<()> {
+    verify_blobs(invocation, blobs, false)
+}
+
+fn verify_blobs(
+    invocation: &PackInvocation,
+    blobs: &BTreeMap<String, Vec<u8>>,
+    rehash: bool,
+) -> Result<()> {
     if seal(invocation.contents.clone())?.id != invocation.id
         || invocation.schema_version != TRANSCRIPT_SCHEMA_VERSION
     {
@@ -1007,7 +1026,7 @@ pub fn verify(invocation: &PackInvocation, blobs: &BTreeMap<String, Vec<u8>>) ->
     let executable = blobs
         .get(&invocation.contents.executable.sha256)
         .ok_or_else(|| Error::Provenance("pack executable blob is missing".into()))?;
-    if hex_digest(executable) != invocation.contents.executable.sha256
+    if (rehash && hex_digest(executable) != invocation.contents.executable.sha256)
         || u64::try_from(executable.len()).ok() != Some(invocation.contents.executable.size)
         || hex_digest(invocation.contents.request.as_bytes()) != invocation.contents.request_sha256
         || hex_digest(invocation.contents.response.as_bytes())
@@ -1039,11 +1058,23 @@ pub fn verify_transcript_links(
         .iter()
         .map(|item| item.id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
+    check_transcript_links(
+        invocation,
+        |id| execution_ids.contains(id),
+        |id| acquisition_ids.contains(id),
+    )
+}
+
+pub(crate) fn check_transcript_links(
+    invocation: &PackInvocation,
+    has_execution: impl Fn(&str) -> bool,
+    has_acquisition: impl Fn(&str) -> bool,
+) -> Result<()> {
     if let Some(id) = invocation
         .contents
         .execution_transcript_id
         .as_deref()
-        .filter(|id| !execution_ids.contains(id))
+        .filter(|id| !has_execution(id))
     {
         return Err(Error::Provenance(format!(
             "pack invocation references missing execution transcript {id}"
@@ -1053,7 +1084,7 @@ pub fn verify_transcript_links(
         .contents
         .acquisition_transcript_ids
         .iter()
-        .find(|id| !acquisition_ids.contains(id.as_str()))
+        .find(|id| !has_acquisition(id))
     {
         return Err(Error::Provenance(format!(
             "pack invocation references missing acquisition transcript {id}"
@@ -1062,7 +1093,8 @@ pub fn verify_transcript_links(
     Ok(())
 }
 
-/// verify every observation-to-pack link.
+/// verify every observation-to-pack link against blobs stored under their own
+/// digest, as [`crate::workflow::load_blobs`] returns them.
 ///
 /// # Errors
 ///
@@ -1087,7 +1119,7 @@ pub fn verify_observation_links(
                     observation.id
                 ))
             })?;
-            verify(invocation, blobs)?;
+            verify_stored(invocation, blobs)?;
             let current = (
                 invocation.contents.pack_id.as_str(),
                 invocation.contents.pack_version.as_str(),
@@ -1323,7 +1355,8 @@ fn validate_retained_execution(
     Ok(())
 }
 
-/// verify every assertion-to-pack link.
+/// verify every assertion-to-pack link against blobs stored under their own
+/// digest, as [`crate::workflow::load_blobs`] returns them.
 ///
 /// # Errors
 ///
@@ -1346,7 +1379,7 @@ pub fn verify_assertion_links(
                     assertion.id
                 ))
             })?;
-        verify(invocation, blobs)?;
+        verify_stored(invocation, blobs)?;
         if invocation.contents.operation != "evaluate"
             || assertion.derivation.evaluator
                 != format!(

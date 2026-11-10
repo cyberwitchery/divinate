@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use divinate as evidence_spike;
@@ -98,6 +99,57 @@ fn repeated_recording_reuses_content_addressed_objects() {
     assert_eq!(first, second);
     assert_eq!(workflow::load_transcripts(&state).unwrap().len(), 1);
     fs::remove_dir_all(state).unwrap();
+}
+
+fn snapshot(root: &Path) -> Vec<(PathBuf, Option<String>)> {
+    let mut entries = Vec::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        if !path.exists() {
+            continue;
+        }
+        let relative = path.strip_prefix(root).unwrap().to_path_buf();
+        if path.is_dir() {
+            entries.push((relative, None));
+            pending.extend(
+                fs::read_dir(&path)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path()),
+            );
+        } else {
+            entries.push((relative, Some(hex_digest(&fs::read(&path).unwrap()))));
+        }
+    }
+    entries.sort();
+    entries
+}
+
+#[test]
+fn failed_commit_leaves_the_state_directory_untouched() {
+    let mut broken = corpus();
+    broken.collections[0].acquisition_transcript_ids = vec!["acq_missing".into()];
+    let empty = evidence_spike::model::Corpus {
+        collections: vec![],
+        observations: vec![],
+        schema_version: evidence_spike::SCHEMA_VERSION.into(),
+        sources: vec![],
+    };
+    for seeded in [false, true] {
+        let parent = tempfile::tempdir().unwrap();
+        let state = parent.path().join("state");
+        if seeded {
+            workflow::accumulate(&state, &empty, &[]).unwrap();
+        }
+        let before = snapshot(&state);
+        let error = workflow::accumulate(&state, &broken, &[transcript()]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("references missing acquisition transcript acq_missing"),
+            "{error}"
+        );
+        assert_eq!(snapshot(&state), before, "seeded: {seeded}");
+    }
 }
 
 #[test]
@@ -414,4 +466,74 @@ fn initialization_is_idempotent_but_does_not_retarget_a_repository() {
             .to_string()
             .contains("evidence state identifies repository")
     );
+}
+
+fn printf_capture() -> execution::ExecutionCapture {
+    execution::capture(&ExecutionRequest {
+        tool_name: "unrelated-tool".into(),
+        reported_version: None,
+        executable: "/usr/bin/printf".into(),
+        argv: vec!["output".into()],
+        working_directory: None,
+        environment: BTreeMap::new(),
+        inputs: vec![],
+        outputs: vec![],
+    })
+    .unwrap()
+}
+
+#[test]
+fn a_missing_object_blocks_accumulate() {
+    for (kind, id) in [
+        ("execution transcript", "exec_missing"),
+        ("pack invocation", "packrun_missing"),
+    ] {
+        let mut broken = corpus();
+        broken.collections.clear();
+        broken.observations.truncate(1);
+        let source_id = broken.observations[0].provenance.source_id.clone();
+        broken.sources.retain(|source| source.id == source_id);
+        if kind == "execution transcript" {
+            broken.observations[0].execution_transcript_ids = vec![id.into()];
+        } else {
+            broken.observations[0].pack_invocation_ids = vec![id.into()];
+        }
+        let state = tempfile::tempdir().unwrap();
+        let error = workflow::accumulate(state.path(), &broken, &[]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("references missing {kind} {id}")),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn store_execution_reads_no_unrelated_stored_file() {
+    let unrelated_blob = format!("blobs/{}", "0".repeat(64));
+    for unrelated in [unrelated_blob.as_str(), "executions/exec_unrelated.json"] {
+        let state = tempfile::tempdir().unwrap();
+        let path = state.path().join(unrelated);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        let capture = printf_capture();
+        workflow::store_execution(state.path(), &capture).unwrap();
+        let stored = format!("executions/{}.json", capture.transcript.id);
+        assert!(state.path().join(stored).is_file(), "{unrelated}");
+    }
+}
+
+#[test]
+fn store_execution_refuses_a_capture_without_its_blobs() {
+    let state = tempfile::tempdir().unwrap();
+    let mut capture = printf_capture();
+    capture.blobs.clear();
+    let error = workflow::store_execution(state.path(), &capture).unwrap_err();
+    assert!(
+        error.to_string().contains("missing execution blob"),
+        "{error}"
+    );
+    assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0);
 }

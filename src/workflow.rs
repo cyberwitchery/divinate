@@ -379,49 +379,16 @@ fn verify_evaluation_configurations(root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// store verified pack invocations and their executable blobs.
+/// store verified pack invocations and their executable blobs. only the new
+/// objects and their links are checked, not the stored graph.
 ///
 /// # Errors
 ///
-/// returns an error for invalid provenance or a content-address collision.
+/// returns an error for invalid provenance, a content-address collision, or an
+/// invocation naming a transcript that is not stored; nothing is written in
+/// that case.
 pub fn store_pack_invocations(root: &Path, captures: &[crate::pack::PackCapture]) -> Result<()> {
-    init(root)?;
-    for capture in captures {
-        let digest = crate::hex_digest(&capture.executable_bytes);
-        if digest != capture.invocation.contents.executable.sha256 {
-            return Err(Error::Provenance("pack executable digest mismatch".into()));
-        }
-        let blob_path = root.join("blobs").join(&digest);
-        if blob_path.exists() {
-            let existing = fs::read(&blob_path).map_err(|source| Error::Io {
-                path: blob_path.clone(),
-                source,
-            })?;
-            if existing != capture.executable_bytes {
-                return Err(Error::Invalid(format!("blob collision: {digest}")));
-            }
-        } else {
-            fs::write(&blob_path, &capture.executable_bytes).map_err(|source| Error::Io {
-                path: blob_path,
-                source,
-            })?;
-        }
-        let path = root
-            .join("pack-invocations")
-            .join(format!("{}.json", capture.invocation.id));
-        if path.exists() {
-            let existing: crate::pack::PackInvocation = read_json(&path)?;
-            if existing != capture.invocation {
-                return Err(Error::Invalid(format!(
-                    "pack invocation id collision: {}",
-                    capture.invocation.id
-                )));
-            }
-        } else {
-            write_json(&capture.invocation, &path)?;
-        }
-    }
-    Ok(())
+    store_objects(root, &[], captures)
 }
 
 /// load every retained pack invocation.
@@ -437,7 +404,8 @@ pub fn load_pack_invocations(root: &Path) -> Result<Vec<crate::pack::PackInvocat
 ///
 /// # Errors
 ///
-/// returns an error for invalid state, transcript integrity failure, or collision.
+/// returns an error for invalid state, transcript integrity failure, a broken
+/// provenance link, or collision; nothing is written in that case.
 pub fn accumulate(
     root: &Path,
     increment: &Corpus,
@@ -451,40 +419,82 @@ pub fn accumulate(
 /// # Errors
 ///
 /// returns an error for invalid state, integrity failure, a broken provenance
-/// link, or a content-address collision.
+/// link, or a content-address collision; nothing is written in that case.
 pub fn accumulate_with_executions(
     root: &Path,
     increment: &Corpus,
     transcripts: &[AcquisitionTranscript],
     executions: &[ExecutionCapture],
 ) -> Result<Corpus> {
-    init(root)?;
-    for transcript in transcripts {
-        let assessment = acquisition::assess(transcript, &ContractRegistry::default());
-        if assessment.integrity != IntegrityStatus::Verified {
-            return Err(Error::Invalid(format!(
-                "acquisition {} failed integrity verification",
-                transcript.id
-            )));
-        }
-        let path = root
-            .join("acquisitions")
-            .join(format!("{}.json", transcript.id));
-        if path.exists() {
-            let existing: AcquisitionTranscript = read_json(&path)?;
-            if existing != *transcript {
-                return Err(Error::Invalid(format!(
-                    "acquisition id collision: {}",
-                    transcript.id
-                )));
-            }
-        } else {
-            write_json(transcript, &path)?;
-        }
-    }
+    commit(
+        root,
+        Increment {
+            corpus: increment,
+            acquisitions: transcripts,
+            executions,
+            packs: &[],
+        },
+    )
+}
+
+/// store an execution transcript and its content-addressed blobs immutably.
+/// only the new objects are checked, not the stored graph.
+///
+/// # Errors
+///
+/// returns an error when integrity verification or immutable storage fails;
+/// nothing is written in that case.
+pub fn store_execution(root: &Path, capture: &ExecutionCapture) -> Result<()> {
+    store_objects(root, std::slice::from_ref(capture), &[])
+}
+
+fn store_objects(
+    root: &Path,
+    executions: &[ExecutionCapture],
+    packs: &[crate::pack::PackCapture],
+) -> Result<()> {
+    let mut stage = Stage::default();
     for capture in executions {
-        store_execution(root, capture)?;
+        stage.execution(root, capture)?;
     }
+    for capture in packs {
+        stage.pack(root, capture)?;
+    }
+    for capture in packs {
+        crate::pack::check_transcript_links(
+            &capture.invocation,
+            |id| {
+                stage.executions.iter().any(|item| item.id == id)
+                    || is_stored(root, "executions", id)
+            },
+            |id| is_stored(root, "acquisitions", id),
+        )?;
+    }
+    stage.write(root)
+}
+
+fn is_stored(root: &Path, directory: &str, id: &str) -> bool {
+    root.join(directory).join(format!("{id}.json")).is_file()
+}
+
+/// one increment of evidence for [`commit`].
+#[derive(Debug, Clone, Copy)]
+pub struct Increment<'a> {
+    /// merged into the stored corpus.
+    pub corpus: &'a Corpus,
+    pub acquisitions: &'a [AcquisitionTranscript],
+    pub executions: &'a [ExecutionCapture],
+    pub packs: &'a [crate::pack::PackCapture],
+}
+
+/// stage an increment against the stored state, verify the merged graph, and
+/// only then write it.
+///
+/// # Errors
+///
+/// returns an error for invalid state, integrity failure, a content-address
+/// collision, or a broken provenance link; nothing is written in that case.
+pub fn commit(root: &Path, increment: Increment<'_>) -> Result<Corpus> {
     let corpus_path = root.join(CORPUS_FILE);
     let base = if corpus_path.exists() {
         read_json(&corpus_path)?
@@ -496,68 +506,200 @@ pub fn accumulate_with_executions(
             sources: vec![],
         }
     };
-    let merged = merge(&base, increment)?;
-    let all_transcripts = load_transcripts(root)?;
-    crate::provenance::verify_collection_links(
-        &merged,
-        &all_transcripts,
-        &ContractRegistry::default(),
+    let registry = if root.join(CONTRACTS_FILE).exists() {
+        load_registry(root)?
+    } else {
+        ContractRegistry::default()
+    };
+    let mut stage = Stage::load(root)?;
+    for transcript in increment.acquisitions {
+        stage.acquisition(root, transcript, &registry)?;
+    }
+    for capture in increment.executions {
+        stage.execution(root, capture)?;
+    }
+    for capture in increment.packs {
+        stage.pack(root, capture)?;
+    }
+    let merged = merge(&base, increment.corpus)?;
+    crate::provenance::verify_graph(
+        crate::provenance::EvidenceGraph {
+            corpus: &merged,
+            acquisitions: &stage.acquisitions,
+            executions: &stage.executions,
+            pack_invocations: &stage.pack_invocations,
+            blobs: &stage.blobs,
+        },
+        &registry,
     )?;
-    let all_executions = load_executions(root)?;
-    let blobs = load_blobs(root)?;
-    crate::provenance::verify_execution_links(&merged, &all_executions, &blobs)?;
-    let pack_invocations = load_pack_invocations(root)?;
-    let stored_executions = load_executions(root)?;
-    crate::pack::verify_observation_links(&merged, &pack_invocations, &stored_executions, &blobs)?;
+    stage.write(root)?;
     write_json(&merged, &corpus_path)?;
     Ok(merged)
 }
 
-/// store an execution transcript and its content-addressed blobs immutably.
-///
-/// # Errors
-///
-/// returns an error when integrity verification or immutable storage fails.
-pub fn store_execution(root: &Path, capture: &ExecutionCapture) -> Result<()> {
-    init(root)?;
-    execution::verify(&capture.transcript, &capture.blobs)?;
-    for (digest, bytes) in &capture.blobs {
-        if crate::hex_digest(bytes) != *digest {
+#[derive(Default)]
+struct Stage {
+    acquisitions: Vec<AcquisitionTranscript>,
+    executions: Vec<ExecutionTranscript>,
+    pack_invocations: Vec<crate::pack::PackInvocation>,
+    blobs: BTreeMap<String, Vec<u8>>,
+    stored_acquisitions: usize,
+    stored_executions: usize,
+    stored_invocations: usize,
+    new_blobs: Vec<String>,
+}
+
+impl Stage {
+    fn load(root: &Path) -> Result<Self> {
+        let acquisitions = load_transcripts(root)?;
+        let executions = load_executions(root)?;
+        let pack_invocations = load_pack_invocations(root)?;
+        Ok(Self {
+            stored_acquisitions: acquisitions.len(),
+            stored_executions: executions.len(),
+            stored_invocations: pack_invocations.len(),
+            acquisitions,
+            executions,
+            pack_invocations,
+            blobs: load_blobs(root)?,
+            new_blobs: Vec::new(),
+        })
+    }
+
+    fn acquisition(
+        &mut self,
+        root: &Path,
+        transcript: &AcquisitionTranscript,
+        registry: &ContractRegistry,
+    ) -> Result<()> {
+        if acquisition::assess(transcript, registry).integrity != IntegrityStatus::Verified {
             return Err(Error::Invalid(format!(
-                "execution capture contains misaddressed blob: {digest}"
+                "acquisition {} failed integrity verification",
+                transcript.id
             )));
         }
-        let path = root.join("blobs").join(digest);
-        if path.exists() {
-            let existing = fs::read(&path).map_err(|source| Error::Io {
-                path: path.clone(),
-                source,
-            })?;
-            if existing != *bytes {
-                return Err(Error::Invalid(format!("blob collision: {digest}")));
+        stage_object(
+            &root.join("acquisitions"),
+            &mut self.acquisitions,
+            transcript,
+            |item| item.id.as_str(),
+            "acquisition",
+        )
+    }
+
+    fn execution(&mut self, root: &Path, capture: &ExecutionCapture) -> Result<()> {
+        execution::verify(&capture.transcript, &capture.blobs)?;
+        for (digest, bytes) in &capture.blobs {
+            if crate::hex_digest(bytes) != *digest {
+                return Err(Error::Invalid(format!(
+                    "execution capture contains misaddressed blob: {digest}"
+                )));
             }
-        } else {
-            fs::write(&path, bytes).map_err(|source| Error::Io {
-                path: path.clone(),
-                source,
-            })?;
+            self.blob(root, digest, bytes)?;
+        }
+        stage_object(
+            &root.join("executions"),
+            &mut self.executions,
+            &capture.transcript,
+            |item| item.id.as_str(),
+            "execution",
+        )
+    }
+
+    fn pack(&mut self, root: &Path, capture: &crate::pack::PackCapture) -> Result<()> {
+        let digest = crate::hex_digest(&capture.executable_bytes);
+        if digest != capture.invocation.contents.executable.sha256 {
+            return Err(Error::Provenance("pack executable digest mismatch".into()));
+        }
+        self.blob(root, &digest, &capture.executable_bytes)?;
+        crate::pack::verify_stored(&capture.invocation, &self.blobs)?;
+        stage_object(
+            &root.join("pack-invocations"),
+            &mut self.pack_invocations,
+            &capture.invocation,
+            |item| item.id.as_str(),
+            "pack invocation",
+        )
+    }
+
+    fn blob(&mut self, root: &Path, digest: &str, bytes: &[u8]) -> Result<()> {
+        let path = root.join("blobs").join(digest);
+        if !self.blobs.contains_key(digest) && path.exists() {
+            let stored = fs::read(&path).map_err(|source| Error::Io { path, source })?;
+            self.blobs.insert(digest.to_owned(), stored);
+        }
+        match self.blobs.get(digest) {
+            Some(existing) if existing != bytes => {
+                Err(Error::Invalid(format!("blob collision: {digest}")))
+            }
+            Some(_) => Ok(()),
+            None => {
+                self.blobs.insert(digest.to_owned(), bytes.to_vec());
+                self.new_blobs.push(digest.to_owned());
+                Ok(())
+            }
         }
     }
-    let path = root
-        .join("executions")
-        .join(format!("{}.json", capture.transcript.id));
-    if path.exists() {
-        let existing: ExecutionTranscript = read_json(&path)?;
-        if existing != capture.transcript {
-            return Err(Error::Invalid(format!(
-                "execution id collision: {}",
-                capture.transcript.id
-            )));
+
+    fn write(&self, root: &Path) -> Result<()> {
+        init(root)?;
+        for digest in &self.new_blobs {
+            let path = root.join("blobs").join(digest);
+            fs::write(&path, &self.blobs[digest]).map_err(|source| Error::Io { path, source })?;
         }
+        for transcript in &self.acquisitions[self.stored_acquisitions..] {
+            write_json(
+                transcript,
+                &root
+                    .join("acquisitions")
+                    .join(format!("{}.json", transcript.id)),
+            )?;
+        }
+        for transcript in &self.executions[self.stored_executions..] {
+            write_json(
+                transcript,
+                &root
+                    .join("executions")
+                    .join(format!("{}.json", transcript.id)),
+            )?;
+        }
+        for invocation in &self.pack_invocations[self.stored_invocations..] {
+            write_json(
+                invocation,
+                &root
+                    .join("pack-invocations")
+                    .join(format!("{}.json", invocation.id)),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn stage_object<T, F>(
+    directory: &Path,
+    items: &mut Vec<T>,
+    item: &T,
+    id: F,
+    kind: &str,
+) -> Result<()>
+where
+    T: Clone + PartialEq + serde::de::DeserializeOwned,
+    F: Fn(&T) -> &str,
+{
+    let path = directory.join(format!("{}.json", id(item)));
+    let same = match items.iter().find(|existing| id(existing) == id(item)) {
+        Some(existing) => existing == item,
+        None if path.exists() => read_json::<T>(&path)? == *item,
+        None => {
+            items.push(item.clone());
+            return Ok(());
+        }
+    };
+    if same {
+        Ok(())
     } else {
-        write_json(&capture.transcript, &path)?;
+        Err(Error::Invalid(format!("{kind} id collision: {}", id(item))))
     }
-    Ok(())
 }
 
 /// load every immutable execution transcript in stable id order.

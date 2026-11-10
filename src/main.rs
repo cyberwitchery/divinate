@@ -633,12 +633,14 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
         format_timestamp(time::OffsetDateTime::now_utc())?
     };
     divinate::workflow::store_project_configuration(&args.state, &project.sha256, &project.bytes)?;
-    let merged = commit_collections(
+    let merged = divinate::workflow::commit(
         &args.state,
-        &increment,
-        &acquisitions,
-        &executions,
-        &invocations,
+        divinate::workflow::Increment {
+            corpus: &increment,
+            acquisitions: &acquisitions,
+            executions: &executions,
+            packs: &invocations,
+        },
     )?;
     divinate::workflow::store_collection_cycle(
         &args.state,
@@ -1044,125 +1046,6 @@ fn record_increment(
     }))
 }
 
-fn commit_collections(
-    state: &std::path::Path,
-    increment: &Corpus,
-    acquisitions: &[AcquisitionTranscript],
-    executions: &[divinate::execution::ExecutionCapture],
-    invocations: &[divinate::pack::PackCapture],
-) -> Result<Corpus> {
-    preflight_collections(state, increment, acquisitions, executions, invocations)?;
-    divinate::workflow::store_pack_invocations(state, invocations)?;
-    divinate::workflow::accumulate_with_executions(state, increment, acquisitions, executions)
-}
-
-fn preflight_collections(
-    state: &std::path::Path,
-    increment: &Corpus,
-    acquisition_captures: &[AcquisitionTranscript],
-    captures: &[divinate::execution::ExecutionCapture],
-    pack_captures: &[divinate::pack::PackCapture],
-) -> Result<()> {
-    let corpus_path = divinate::workflow::corpus_path(state);
-    let base = if corpus_path.exists() {
-        load_corpus(&corpus_path)?
-    } else {
-        Corpus {
-            collections: vec![],
-            observations: vec![],
-            schema_version: divinate::SCHEMA_VERSION.into(),
-            sources: vec![],
-        }
-    };
-    let merged = divinate::workflow::merge(&base, increment)?;
-    let mut acquisitions = divinate::workflow::load_transcripts(state)?;
-    for capture in acquisition_captures {
-        if let Some(existing) = acquisitions.iter().find(|item| item.id == capture.id) {
-            if existing != capture {
-                return Err(Error::Invalid(format!(
-                    "acquisition id collision: {}",
-                    capture.id
-                )));
-            }
-        } else {
-            acquisitions.push(capture.clone());
-        }
-    }
-    let registry = divinate::workflow::load_registry(state)?;
-    divinate::provenance::verify_collection_links(&merged, &acquisitions, &registry)?;
-
-    let mut blobs = divinate::workflow::load_blobs(state)?;
-    let mut executions = divinate::workflow::load_executions(state)?;
-    for capture in captures {
-        execution::verify(&capture.transcript, &capture.blobs)?;
-        merge_blob_bytes(&mut blobs, &capture.blobs)?;
-        merge_execution(&mut executions, &capture.transcript)?;
-    }
-    for capture in pack_captures {
-        let digest = divinate::hex_digest(&capture.executable_bytes);
-        if let Some(existing) = blobs.get(&digest) {
-            if existing != &capture.executable_bytes {
-                return Err(Error::Invalid(format!("blob collision: {digest}")));
-            }
-        } else {
-            blobs.insert(digest, capture.executable_bytes.clone());
-        }
-    }
-    divinate::provenance::verify_execution_links(&merged, &executions, &blobs)?;
-
-    let mut invocations = divinate::workflow::load_pack_invocations(state)?;
-    for capture in pack_captures {
-        divinate::pack::verify(&capture.invocation, &blobs)?;
-        if let Some(existing) = invocations
-            .iter()
-            .find(|item| item.id == capture.invocation.id)
-        {
-            if existing != &capture.invocation {
-                return Err(Error::Invalid(format!(
-                    "pack invocation id collision: {}",
-                    capture.invocation.id
-                )));
-            }
-        } else {
-            invocations.push(capture.invocation.clone());
-        }
-    }
-    divinate::pack::verify_observation_links(&merged, &invocations, &executions, &blobs)
-}
-
-fn merge_blob_bytes(
-    target: &mut BTreeMap<String, Vec<u8>>,
-    additions: &BTreeMap<String, Vec<u8>>,
-) -> Result<()> {
-    for (digest, bytes) in additions {
-        if let Some(existing) = target.get(digest) {
-            if existing != bytes {
-                return Err(Error::Invalid(format!("blob collision: {digest}")));
-            }
-        } else {
-            target.insert(digest.clone(), bytes.clone());
-        }
-    }
-    Ok(())
-}
-
-fn merge_execution(
-    executions: &mut Vec<divinate::execution::ExecutionTranscript>,
-    addition: &divinate::execution::ExecutionTranscript,
-) -> Result<()> {
-    if let Some(existing) = executions.iter().find(|item| item.id == addition.id) {
-        if existing != addition {
-            return Err(Error::Invalid(format!(
-                "execution id collision: {}",
-                addition.id
-            )));
-        }
-    } else {
-        executions.push(addition.clone());
-    }
-    Ok(())
-}
-
 fn inspect_pack(repository_path: &std::path::Path, id: &str) -> Result<()> {
     let config = divinate::project::load(repository_path)?
         .config
@@ -1218,12 +1101,14 @@ fn collect_pack(
         .get(id)
         .ok_or_else(|| Error::Invalid(format!("pack {id:?} is not configured")))?;
     let prepared = prepare_pack_collection(config, id, collector, &context)?;
-    commit_collections(
+    divinate::workflow::commit(
         state,
-        &prepared.corpus,
-        &prepared.acquisitions,
-        &prepared.executions,
-        &prepared.invocations,
+        divinate::workflow::Increment {
+            corpus: &prepared.corpus,
+            acquisitions: &prepared.acquisitions,
+            executions: &prepared.executions,
+            packs: &prepared.invocations,
+        },
     )?;
     print_json(&serde_json::json!({
         "pack": prepared.pack,
@@ -1879,14 +1764,19 @@ fn evaluate_state_with_skips(
     let transcripts = divinate::workflow::load_transcripts(state)?;
     let executions = divinate::workflow::load_executions(state)?;
     let blobs = divinate::workflow::load_blobs(state).map_err(provenance_error)?;
-    divinate::provenance::verify_execution_links(&corpus, &executions, &blobs)
-        .map_err(provenance_error)?;
     let registry = contracts.map_or_else(|| divinate::workflow::load_registry(state), read_json)?;
-    divinate::provenance::verify_collection_links(&corpus, &transcripts, &registry)
-        .map_err(provenance_error)?;
     let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
-    divinate::pack::verify_observation_links(&corpus, &pack_invocations, &executions, &blobs)
-        .map_err(provenance_error)?;
+    divinate::provenance::verify_graph(
+        divinate::provenance::EvidenceGraph {
+            corpus: &corpus,
+            acquisitions: &transcripts,
+            executions: &executions,
+            pack_invocations: &pack_invocations,
+            blobs: &blobs,
+        },
+        &registry,
+    )
+    .map_err(provenance_error)?;
     let historical =
         divinate::workflow::as_of_with_provenance(&corpus, &transcripts, &executions, at)?;
     let target = evaluation_in_project(project, target);
@@ -2398,76 +2288,67 @@ fn verify_state(state: &std::path::Path) -> Result<()> {
         }
     }
     for transcript in &executions {
-        execution::verify(transcript, &blobs).map_err(provenance_error)?;
+        execution::verify_stored(transcript, &blobs).map_err(provenance_error)?;
     }
     let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
     for invocation in &pack_invocations {
-        divinate::pack::verify(invocation, &blobs).map_err(provenance_error)?;
-        divinate::pack::verify_transcript_links(invocation, &executions, &acquisitions)
-            .map_err(provenance_error)?;
+        divinate::pack::verify_stored(invocation, &blobs).map_err(provenance_error)?;
     }
-    let (corpus_status, acquisition_links, execution_links, configured_cycles) =
-        if let Some(corpus) = &corpus {
-            let acquisition_links =
-                divinate::provenance::verify_collection_links(corpus, &acquisitions, &registry)
-                    .map_err(provenance_error)?;
-            let execution_links =
-                divinate::provenance::verify_execution_links(corpus, &executions, &blobs)
-                    .map_err(provenance_error)?;
-            divinate::pack::verify_observation_links(
-                corpus,
-                &pack_invocations,
-                &executions,
-                &blobs,
-            )
-            .map_err(provenance_error)?;
-            let configured_cycles = divinate::workflow::verify_configuration_provenance(
-                state,
-                corpus,
-                &executions,
-                &pack_invocations,
-            )
-            .map_err(provenance_error)?;
-            (
-                "present",
-                acquisition_links.len(),
-                execution_links.len(),
-                configured_cycles,
-            )
-        } else {
-            if !divinate::workflow::load_collection_cycles(state)?.is_empty() {
-                return Err(Error::Provenance(
-                    "collection cycles are present but corpus.json is absent".into(),
-                ));
-            }
-            let assertions = state.join("assertions");
-            if assertions.is_dir()
-                && std::fs::read_dir(&assertions)
-                    .map_err(|source| Error::Io {
-                        path: assertions.clone(),
-                        source,
-                    })?
-                    .filter_map(std::result::Result::ok)
-                    .any(|entry| {
-                        entry
-                            .path()
-                            .extension()
-                            .is_some_and(|value| value == "json")
-                    })
-            {
-                return Err(Error::Provenance(
-                    "saved evaluations are present but corpus.json is absent".into(),
-                ));
-            }
-            ("absent", 0, 0, 0)
-        };
+    let empty = empty_corpus();
+    let links = divinate::provenance::verify_graph(
+        divinate::provenance::EvidenceGraph {
+            corpus: corpus.as_ref().unwrap_or(&empty),
+            acquisitions: &acquisitions,
+            executions: &executions,
+            pack_invocations: &pack_invocations,
+            blobs: &blobs,
+        },
+        &registry,
+    )
+    .map_err(provenance_error)?;
+    let (corpus_status, configured_cycles) = if let Some(corpus) = &corpus {
+        let configured_cycles = divinate::workflow::verify_configuration_provenance(
+            state,
+            corpus,
+            &executions,
+            &pack_invocations,
+        )
+        .map_err(provenance_error)?;
+        ("present", configured_cycles)
+    } else {
+        if !divinate::workflow::load_collection_cycles(state)?.is_empty() {
+            return Err(Error::Provenance(
+                "collection cycles are present but corpus.json is absent".into(),
+            ));
+        }
+        let assertions = state.join("assertions");
+        if assertions.is_dir()
+            && std::fs::read_dir(&assertions)
+                .map_err(|source| Error::Io {
+                    path: assertions.clone(),
+                    source,
+                })?
+                .filter_map(std::result::Result::ok)
+                .any(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .is_some_and(|value| value == "json")
+                })
+        {
+            return Err(Error::Provenance(
+                "saved evaluations are present but corpus.json is absent".into(),
+            ));
+        }
+        ("absent", 0)
+    };
     print_json(&serde_json::json!({
         "status": "verified",
         "corpus": corpus_status,
         "acquisition_transcripts": acquisitions.len(),
-        "collection_acquisition_links": acquisition_links,
+        "collection_acquisition_links": links.collections.len(),
         "execution_transcripts": executions.len(),
-        "observation_execution_links": execution_links,
+        "observation_execution_links": links.executions.len(),
         "pack_invocations": pack_invocations.len(),
         "configured_collection_cycles": configured_cycles,
         "content_blobs": blobs.len(),
@@ -2506,8 +2387,17 @@ fn show_provenance(state: &std::path::Path, evaluation: &str, assertion_id: &str
     let blobs = divinate::workflow::load_blobs(state)?;
     let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
     divinate::pack::verify_assertion_links(&assertions, &pack_invocations, &blobs)?;
-    let execution_links =
-        divinate::provenance::verify_execution_links(&corpus, &executions, &blobs)?;
+    let execution_links = divinate::provenance::verify_graph(
+        divinate::provenance::EvidenceGraph {
+            corpus: &corpus,
+            acquisitions: &acquisitions,
+            executions: &executions,
+            pack_invocations: &pack_invocations,
+            blobs: &blobs,
+        },
+        &divinate::workflow::load_registry(state)?,
+    )?
+    .executions;
     let observations = corpus
         .observations
         .iter()
@@ -2629,7 +2519,7 @@ fn extract_stream(
         .iter()
         .find(|transcript| transcript.id == execution_id)
         .ok_or_else(|| Error::Provenance(format!("missing execution transcript {execution_id}")))?;
-    execution::verify(transcript, &blobs).map_err(provenance_error)?;
+    execution::verify_stored(transcript, &blobs).map_err(provenance_error)?;
     let bytes = match stream {
         Stream::Stdout => execution::stdout_bytes(transcript),
         Stream::Stderr => execution::stderr_bytes(transcript),
@@ -2696,6 +2586,9 @@ fn collection_error(error: Error) -> Error {
 }
 
 fn provenance_error(error: Error) -> Error {
+    if matches!(error, Error::Provenance(_)) {
+        return error;
+    }
     let message = error.to_string();
     drop(error);
     Error::Provenance(message)

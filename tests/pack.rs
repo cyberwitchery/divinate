@@ -152,6 +152,54 @@ fn github_pack_plans_remote_reads_without_receiving_credentials() {
 }
 
 #[test]
+fn store_refuses_an_invocation_naming_a_missing_transcript() {
+    let config = pack_config(github_pack(), serde_json::Value::Null);
+    let (metadata, _) = pack::describe(&config).unwrap();
+    let context = serde_json::json!({
+        "repository": "github:cyberwitchery/divinate",
+        "branch": "main",
+        "revision": "abc123",
+        "interval": {
+            "from": "2026-09-11T00:00:00Z",
+            "until": "2026-09-12T00:00:00Z"
+        },
+        "observed_at": "2026-09-12T00:00:00Z",
+        "configuration": {}
+    });
+    let (_, planned) = pack::plan(&config, &metadata, "check-runs", &context).unwrap();
+    let bound = pack::bind_acquisitions(planned, &["acq_missing".into()]).unwrap();
+    let packs = std::slice::from_ref(&bound);
+    let empty = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![],
+        observations: vec![],
+        sources: vec![],
+    };
+    for through_commit in [false, true] {
+        let state = tempfile::tempdir().unwrap();
+        let error = if through_commit {
+            let increment = workflow::Increment {
+                corpus: &empty,
+                acquisitions: &[],
+                executions: &[],
+                packs,
+            };
+            workflow::commit(state.path(), increment).map(drop)
+        } else {
+            workflow::store_pack_invocations(state.path(), packs)
+        }
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("pack invocation references missing acquisition transcript acq_missing"),
+            "{error}"
+        );
+        assert_eq!(fs::read_dir(state.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
 fn github_pack_normalizes_branch_and_check_responses() {
     let config = pack_config(github_pack(), serde_json::Value::Null);
     let (metadata, _) = pack::describe(&config).unwrap();
