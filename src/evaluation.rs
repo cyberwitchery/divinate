@@ -4,7 +4,7 @@
 //! assertions from the evidence available at the evaluation time, and stores
 //! them with a dossier under a label.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::assertions::{self, EvaluationTarget};
@@ -58,9 +58,10 @@ pub fn evaluate_repository(
 
 /// evaluate `state` and store the assertions and dossier as `label`.
 ///
-/// the label and the stored evidence graph are checked before anything is
-/// written. `contracts` replaces the stored contract registry; packs in
-/// `unavailable_optional_packs` are skipped.
+/// the label, the stored evidence graph and the links from pack assertions to
+/// their invocations are checked before anything is written. `contracts`
+/// replaces the stored contract registry; packs in `unavailable_optional_packs`
+/// are skipped.
 ///
 /// # Errors
 ///
@@ -166,10 +167,18 @@ pub fn evaluate(
             duplicate.id
         )));
     }
+    let staged = pack_captures
+        .iter()
+        .map(|capture| capture.invocation.clone())
+        .collect::<Vec<_>>();
+    let mut executables = BTreeMap::new();
+    for capture in &pack_captures {
+        executables
+            .entry(capture.invocation.contents.executable.sha256.clone())
+            .or_insert_with(|| capture.executable_bytes.clone());
+    }
+    crate::pack::verify_assertion_links(&assertions, &staged, &executables)?;
     crate::workflow::store_pack_invocations(state, &pack_captures)?;
-    let pack_invocations = crate::workflow::load_pack_invocations(state)?;
-    let pack_blobs = crate::workflow::load_blobs(state)?;
-    crate::pack::verify_assertion_links(&assertions, &pack_invocations, &pack_blobs)?;
     let dossier = dossier::build_with_registry(
         &current,
         &assertions,

@@ -1130,6 +1130,62 @@ print(json.dumps({"ok":True,"result":x},separators=(",",":")))
 }
 
 #[test]
+fn evaluate_stores_no_pack_invocation_when_an_assertion_link_fails() {
+    let state = tempfile::tempdir().unwrap();
+    let evaluator_path = state.path().join("evaluator-pack");
+    let evaluator = fs::read_to_string(example(
+        "packs/external-evaluator/divinate-pack-external-evaluator",
+    ))
+    .unwrap()
+    .replace("\"backup-encryption\"", "\"backup/encryption\"");
+    executable(&evaluator_path, evaluator.as_bytes());
+    configure_project(
+        state.path(),
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
+            sources: BTreeMap::default(),
+            packs: BTreeMap::from([(
+                "example.backup-evaluator".into(),
+                pack_file(evaluator_path, serde_json::json!({})),
+            )]),
+        },
+    )
+    .unwrap();
+    workflow::init(state.path()).unwrap();
+    divinate::write_json(
+        &Corpus {
+            collections: vec![],
+            observations: vec![],
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            sources: vec![],
+        },
+        &workflow::corpus_path(state.path()),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["evaluate", "--state"])
+        .arg(state.path())
+        .arg("--repository-path")
+        .arg(state.path())
+        .args([
+            "--from",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-09T00:00:00Z",
+        ])
+        .args(["--at", "2026-09-09T00:00:00Z"])
+        .output()
+        .unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("does not bind assertion"), "{error}");
+    assert_eq!(workflow::load_pack_invocations(state.path()).unwrap(), []);
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn pack_collection_and_external_assertion_keep_core_provenance() {
     let state = tempfile::tempdir().unwrap();

@@ -117,3 +117,5 @@
   so a failed `collect manifest` no longer leaves transcripts or a new state
   directory behind
 - check every evidence link in `provenance`
+- leave no pack invocations behind when `evaluate` refuses a pack assertion
+  that its invocation does not bind
