@@ -4,8 +4,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use divinate::acquisition::{self, AcquisitionTranscript, ContractRegistry};
-use divinate::assertions::{self, DerivedAssertion, EvaluationTarget};
-use divinate::dossier;
+use divinate::assertions::{self, DerivedAssertion};
 use divinate::error::{Error, Result};
 use divinate::execution::{self, ExecutionRequest, NamedPath};
 use divinate::model::{CollectionOutcome, Corpus, Observation};
@@ -376,6 +375,19 @@ struct TargetArgs {
     at: Option<String>,
 }
 
+impl From<TargetArgs> for divinate::evaluation::EvaluationRequest {
+    fn from(args: TargetArgs) -> Self {
+        Self {
+            repository: args.repository,
+            branch: args.branch,
+            release: args.release,
+            from: args.from,
+            until: args.until,
+            at: args.at,
+        }
+    }
+}
+
 #[derive(Clone, Copy, ValueEnum)]
 enum Stream {
     Stdout,
@@ -461,12 +473,12 @@ fn run(cli: Cli) -> Result<()> {
             label,
             contracts,
             target,
-        } => evaluate_state(
+        } => divinate::evaluation::evaluate_repository(
             &state,
             &repository_path,
             &label,
             contracts.as_deref(),
-            target,
+            target.into(),
         ),
         Command::Review {
             state,
@@ -483,7 +495,7 @@ fn run(cli: Cli) -> Result<()> {
                 json,
             } => state_dd(&state, &evaluation, &output, json),
         },
-        Command::Verify { state } => verify_state(&state),
+        Command::Verify { state } => print_json(&divinate::verification::verify(&state)?),
         Command::Provenance {
             state,
             evaluation,
@@ -681,13 +693,13 @@ fn collect_configured(args: &ProductCollectArgs) -> Result<()> {
             completed_at: evaluated_at.clone(),
         },
     )?;
-    evaluate_state_with_skips(
+    divinate::evaluation::evaluate(
         &args.state,
         &config,
         Some(&project.sha256),
         "next",
         None,
-        TargetArgs {
+        divinate::evaluation::EvaluationRequest {
             repository: Some(config.repository.clone()),
             branch: Some(config.branch.clone()),
             release: release.clone(),
@@ -1716,175 +1728,6 @@ fn run_tool(
 }
 
 #[allow(clippy::too_many_lines)]
-fn evaluate_state(
-    state: &std::path::Path,
-    repository_path: &std::path::Path,
-    label: &str,
-    contracts: Option<&std::path::Path>,
-    target: TargetArgs,
-) -> Result<()> {
-    let project = divinate::project::load(repository_path)?;
-    divinate::workflow::ensure_repository_identity(state, &project.config.repository)?;
-    divinate::workflow::store_project_configuration(state, &project.sha256, &project.bytes)?;
-    evaluate_state_with_skips(
-        state,
-        &project.config,
-        Some(&project.sha256),
-        label,
-        contracts,
-        target,
-        &BTreeSet::new(),
-    )
-}
-
-#[allow(clippy::too_many_lines)]
-fn evaluate_state_with_skips(
-    state: &std::path::Path,
-    project: &divinate::workflow::ProjectConfig,
-    project_config_sha256: Option<&str>,
-    label: &str,
-    contracts: Option<&std::path::Path>,
-    target: TargetArgs,
-    unavailable_optional_packs: &BTreeSet<String>,
-) -> Result<()> {
-    if label.is_empty()
-        || !label
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        return Err(Error::Invalid(
-            "evaluation label must contain only letters, numbers, '-' or '_'".into(),
-        ));
-    }
-    let corpus = load_corpus(&divinate::workflow::corpus_path(state))?;
-    let at = target.at.as_ref().map_or_else(
-        || Ok(time::OffsetDateTime::now_utc()),
-        |value| parse_timestamp(value),
-    )?;
-    let transcripts = divinate::workflow::load_transcripts(state)?;
-    let executions = divinate::workflow::load_executions(state)?;
-    let blobs = divinate::workflow::load_blobs(state).map_err(provenance_error)?;
-    let registry = contracts.map_or_else(|| divinate::workflow::load_registry(state), read_json)?;
-    let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
-    divinate::provenance::verify_graph(
-        divinate::provenance::EvidenceGraph {
-            corpus: &corpus,
-            acquisitions: &transcripts,
-            executions: &executions,
-            pack_invocations: &pack_invocations,
-            blobs: &blobs,
-        },
-        &registry,
-    )
-    .map_err(provenance_error)?;
-    let historical =
-        divinate::workflow::as_of_with_provenance(&corpus, &transcripts, &executions, at)?;
-    let target = evaluation_in_project(project, target);
-    divinate::provenance::verify_execution_links(
-        &historical.corpus,
-        &historical.executions,
-        &blobs,
-    )
-    .map_err(provenance_error)?;
-    let current = divinate::provenance::with_current_authority(
-        &historical.corpus,
-        &historical.acquisitions,
-        &registry,
-    )
-    .map_err(provenance_error)?;
-    let current = match &project.mirror_of {
-        Some(upstream) => {
-            divinate::provenance::with_declared_mirror(&current, &project.repository, upstream)
-        }
-        None => current,
-    };
-    let mut assertions = assertions::evaluate_all(&current, &target, at)?;
-    let evaluated_at = assertions
-        .first()
-        .map(|assertion| assertion.evaluated_at.clone())
-        .ok_or_else(|| Error::Invalid("core evaluation returned no assertions".into()))?;
-    let mut pack_captures = Vec::new();
-    for (configured_id, config) in &project.packs {
-        if unavailable_optional_packs.contains(configured_id) {
-            continue;
-        }
-        let (metadata, described) = divinate::pack::describe(config)?;
-        if metadata.id != *configured_id {
-            return Err(Error::Invalid(format!(
-                "configured pack {configured_id:?} identifies itself as {:?}",
-                metadata.id
-            )));
-        }
-        if !metadata.evaluators.is_empty() {
-            pack_captures.push(described);
-        }
-        for evaluator in &metadata.evaluators {
-            let (mut derived, capture) = divinate::pack::evaluate(
-                config,
-                &metadata,
-                evaluator,
-                &current,
-                &target,
-                &evaluated_at,
-            )?;
-            pack_captures.push(capture);
-            assertions.append(&mut derived);
-        }
-    }
-    let mut assertion_ids = BTreeSet::new();
-    if let Some(duplicate) = assertions
-        .iter()
-        .find(|assertion| !assertion_ids.insert(assertion.id.as_str()))
-    {
-        return Err(Error::Invalid(format!(
-            "duplicate assertion id: {}",
-            duplicate.id
-        )));
-    }
-    divinate::workflow::store_pack_invocations(state, &pack_captures)?;
-    let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
-    let pack_blobs = divinate::workflow::load_blobs(state)?;
-    divinate::pack::verify_assertion_links(&assertions, &pack_invocations, &pack_blobs)?;
-    let dossier = dossier::build_with_registry(
-        &current,
-        &assertions,
-        &historical.acquisitions,
-        &registry,
-        &target,
-        at,
-    )?;
-    write_json(
-        &assertions,
-        &state.join("assertions").join(format!("{label}.json")),
-    )?;
-    write_json(
-        &registry,
-        &state
-            .join("assertions")
-            .join(format!("{label}.contracts.json")),
-    )?;
-    if let Some(sha256) = project_config_sha256 {
-        write_json(
-            &divinate::workflow::EvaluationConfiguration {
-                project_config_sha256: sha256.into(),
-            },
-            &state
-                .join("assertions")
-                .join(format!("{label}.configuration.json")),
-        )?;
-    }
-    write_json(
-        &dossier,
-        &state.join("dossiers").join(format!("{label}.json")),
-    )?;
-    let markdown = state.join("dossiers").join(format!("{label}.md"));
-    std::fs::write(&markdown, dossier::render_markdown(&dossier)).map_err(|source| Error::Io {
-        path: markdown,
-        source,
-    })
-}
-
-#[allow(clippy::too_many_lines)]
 fn state_status(
     state: &std::path::Path,
     repository_path: &std::path::Path,
@@ -2248,111 +2091,6 @@ fn write_view<T: serde::Serialize>(
     write_json(value, &state.join("views").join(format!("{label}.json")))?;
     let path = state.join("views").join(format!("{label}.md"));
     std::fs::write(&path, markdown).map_err(|source| Error::Io { path, source })
-}
-
-fn evaluation_in_project(
-    config: &divinate::workflow::ProjectConfig,
-    args: TargetArgs,
-) -> EvaluationTarget {
-    let repository = args.repository.unwrap_or_else(|| config.repository.clone());
-    EvaluationTarget {
-        mirror_of: (repository == config.repository)
-            .then(|| config.mirror_of.clone())
-            .flatten(),
-        repository,
-        branch: args.branch.unwrap_or_else(|| config.branch.clone()),
-        release: args.release,
-        from: args.from,
-        until: args.until,
-    }
-}
-
-fn verify_state(state: &std::path::Path) -> Result<()> {
-    let corpus_path = divinate::workflow::corpus_path(state);
-    let corpus = corpus_path
-        .is_file()
-        .then(|| load_corpus(&corpus_path))
-        .transpose()?;
-    let acquisitions = divinate::workflow::load_transcripts(state).map_err(provenance_error)?;
-    let executions = divinate::workflow::load_executions(state).map_err(provenance_error)?;
-    let blobs = divinate::workflow::load_blobs(state).map_err(provenance_error)?;
-    let registry = divinate::workflow::load_registry(state)?;
-    for transcript in &acquisitions {
-        let assessment = acquisition::assess(transcript, &registry);
-        if assessment.integrity != acquisition::IntegrityStatus::Verified {
-            return Err(Error::Provenance(format!(
-                "acquisition transcript {} failed integrity: {}",
-                transcript.id,
-                assessment.reasons.join("; ")
-            )));
-        }
-    }
-    for transcript in &executions {
-        execution::verify_stored(transcript, &blobs).map_err(provenance_error)?;
-    }
-    let pack_invocations = divinate::workflow::load_pack_invocations(state)?;
-    for invocation in &pack_invocations {
-        divinate::pack::verify_stored(invocation, &blobs).map_err(provenance_error)?;
-    }
-    let empty = empty_corpus();
-    let links = divinate::provenance::verify_graph(
-        divinate::provenance::EvidenceGraph {
-            corpus: corpus.as_ref().unwrap_or(&empty),
-            acquisitions: &acquisitions,
-            executions: &executions,
-            pack_invocations: &pack_invocations,
-            blobs: &blobs,
-        },
-        &registry,
-    )
-    .map_err(provenance_error)?;
-    let (corpus_status, configured_cycles) = if let Some(corpus) = &corpus {
-        let configured_cycles = divinate::workflow::verify_configuration_provenance(
-            state,
-            corpus,
-            &executions,
-            &pack_invocations,
-        )
-        .map_err(provenance_error)?;
-        ("present", configured_cycles)
-    } else {
-        if !divinate::workflow::load_collection_cycles(state)?.is_empty() {
-            return Err(Error::Provenance(
-                "collection cycles are present but corpus.json is absent".into(),
-            ));
-        }
-        let assertions = state.join("assertions");
-        if assertions.is_dir()
-            && std::fs::read_dir(&assertions)
-                .map_err(|source| Error::Io {
-                    path: assertions.clone(),
-                    source,
-                })?
-                .filter_map(std::result::Result::ok)
-                .any(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .is_some_and(|value| value == "json")
-                })
-        {
-            return Err(Error::Provenance(
-                "saved evaluations are present but corpus.json is absent".into(),
-            ));
-        }
-        ("absent", 0)
-    };
-    print_json(&serde_json::json!({
-        "status": "verified",
-        "corpus": corpus_status,
-        "acquisition_transcripts": acquisitions.len(),
-        "collection_acquisition_links": links.collections.len(),
-        "execution_transcripts": executions.len(),
-        "observation_execution_links": links.executions.len(),
-        "pack_invocations": pack_invocations.len(),
-        "configured_collection_cycles": configured_cycles,
-        "content_blobs": blobs.len(),
-    }))
 }
 
 #[allow(clippy::too_many_lines)]

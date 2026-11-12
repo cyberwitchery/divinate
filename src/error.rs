@@ -47,3 +47,12 @@ pub enum Error {
 
 /// the crate's result type.
 pub type Result<T> = std::result::Result<T, Error>;
+
+pub(crate) fn provenance_error(error: Error) -> Error {
+    if matches!(error, Error::Provenance(_)) {
+        return error;
+    }
+    let message = error.to_string();
+    drop(error);
+    Error::Provenance(message)
+}
