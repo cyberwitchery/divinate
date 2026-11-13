@@ -1182,7 +1182,9 @@ fn evaluate_stores_no_pack_invocation_when_an_assertion_link_fails() {
         .unwrap();
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("does not bind assertion"), "{error}");
+    assert!(!output.status.success(), "{error}");
     assert_eq!(workflow::load_pack_invocations(state.path()).unwrap(), []);
+    assert_eq!(workflow::load_blobs(state.path()).unwrap(), BTreeMap::new());
 }
 
 #[test]
