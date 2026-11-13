@@ -35,12 +35,14 @@ pub mod assertions;
 pub mod coverage;
 pub mod dossier;
 pub mod error;
+pub mod evaluation;
 pub mod execution;
 pub mod model;
 pub mod pack;
 pub mod project;
 pub mod provenance;
 pub mod release;
+pub mod verification;
 pub mod views;
 pub mod workflow;
 

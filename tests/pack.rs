@@ -1130,6 +1130,130 @@ print(json.dumps({"ok":True,"result":x},separators=(",",":")))
 }
 
 #[test]
+fn evaluate_stores_no_pack_invocation_when_an_assertion_link_fails() {
+    let state = tempfile::tempdir().unwrap();
+    let evaluator_path = state.path().join("evaluator-pack");
+    let evaluator = fs::read_to_string(example(
+        "packs/external-evaluator/divinate-pack-external-evaluator",
+    ))
+    .unwrap()
+    .replace("\"backup-encryption\"", "\"backup/encryption\"");
+    executable(&evaluator_path, evaluator.as_bytes());
+    configure_project(
+        state.path(),
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
+            sources: BTreeMap::default(),
+            packs: BTreeMap::from([(
+                "example.backup-evaluator".into(),
+                pack_file(evaluator_path, serde_json::json!({})),
+            )]),
+        },
+    )
+    .unwrap();
+    workflow::init(state.path()).unwrap();
+    divinate::write_json(
+        &Corpus {
+            collections: vec![],
+            observations: vec![],
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            sources: vec![],
+        },
+        &workflow::corpus_path(state.path()),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
+        .args(["evaluate", "--state"])
+        .arg(state.path())
+        .arg("--repository-path")
+        .arg(state.path())
+        .args([
+            "--from",
+            "2026-09-01T00:00:00Z",
+            "--until",
+            "2026-09-09T00:00:00Z",
+        ])
+        .args(["--at", "2026-09-09T00:00:00Z"])
+        .output()
+        .unwrap();
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("does not bind assertion"), "{error}");
+    assert!(!output.status.success(), "{error}");
+    assert_eq!(workflow::load_pack_invocations(state.path()).unwrap(), []);
+    assert_eq!(workflow::load_blobs(state.path()).unwrap(), BTreeMap::new());
+}
+
+#[test]
+fn library_evaluate_refuses_a_configuration_the_state_does_not_hold() {
+    let state = tempfile::tempdir().unwrap();
+    let evaluator_path = state.path().join("evaluator-pack");
+    executable(
+        &evaluator_path,
+        &fs::read(example(
+            "packs/external-evaluator/divinate-pack-external-evaluator",
+        ))
+        .unwrap(),
+    );
+    configure_project(
+        state.path(),
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
+            sources: BTreeMap::default(),
+            packs: BTreeMap::from([(
+                "example.backup-evaluator".into(),
+                pack_file(evaluator_path, serde_json::json!({})),
+            )]),
+        },
+    )
+    .unwrap();
+    workflow::init(state.path()).unwrap();
+    divinate::write_json(
+        &Corpus {
+            collections: vec![],
+            observations: vec![],
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            sources: vec![],
+        },
+        &workflow::corpus_path(state.path()),
+    )
+    .unwrap();
+    let project = project::load(state.path()).unwrap();
+    let run = || {
+        divinate::evaluation::evaluate(
+            state.path(),
+            &project.config,
+            Some(&project.sha256),
+            "current",
+            None,
+            divinate::evaluation::EvaluationRequest {
+                repository: None,
+                branch: None,
+                release: None,
+                from: "2026-09-01T00:00:00Z".into(),
+                until: "2026-09-09T00:00:00Z".into(),
+                at: Some("2026-09-09T00:00:00Z".into()),
+            },
+            &BTreeSet::new(),
+        )
+    };
+    let error = run().unwrap_err().to_string();
+    assert!(error.contains("project-configs"), "{error}");
+    assert!(!state.path().join("assertions/current.json").exists());
+    assert_eq!(workflow::load_pack_invocations(state.path()).unwrap(), []);
+    workflow::store_project_configuration(state.path(), &project.sha256, &project.bytes).unwrap();
+    run().unwrap();
+    divinate::verification::verify(state.path()).unwrap();
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn pack_collection_and_external_assertion_keep_core_provenance() {
     let state = tempfile::tempdir().unwrap();
