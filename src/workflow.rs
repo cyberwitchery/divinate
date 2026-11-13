@@ -320,7 +320,7 @@ pub fn verify_configuration_provenance(
     Ok(cycles.len())
 }
 
-fn verify_project_configuration(root: &Path, sha256: &str) -> Result<()> {
+pub(crate) fn verify_project_configuration(root: &Path, sha256: &str) -> Result<()> {
     let path = root.join("project-configs").join(format!("{sha256}.yaml"));
     let bytes = fs::read(&path).map_err(|source| Error::Io {
         path: path.clone(),

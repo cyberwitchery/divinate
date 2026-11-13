@@ -59,14 +59,16 @@ pub fn evaluate_repository(
 /// evaluate `state` and store the assertions and dossier as `label`.
 ///
 /// the label, the stored evidence graph and the links from pack assertions to
-/// their invocations are checked before anything is written. `contracts`
-/// replaces the stored contract registry; packs in `unavailable_optional_packs`
-/// are skipped.
+/// their invocations are checked before anything is written.
+/// `project_config_sha256` must name a configuration already stored with
+/// [`crate::workflow::store_project_configuration`]. `contracts` replaces the
+/// stored contract registry; packs in `unavailable_optional_packs` are skipped.
 ///
 /// # Errors
 ///
-/// returns an error for an invalid label or timestamp, a broken evidence graph,
-/// a failing or misidentified pack, a duplicate assertion id, or a failed write.
+/// returns an error for an invalid label or timestamp, a project configuration
+/// that `state` does not hold, a broken evidence graph, a failing or
+/// misidentified pack, a duplicate assertion id, or a failed write.
 #[allow(clippy::too_many_lines)]
 pub fn evaluate(
     state: &Path,
@@ -85,6 +87,9 @@ pub fn evaluate(
         return Err(Error::Invalid(
             "evaluation label must contain only letters, numbers, '-' or '_'".into(),
         ));
+    }
+    if let Some(sha256) = project_config_sha256 {
+        crate::workflow::verify_project_configuration(state, sha256).map_err(provenance_error)?;
     }
     let corpus = load_corpus(&crate::workflow::corpus_path(state))?;
     let at = request.at.as_ref().map_or_else(
