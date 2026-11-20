@@ -19,10 +19,8 @@ local evidence includes executable identity, argv, inputs, exit status, and outp
 collection runs record attempts to enumerate a population. observations interpret
 retained source bytes. assertions derive claims from observations and coverage.
 views select saved assertions without reading raw evidence. the dossier is an
-evidence report, not a view: next to each saved assertion it shows the
-observations, sources, collection runs, and acquisition transcripts behind it,
-and it fails when a collection link, an observation, or a source hash does not
-resolve. like a view, it adds no assertion logic.
+evidence report: it shows each saved assertion with the evidence and coverage
+behind it.
 
 the product command surface composes this flow without changing its ownership:
 
