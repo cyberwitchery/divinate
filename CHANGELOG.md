@@ -2,6 +2,16 @@
 
 ## unreleased
 
+- remove the core `configured_review_requirement` claim, which tested one fixed
+  two-approval policy and named `main` whatever the branch; approval thresholds
+  belong in packs, and `configured_independent_review` answers whether approval
+  is required
+- record the pull request, author, merge time, and each qualifying approver and
+  approval time behind every `every_main_change_reviewed` judgement, as `review`
+  on its evidence, and show them in the dossier and `export dd`; packs cannot
+  supply them
+- document that configured-intent answers are point-in-time and never cover a
+  period
 - describe divinate by the compliance questions it answers, for whoever has to
   answer them
 - document every question divinate answers, what each result means, and what

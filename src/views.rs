@@ -274,6 +274,9 @@ pub fn render_dd(response: &DdResponse) -> String {
                 evidence.reason, evidence.observation_id
             )
             .unwrap();
+            if let Some(review) = &evidence.review {
+                writeln!(out, "  - {review}").unwrap();
+            }
         }
         if !assertion.support.is_empty() {
             writeln!(

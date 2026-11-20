@@ -53,7 +53,6 @@ question into the claims below, and say which part no claim covers.
 | question | claim id | sources (collectors) | GitHub | Azure DevOps |
 |---|---|---|---|---|
 | is approval required before merging? | `configured_independent_review` | `branch-protection` / `branch-policy` | yes | yes |
-| are two approvals, including one after the last push, required? | `configured_review_requirement` | `branch-protection` | yes | — |
 | did every change get an approving review before merge? | `every_main_change_reviewed` | `repository-mutations` and `pull-request-reviews` | yes | yes |
 | were reviews adequate or security-focused? | `adequate_human_security_review` | always `not_automatable` | — | — |
 | does the branch require named status checks? | `github_required_status_checks_configured` | `branch-protection` | yes | — |
@@ -65,17 +64,15 @@ question into the claims below, and say which part no claim covers.
 
 notes:
 
-- `configured_review_requirement` tests one fixed policy: two approvals plus
-  last-push approval. a repository that deliberately requires one approval gets
-  `contradicted` here. explain that, and answer "is approval required?" from
-  `configured_independent_review` instead.
 - `every_main_change_reviewed` counts an approval only from someone other than
   the pull request's author, recorded before the merge. it does not check the
   required number of approvals, stale-review dismissal, or vote resets.
 - history questions are about a period. ask for it if the user did not give
   one, for example the audit period or the last quarter.
 - configuration questions are answered from the settings at collection time.
-  divinate cannot read what the settings were in the past.
+  divinate cannot read what the settings were in the past. settings read by
+  earlier collections are samples; never present them as proof that a setting
+  held across a period.
 - the `release-sbom` claims need a release context: release tags and a
   CycloneDX sbom per release.
 - packs can add claims beyond this table. read the `claim` text of any unknown
