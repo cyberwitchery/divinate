@@ -431,9 +431,8 @@ fn supported_review_answer_records_what_was_checked() {
             assert_ne!(approval.actor, review.author);
             assert!(at(&approval.submitted_at) < at(&review.integrated_at));
         }
+        assert!(review.to_string().contains("approved by "), "{review}");
     }
-    let rendered = divinate::views::render_dd(&divinate::views::dd_response(&[assertion]));
-    assert!(rendered.contains("approved by "), "{rendered}");
 }
 
 #[test]

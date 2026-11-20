@@ -74,17 +74,30 @@ question, what it checks, and what it never tells you.
 
 ## an answer, as you get it
 
-a repository with no review history collected yet gets this from
-`divinate export dd`:
+a repository with no review history collected yet gets this entry in its
+dossier, `.evidence/dossiers/current.md`:
 
 ```markdown
-## every change integrated into main during 2026-09-12T01:17:42+02:00 .. 2026-10-31T13:36:32.601944665Z received at least one approving review before integration
+## changes received approving review before integration
 
-result: **insufficient evidence**
+state: **insufficient evidence**
+semantics: observed operating effectiveness
+derivation: `main-changes-reviewed/v2` (`asrt_363ec8c890b700a1e7ef`)
 
-- gap: no collection attempt matched this population and scope; uncovered intervals: 2026-09-12T01:17:42+02:00 to 2026-10-31T13:36:32.601944665Z
+### why
+
+- no counterexample was found, but the complete authoritative population was not established
+
+### coverage
+
+- repository mutations: **incomplete**, 2026-09-12T01:17:42+02:00 to 2026-10-31T13:36:18.011447483Z
+- pull request reviews: **incomplete**, 2026-09-12T01:17:42+02:00 to 2026-10-31T13:36:18.011447483Z
+- uncovered: 2026-09-12T01:17:42+02:00 to 2026-10-31T13:36:18.011447483Z
   - missing coverage: pull request reviews, repository mutations
-- limitation: an approval recorded before integration does not establish that every provider-specific stale-review or vote-reset condition remained satisfied
+
+### limitations
+
+- an approval recorded before integration does not establish that every provider-specific stale-review or vote-reset condition remained satisfied
 ```
 
 the question, the result, what is missing, and what even a positive answer
@@ -122,7 +135,6 @@ divinate init            # writes divinate.yaml from the git origin
 $EDITOR divinate.yaml    # choose which questions to collect evidence for
 divinate collect         # gather evidence and answer
 divinate status          # what is known now, and what is missing
-divinate export dd       # the answers, as a document to hand over
 ```
 
 [getting started](docs/getting-started.md) walks through answering the review

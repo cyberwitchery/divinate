@@ -36,7 +36,6 @@ evidence for, and writes the results to several places:
 |---|---|
 | `divinate status` | a summary: counts per result, source health, open gaps |
 | `.evidence/dossiers/current.md` | the full answer set with reasons, evidence, coverage, and gaps |
-| `divinate export dd` → `.evidence/views/dd-response.md` | a compact answer document to hand to someone else |
 | `divinate review` → `.evidence/views/review.md` | what changed since the previous collection |
 | `.evidence/assertions/current.json` | the same answers as structured json, for tools and agents |
 
@@ -119,7 +118,6 @@ the answer is only as useful as someone else's ability to confirm it.
 ```sh
 divinate verify                       # recheck every link from raw records to answers
 divinate provenance <answer-id>       # the evidence graph behind one answer
-divinate export dd                    # the answer document
 ```
 
 - `.evidence/` holds everything divinate captured and derived. copy or archive

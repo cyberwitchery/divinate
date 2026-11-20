@@ -104,7 +104,7 @@ suggestions), taken from the vote history so its time is known.
 for each pull request it judged, the answer records what it checked: the pull
 request's number and author, when it was merged, the time of the branch change,
 and every qualifying approval with its approver and time. they appear under the
-evidence in the dossier and the `export dd` view, and as `review` in
+evidence in the dossier, and as `review` in
 `assertions/current.json`.
 
 - **supported**: the complete list of changes and their reviews was read, and

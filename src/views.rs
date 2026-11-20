@@ -1,7 +1,7 @@
 //! downstream views over saved assertions.
 //!
-//! [`isms_update`] compares structured assertion state. [`dd_response`] selects
-//! saved claims for due diligence. both report reuse and acquire no evidence.
+//! [`isms_update`] compares structured assertion state. it reports reuse and
+//! acquires no evidence.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -9,8 +9,6 @@ use std::fmt::Write as _;
 use serde::Serialize;
 
 use crate::assertions::{AssertionType, DerivedAssertion, Outcome};
-use crate::coverage::CoverageOutcome;
-use crate::model::Proposition;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 /// one claim whose outcome differs between two evaluations.
@@ -41,13 +39,6 @@ pub struct IsmsUpdate {
     pub changes: Vec<AssertionChange>,
     pub new_gaps: Vec<String>,
     pub coverage_regressions: Vec<String>,
-    pub reuse: ReuseAccounting,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-/// saved claims selected to answer a due-diligence request.
-pub struct DdResponse {
-    pub claims: Vec<DerivedAssertion>,
     pub reuse: ReuseAccounting,
 }
 
@@ -168,49 +159,6 @@ fn review_assertions(assertions: &[DerivedAssertion]) -> Vec<DerivedAssertion> {
 }
 
 #[must_use]
-/// select saved claims for a due-diligence response.
-pub fn dd_response(assertions: &[DerivedAssertion]) -> DdResponse {
-    let selected = [
-        AssertionType::ConfiguredIndependentReview,
-        AssertionType::DependencyChangeVisibility,
-        AssertionType::ReleaseSupplyChainPolicy,
-        AssertionType::EveryMainChangeReviewed,
-    ];
-    let mut claims = selected
-        .iter()
-        .filter_map(|kind| {
-            assertions
-                .iter()
-                .find(|assertion| assertion.assertion_type == *kind)
-                .cloned()
-        })
-        .collect::<Vec<_>>();
-    claims.extend(
-        assertions
-            .iter()
-            .filter(|assertion| matches!(assertion.assertion_type, AssertionType::External(_)))
-            .cloned(),
-    );
-    DdResponse {
-        reuse: ReuseAccounting {
-            evidence_already_present: source_ids(&claims).into_iter().collect(),
-            evidence_newly_acquired: vec![],
-            assertions_reused: claims
-                .iter()
-                .map(|assertion| assertion.id.clone())
-                .collect(),
-            assertions_reevaluated: vec![],
-            new_derivations: vec![],
-            new_view_logic: vec!["dd evidence-request selection and rendering".into()],
-            manual_interpretation: vec![
-                "judge whether the selected interval and supply-chain rule are adequate".into(),
-            ],
-        },
-        claims,
-    }
-}
-
-#[must_use]
 /// render a technical-controls update as markdown.
 pub fn render_isms(update: &IsmsUpdate) -> String {
     let mut out = String::from("# technical controls update\n\n## current state\n\n");
@@ -260,88 +208,6 @@ pub fn render_isms(update: &IsmsUpdate) -> String {
     out
 }
 
-#[must_use]
-/// render a due-diligence response as markdown.
-pub fn render_dd(response: &DdResponse) -> String {
-    let mut out = String::from("# technical evidence response\n\n");
-    for assertion in &response.claims {
-        writeln!(out, "## {}\n", assertion.claim).unwrap();
-        writeln!(out, "result: **{}**\n", outcome_name(assertion.outcome)).unwrap();
-        for evidence in &assertion.support {
-            writeln!(
-                out,
-                "- evidence: {} (`{}`)",
-                evidence.reason, evidence.observation_id
-            )
-            .unwrap();
-            if let Some(review) = &evidence.review {
-                writeln!(out, "  - {review}").unwrap();
-            }
-        }
-        if !assertion.support.is_empty() {
-            writeln!(
-                out,
-                "- provenance: `divinate provenance --evaluation <label> {}`",
-                assertion.id
-            )
-            .unwrap();
-        }
-        render_missing_gaps(&mut out, assertion);
-        for limitation in &assertion.limitations {
-            writeln!(out, "- limitation: {limitation}").unwrap();
-        }
-        for join in &assertion.identity_joins {
-            writeln!(
-                out,
-                "- identity join: `{}` and `{}` match on {}",
-                join.left_observation_id,
-                join.right_observation_id,
-                join.fields.keys().cloned().collect::<Vec<_>>().join(", ")
-            )
-            .unwrap();
-        }
-        for coverage in &assertion.coverage {
-            writeln!(
-                out,
-                "- coverage `{}`: {}",
-                proposition_name(coverage.requirement.proposition),
-                coverage_outcome_name(coverage.outcome)
-            )
-            .unwrap();
-        }
-        writeln!(out).unwrap();
-    }
-    out
-}
-
-fn render_missing_gaps(out: &mut String, assertion: &DerivedAssertion) {
-    let mut gaps = BTreeMap::<(String, String), BTreeSet<String>>::new();
-    for gap in &assertion.missing {
-        gaps.entry((gap.reason.clone(), gap.subject.clone()))
-            .or_default()
-            .insert(gap.requirement.clone());
-    }
-    for ((reason, _subject), requirements) in gaps {
-        writeln!(out, "- gap: {reason}").unwrap();
-        let coverage = requirements
-            .iter()
-            .filter_map(|requirement| {
-                requirement
-                    .strip_prefix("complete_authoritative_")
-                    .and_then(|value| value.strip_suffix("_coverage"))
-                    .map(human_name)
-            })
-            .collect::<Vec<_>>();
-        if !coverage.is_empty() {
-            writeln!(out, "  - missing coverage: {}", coverage.join(", ")).unwrap();
-        }
-    }
-}
-
-fn human_name(value: &str) -> String {
-    value.replace('_', " ")
-}
-
 fn render_strings<'a>(out: &mut String, heading: &str, values: impl Iterator<Item = &'a str>) {
     writeln!(out, "\n## {heading}\n").unwrap();
     let mut values = values.peekable();
@@ -389,26 +255,5 @@ const fn outcome_name(outcome: Outcome) -> &'static str {
         Outcome::InsufficientEvidence => "insufficient evidence",
         Outcome::Stale => "stale",
         Outcome::NotAutomatable => "not automatable",
-    }
-}
-
-const fn proposition_name(proposition: Proposition) -> &'static str {
-    match proposition {
-        Proposition::PullRequestPopulation => "pull request population",
-        Proposition::PullRequestReviews => "pull-request reviews",
-        Proposition::RepositoryMutations => "repository mutations",
-        Proposition::CommitAncestry => "commit ancestry",
-        Proposition::BranchConfiguration => "branch configuration",
-        Proposition::RevisionChecks => "revision checks",
-        Proposition::BuildValidationResults => "build validation results",
-        Proposition::SupplyChainPolicyDecision => "supply-chain policy decision",
-        Proposition::DeclaredDependencies => "declared dependencies",
-    }
-}
-
-const fn coverage_outcome_name(outcome: CoverageOutcome) -> &'static str {
-    match outcome {
-        CoverageOutcome::Complete => "complete",
-        CoverageOutcome::Incomplete => "incomplete",
     }
 }

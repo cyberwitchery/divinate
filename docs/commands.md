@@ -75,16 +75,6 @@ without labels, compares the explicit `previous` and `current` snapshots managed
 by normal collection. if no predecessor exists, it requires `--since`. writes
 `.evidence/views/<label>.json` and `.md`.
 
-### `divinate export dd`
-
-```text
-divinate export dd [--evaluation <label>] [--output <label>]
-  [--state <path>] [--json]
-```
-
-renders a due-diligence response from saved assertions. evaluation defaults to
-`current`; output defaults to `dd-response`.
-
 ## pack inspection
 
 ```text

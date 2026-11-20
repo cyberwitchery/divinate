@@ -1,6 +1,6 @@
 ---
 name: divinate
-description: Answer technical compliance, audit, security-questionnaire, and due-diligence questions about a git repository's controls with verifiable evidence, using the divinate CLI. Use when asked whether changes to a branch are reviewed or approved before merge, whether review or CI is required by branch protection or branch policy, whether CI passed, which dependencies a release changed or whether they passed policy, or when setting up, running, or reading divinate (divinate.yaml, .evidence/, dossiers, `divinate collect`). Covers GitHub and Azure DevOps repositories.
+description: Answer technical compliance, audit, and security-questionnaire questions about a git repository's controls with verifiable evidence, using the divinate CLI. Use when asked whether changes to a branch are reviewed or approved before merge, whether review or CI is required by branch protection or branch policy, whether CI passed, which dependencies a release changed or whether they passed policy, or when setting up, running, or reading divinate (divinate.yaml, .evidence/, dossiers, `divinate collect`). Covers GitHub and Azure DevOps repositories.
 ---
 
 # answering compliance questions with divinate
@@ -169,7 +169,6 @@ other views, all generated from the same json:
 
 - `divinate status` (add `--json`): result counts, source health, open gaps.
 - `.evidence/dossiers/current.md`: full reasoning for each answer.
-- `divinate export dd`: a hand-over document in `.evidence/views/dd-response.md`.
 - `divinate review`: what changed since the previous collection.
 
 ## step 5: write the response
@@ -194,7 +193,6 @@ should judge them.
 ```sh
 divinate verify                         # offline recheck of every answer against its records
 divinate provenance <answer-id>         # the evidence behind one answer, as json
-divinate export dd --output <name>      # the answer document
 ```
 
 `.evidence/` contains provider responses byte for byte, including pull request
@@ -207,8 +205,9 @@ not replace them:
 
 ```sh
 divinate evaluate --label 2026-q3 --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
-divinate export dd --evaluation 2026-q3 --output 2026-q3
 ```
+
+the period's dossier is `.evidence/dossiers/2026-q3.md`.
 
 ## when something fails
 

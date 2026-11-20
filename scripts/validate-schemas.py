@@ -35,7 +35,6 @@ def pairs() -> list[tuple[str, str, bool]]:
         ("evidence-corpus", f"{STATE}/corpus.json", False),
         ("contract-registry", f"{STATE}/contracts.json", False),
         ("isms-update", f"{STATE}/views/isms-update.json", False),
-        ("dd-response", f"{STATE}/views/dd-response.json", False),
     ]
     items += [("dossier", p, False) for p in glob.glob(f"{STATE}/dossiers/*.json")]
     items += [
