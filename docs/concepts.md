@@ -110,9 +110,6 @@ it does not rewrite a historical transcript.
 
 *documents for people.*
 
-reviews and due-diligence responses select and render saved assertions. they do
-not collect evidence and contain no independent assertion logic. use the json
-assertion set when another system needs the structured result.
-
-the dossier is an evidence report: it shows each saved assertion with the
-evidence and coverage behind it.
+reviews and due-diligence responses render saved assertions. the dossier is an
+evidence report: it also shows the evidence and coverage behind each one. other
+systems should read the json assertion set.
