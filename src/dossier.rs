@@ -11,7 +11,9 @@ use serde::Serialize;
 use time::OffsetDateTime;
 
 use crate::acquisition::{self, AcquisitionTranscript, ContractRegistry, ContractStatus};
-use crate::assertions::{AssertionType, DerivedAssertion, EvaluationTarget, EvidenceUse, Outcome};
+use crate::assertions::{
+    AssertionType, DerivedAssertion, EvaluationTarget, EvidenceUse, IntegrationReview, Outcome,
+};
 use crate::coverage::{CoverageOutcome, RunDisposition};
 use crate::error::{Error, Result};
 use crate::model::{
@@ -131,6 +133,8 @@ pub struct DossierEvidence {
     pub source_sha256: String,
     pub collection_run_id: Option<String>,
     pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review: Option<IntegrationReview>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -373,6 +377,7 @@ fn evidence(corpus: &Corpus, item: &EvidenceUse) -> Result<DossierEvidence> {
         source_sha256: source.sha256.clone(),
         collection_run_id: observation.collection_run_id.clone(),
         reason: item.reason.clone(),
+        review: item.review.clone(),
     })
 }
 
@@ -612,6 +617,9 @@ fn render_evidence(out: &mut String, heading: &str, evidence: &[DossierEvidence]
     writeln!(out, "### {heading}\n").unwrap();
     for item in evidence {
         writeln!(out, "- {} (`{}`)", item.reason, item.observation_id).unwrap();
+        if let Some(review) = &item.review {
+            writeln!(out, "  - {review}").unwrap();
+        }
         if let Some(run) = &item.collection_run_id {
             writeln!(out, "  - collection: `{run}`").unwrap();
         }
@@ -686,7 +694,6 @@ fn control_title(assertion: &DerivedAssertion) -> String {
         AssertionType::DependencyChangeVisibility => "release dependency changes preserved".into(),
         AssertionType::ReleaseSupplyChainPolicy => "release dependency gate".into(),
         AssertionType::AdequateHumanSecurityReview => "adequate human security review".into(),
-        AssertionType::ConfiguredReviewRequirement => "two-review configuration".into(),
         AssertionType::ReleaseReviewOperation => "release review operation".into(),
         AssertionType::External(value) if value == "github_current_revision_checks_passed" => {
             "observed GitHub revision results acceptable".into()
@@ -697,9 +704,7 @@ fn control_title(assertion: &DerivedAssertion) -> String {
 
 const fn control_semantics(kind: &AssertionType) -> &'static str {
     match kind {
-        AssertionType::ConfiguredIndependentReview | AssertionType::ConfiguredReviewRequirement => {
-            "configured intent"
-        }
+        AssertionType::ConfiguredIndependentReview => "configured intent",
         AssertionType::EveryMainChangeReviewed => "observed operating effectiveness",
         AssertionType::DependencyChangeVisibility => "historical release evidence",
         AssertionType::ReleaseSupplyChainPolicy => "cross-source derived claim",
@@ -739,9 +744,7 @@ fn manual_work(kind: &AssertionType) -> Vec<String> {
         AssertionType::AdequateHumanSecurityReview => &[
             "define security relevance and adequacy criteria, then inspect review content manually",
         ],
-        AssertionType::ConfiguredReviewRequirement
-        | AssertionType::ReleaseReviewOperation
-        | AssertionType::External(_) => &[],
+        AssertionType::ReleaseReviewOperation | AssertionType::External(_) => &[],
     };
     items.iter().map(|item| (*item).into()).collect()
 }

@@ -1566,22 +1566,7 @@ fn validate_assertions(
             .chain(&assertion.contradictions)
             .chain(&assertion.considered)
         {
-            let observation = corpus
-                .observations
-                .iter()
-                .find(|item| item.id == evidence.observation_id)
-                .ok_or_else(|| {
-                    Error::Invalid(format!(
-                        "pack assertion references missing observation {}",
-                        evidence.observation_id
-                    ))
-                })?;
-            if observation.provenance.source_id != evidence.source_id {
-                return Err(Error::Invalid(format!(
-                    "pack assertion source does not match observation {}",
-                    evidence.observation_id
-                )));
-            }
+            validate_evidence_reference(evidence, corpus, metadata)?;
         }
         for evidence in assertion.support.iter().chain(&assertion.contradictions) {
             let Some(observation) = corpus
@@ -1621,6 +1606,37 @@ fn validate_assertions(
                 )));
             }
         }
+    }
+    Ok(())
+}
+
+/// the evidence must name a retained observation by its own source, with no core-derived detail.
+fn validate_evidence_reference(
+    evidence: &EvidenceUse,
+    corpus: &crate::model::Corpus,
+    metadata: &PackMetadata,
+) -> Result<()> {
+    if evidence.review.is_some() {
+        return Err(Error::Invalid(format!(
+            "pack {} supplied review details for observation {}; only core derives them",
+            metadata.id, evidence.observation_id
+        )));
+    }
+    let observation = corpus
+        .observations
+        .iter()
+        .find(|item| item.id == evidence.observation_id)
+        .ok_or_else(|| {
+            Error::Invalid(format!(
+                "pack assertion references missing observation {}",
+                evidence.observation_id
+            ))
+        })?;
+    if observation.provenance.source_id != evidence.source_id {
+        return Err(Error::Invalid(format!(
+            "pack assertion source does not match observation {}",
+            evidence.observation_id
+        )));
     }
     Ok(())
 }

@@ -21,7 +21,6 @@ for a person. the "never tells you" lines say where that boundary is.
 | question | claim id | evidence from | providers |
 |---|---|---|---|
 | [is approval required before merging?](#is-approval-required-before-merging) | `configured_independent_review` | current branch settings | GitHub, Azure DevOps |
-| [does the branch require two approvals, including one after the last push?](#does-the-branch-require-two-approvals-including-one-after-the-last-push) | `configured_review_requirement` | current branch settings | GitHub |
 | [did every change get an approving review before it was merged?](#did-every-change-get-an-approving-review-before-it-was-merged) | `every_main_change_reviewed` | change and review history | GitHub, Azure DevOps |
 | [were the reviews adequate?](#were-the-reviews-adequate) | `adequate_human_security_review` | — | needs a person |
 | [does the branch require named status checks?](#does-the-branch-require-named-status-checks) | `github_required_status_checks_configured` | current branch settings | GitHub |
@@ -52,6 +51,12 @@ evidence answers something different:
 an auditor asking "is review enforced?" usually needs both configured intent and
 observed operation. divinate never substitutes one for the other.
 
+configured-intent answers are point-in-time. each uses the latest settings read
+at or before the evaluation time; `divinate evaluate --at` answers as of an
+earlier read. settings read by earlier collections are samples, and the time
+between two reads was not observed, so divinate never claims that a setting held
+across a period.
+
 ## code review
 
 ### is approval required before merging?
@@ -75,25 +80,6 @@ never tells you: that reviews actually happened, that approvers were
 independent of the author in any organisational sense, or what the settings
 were in the past.
 
-### does the branch require two approvals, including one after the last push?
-
-claim: "main is configured to require two approvals, including approval of the
-last push by someone else" (`configured_review_requirement`)
-
-evidence from: the GitHub `branch-protection` collector.
-
-this checks one fixed policy: at least two required approvals, and approval of
-the most recent push by someone other than its author. it is not configurable,
-and the claim text names `main` whichever branch is governed.
-
-- **supported**: current branch protection requires both.
-- **contradicted**: current branch protection is readable and requires fewer
-  than two approvals or does not require last-push approval. a repository that
-  intentionally requires one approval gets this result.
-- **insufficient evidence**, **stale**: as for the previous question.
-
-never tells you: the same limits as the previous question.
-
 ### did every change get an approving review before it was merged?
 
 claim: "every change integrated into `<branch>` during `<from>` .. `<until>`
@@ -114,6 +100,12 @@ how it is answered:
 
 on Azure DevOps, an approval is a vote of `10` (approved) or `5` (approved with
 suggestions), taken from the vote history so its time is known.
+
+for each pull request it judged, the answer records what it checked: the pull
+request's number and author, when it was merged, the time of the branch change,
+and every qualifying approval with its approver and time. they appear under the
+evidence in the dossier and the `export dd` view, and as `review` in
+`assertions/current.json`.
 
 - **supported**: the complete list of changes and their reviews was read, and
   every change had a qualifying approval.

@@ -4,8 +4,8 @@ use std::path::Path;
 use divinate as evidence_spike;
 use evidence_spike::assertions::{
     evaluate_adequate_security_review, evaluate_all, evaluate_configured_independent_review,
-    evaluate_configured_reviews, evaluate_every_main_change_reviewed, evaluate_release_reviews,
-    evaluate_supply_chain, EvaluationTarget, Outcome,
+    evaluate_every_main_change_reviewed, evaluate_release_reviews, evaluate_supply_chain,
+    EvaluationTarget, Outcome,
 };
 use evidence_spike::coverage::{assess, CoverageOutcome, CoverageRequirement, RunDisposition};
 use evidence_spike::model::{
@@ -142,7 +142,8 @@ fn configured_intent_does_not_substitute_for_observed_operation() {
         .observations
         .retain(|item| item.kind != ObservationKind::ReviewRecord);
     let configured =
-        evaluate_configured_reviews(&corpus, &target(), at("2026-09-02T00:00:00Z")).unwrap();
+        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-02T00:00:00Z"))
+            .unwrap();
     let operated = evaluate_release_reviews(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(configured.outcome, Outcome::Supported);
     assert_eq!(operated.outcome, Outcome::InsufficientEvidence);
@@ -154,21 +155,25 @@ fn configured_intent_does_not_substitute_for_observed_operation() {
 
 #[test]
 fn historical_configuration_survives_a_later_change() {
-    let corpus = corpus();
+    let mut corpus = corpus();
+    let snapshots = corpus
+        .observations
+        .iter_mut()
+        .filter(|item| item.kind == ObservationKind::ConfigurationSnapshot)
+        .collect::<Vec<_>>();
+    assert_eq!(snapshots.len(), 2);
+    let latest = snapshots
+        .into_iter()
+        .max_by(|left, right| left.observed_at.cmp(&right.observed_at))
+        .unwrap();
+    latest.data["required_approving_review_count"] = json!(0);
     let monday =
-        evaluate_configured_reviews(&corpus, &target(), at("2026-09-02T00:00:00Z")).unwrap();
-    let current = evaluate_configured_reviews(&corpus, &target(), latest_capture()).unwrap();
+        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-02T00:00:00Z"))
+            .unwrap();
+    let current =
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(monday.outcome, Outcome::Supported);
     assert_eq!(current.outcome, Outcome::Contradicted);
-    assert_eq!(current.considered.len(), 1);
-    assert_eq!(
-        corpus
-            .observations
-            .iter()
-            .filter(|item| item.kind == ObservationKind::ConfigurationSnapshot)
-            .count(),
-        2
-    );
 }
 
 #[test]
@@ -188,30 +193,25 @@ fn core_github_evaluators_ignore_newer_azure_branch_policy_observations() {
         "policies": [{
             "blocking": true,
             "enabled": true,
-            "minimum_approver_count": 2,
+            "minimum_approver_count": 0,
             "type_id": "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd"
         }]
     });
     corpus.observations.push(azure);
 
-    let configured = evaluate_configured_reviews(&corpus, &target(), latest_capture()).unwrap();
     let independent =
         evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
-
-    assert_eq!(configured.outcome, Outcome::Contradicted);
     assert_eq!(independent.outcome, Outcome::Supported);
-    assert!(configured
-        .considered
+    assert!(independent
+        .support
         .iter()
         .all(|item| item.observation_id != "ev_azure_branch_policy"));
 
     corpus
         .observations
         .retain(|item| !item.claim_key.starts_with("github:branch-protection"));
-    let configured = evaluate_configured_reviews(&corpus, &target(), latest_capture()).unwrap();
     let independent =
         evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
-    assert_eq!(configured.outcome, Outcome::InsufficientEvidence);
     assert_eq!(independent.outcome, Outcome::InsufficientEvidence);
 }
 
@@ -223,7 +223,8 @@ fn old_support_is_stale_when_no_newer_configuration_exists() {
             || item.observed_at == "2026-09-01T08:00:00Z"
     });
     let assertion =
-        evaluate_configured_reviews(&corpus, &target(), at("2026-09-09T12:00:00Z")).unwrap();
+        evaluate_configured_independent_review(&corpus, &target(), at("2026-09-09T12:00:00Z"))
+            .unwrap();
     assert_eq!(assertion.outcome, Outcome::Stale);
     // the support expired between the snapshot and the evaluation time.
     let fresh_until = assertion.validity.fresh_until.as_deref().unwrap();
@@ -415,6 +416,27 @@ fn terminal_pagination_and_authoritative_scope_support_the_universal_claim() {
 }
 
 #[test]
+fn supported_review_answer_records_what_was_checked() {
+    let assertion =
+        evaluate_every_main_change_reviewed(&corpus(), &target(), latest_capture()).unwrap();
+    let reviews = assertion
+        .support
+        .iter()
+        .filter_map(|item| item.review.as_ref())
+        .collect::<Vec<_>>();
+    assert_ne!(reviews.len(), 0);
+    for review in reviews {
+        assert_ne!(review.approvals.len(), 0);
+        for approval in &review.approvals {
+            assert_ne!(approval.actor, review.author);
+            assert!(at(&approval.submitted_at) < at(&review.integrated_at));
+        }
+    }
+    let rendered = divinate::views::render_dd(&divinate::views::dd_response(&[assertion]));
+    assert!(rendered.contains("approved by "), "{rendered}");
+}
+
+#[test]
 fn historical_review_requires_explicit_revision_and_branch_joins() {
     for mismatch in ["revision", "branch", "mapping", "mutation_kind"] {
         let mut corpus = corpus();
@@ -513,10 +535,14 @@ fn complete_empty_reviews_are_a_concrete_counterexample() {
         .iter_mut()
         .find(|item| item.kind == ObservationKind::ReviewRecord)
         .unwrap();
+    let author = review.data["pull_requests"][0]["author"].clone();
     review.data["pull_requests"][0]["approvals"] = json!([]);
     let assertion =
         evaluate_every_main_change_reviewed(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Contradicted);
+    let review = assertion.contradictions[0].review.as_ref().unwrap();
+    assert_eq!(json!(review.author), author);
+    assert_eq!(review.approvals, []);
 }
 
 fn overlapping_review_records(

@@ -1712,6 +1712,68 @@ fn core_rejects_pack_evidence_withheld_from_a_declared_mirror() {
 }
 
 #[test]
+fn core_rejects_review_details_supplied_by_a_pack() {
+    let state = tempfile::tempdir().unwrap();
+    let observation: divinate::model::Observation = serde_json::from_value(serde_json::json!({
+        "claim_key": "github:branch-protection:main",
+        "data": {"required_status_checks": []},
+        "evidence_class": "configured_intent",
+        "id": "ev_00000000000000000002",
+        "kind": "configuration_snapshot",
+        "observed_at": "2026-09-09T00:00:00Z",
+        "producer": {"name": "fixture", "version": "1", "collector": "fixture"},
+        "provenance": {"pointer": "", "source_id": "src_fixture"},
+        "subject": {"kind": "repository", "id": "github:cyberwitchery/example", "branch": "main"}
+    }))
+    .unwrap();
+    let corpus = Corpus {
+        schema_version: divinate::SCHEMA_VERSION.into(),
+        collections: vec![],
+        observations: vec![observation],
+        sources: vec![],
+    };
+    let target = pack_target();
+    let evaluate = |review: Option<serde_json::Value>| {
+        let mut assertion = pack_assertion(&target, &serde_json::json!([]));
+        assertion["outcome"] = serde_json::json!("contradicted");
+        let mut evidence = serde_json::json!({
+            "observation_id": "ev_00000000000000000002",
+            "source_id": "src_fixture",
+            "reason": "the branch requires no status checks"
+        });
+        if let Some(review) = review {
+            evidence["review"] = review;
+        }
+        assertion["contradictions"] = serde_json::json!([evidence]);
+        let path = state.path().join("review-details-pack");
+        assertion_pack(&path, &assertion);
+        let config = pack_config(path, serde_json::Value::Null);
+        let (metadata, _) = pack::describe(&config).unwrap();
+        pack::evaluate(
+            &config,
+            &metadata,
+            "check",
+            &corpus,
+            &target,
+            "2026-09-09T00:01:00Z",
+        )
+    };
+    assert!(evaluate(None).is_ok());
+    let error = evaluate(Some(serde_json::json!({
+        "pull_request": 7,
+        "author": "alice",
+        "merged_at": "2026-09-08T00:00:00Z",
+        "integrated_at": "2026-09-08T00:00:00Z",
+        "approvals": [{"actor": "bob", "submitted_at": "2026-09-07T00:00:00Z"}]
+    })))
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("only core derives them"),
+        "{error}"
+    );
+}
+
+#[test]
 fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
     let request = |mirror_of: serde_json::Value| {
         serde_json::json!({

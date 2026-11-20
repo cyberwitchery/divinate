@@ -23,7 +23,6 @@ use crate::model::{
 use crate::provenance::mirror_gap;
 use crate::{hex_digest, parse_timestamp};
 
-const CONFIGURED_REVIEWS_VERSION: &str = "configured-reviews/v1";
 const RELEASE_REVIEWS_VERSION: &str = "release-reviews/v1";
 const SUPPLY_CHAIN_VERSION: &str = "release-supply-chain/v1";
 const SECURITY_REVIEW_VERSION: &str = "adequate-security-review/v1";
@@ -72,7 +71,6 @@ pub struct DerivedAssertion {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 /// which claim this is. [`Self::External`] carries a type provided by a pack.
 pub enum AssertionType {
-    ConfiguredReviewRequirement,
     ReleaseReviewOperation,
     ReleaseSupplyChainPolicy,
     AdequateHumanSecurityReview,
@@ -87,7 +85,6 @@ impl AssertionType {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Self::ConfiguredReviewRequirement => "configured_review_requirement",
             Self::ReleaseReviewOperation => "release_review_operation",
             Self::ReleaseSupplyChainPolicy => "release_supply_chain_policy",
             Self::AdequateHumanSecurityReview => "adequate_human_security_review",
@@ -115,7 +112,6 @@ impl<'de> Deserialize<'de> for AssertionType {
     {
         let value = String::deserialize(deserializer)?;
         Ok(match value.as_str() {
-            "configured_review_requirement" => Self::ConfiguredReviewRequirement,
             "release_review_operation" => Self::ReleaseReviewOperation,
             "release_supply_chain_policy" => Self::ReleaseSupplyChainPolicy,
             "adequate_human_security_review" => Self::AdequateHumanSecurityReview,
@@ -191,6 +187,52 @@ pub struct EvidenceUse {
     pub observation_id: String,
     pub source_id: String,
     pub reason: String,
+    /// the review facts core checked, when this evidence is a pull-request review record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review: Option<IntegrationReview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// the values core read from one pull-request review record to judge one integration.
+pub struct IntegrationReview {
+    pub pull_request: u64,
+    pub author: String,
+    pub merged_at: String,
+    /// the branch mutation time that approvals were compared against.
+    pub integrated_at: String,
+    /// approvals by someone other than the author, submitted before integration.
+    pub approvals: Vec<ReviewApproval>,
+}
+
+impl std::fmt::Display for IntegrationReview {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "pull request #{} by {}, merged at {}",
+            self.pull_request, self.author, self.merged_at
+        )?;
+        if self.integrated_at != self.merged_at {
+            write!(f, ", integrated at {}", self.integrated_at)?;
+        }
+        if self.approvals.is_empty() {
+            return write!(f, "; no approval by another actor before integration");
+        }
+        write!(f, "; approved by ")?;
+        for (index, approval) in self.approvals.iter().enumerate() {
+            if index > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{} at {}", approval.actor, approval.submitted_at)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// one qualifying approval: who approved, and when.
+pub struct ReviewApproval {
+    pub actor: String,
+    pub submitted_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -229,7 +271,6 @@ pub fn evaluate_all(
 ) -> Result<Vec<DerivedAssertion>> {
     let mut assertions = if target.repository.starts_with("github:") {
         vec![
-            evaluate_configured_reviews(corpus, target, at)?,
             evaluate_every_main_change_reviewed(corpus, target, at)?,
             evaluate_configured_independent_review(corpus, target, at)?,
         ]
@@ -457,72 +498,6 @@ pub fn evaluate_every_main_change_reviewed(
     }
     assertion.coverage = vec![mutation_coverage, review_coverage];
     assertion.limitations.push("an approval recorded before integration does not establish that every provider-specific stale-review or vote-reset condition remained satisfied".into());
-    Ok(assertion)
-}
-
-/// evaluate configured review intent for one branch at one point in time.
-///
-/// # Errors
-///
-/// returns an error when matching evidence has an invalid timestamp or payload.
-pub fn evaluate_configured_reviews(
-    corpus: &Corpus,
-    target: &EvaluationTarget,
-    at: OffsetDateTime,
-) -> Result<DerivedAssertion> {
-    let mut candidates = branch_configurations(corpus, target, at)?;
-    let subject = branch_subject(target);
-    let mut assertion = base_assertion(
-        AssertionType::ConfiguredReviewRequirement,
-        "main is configured to require two approvals, including approval of the last push by someone else",
-        subject,
-        at,
-        CONFIGURED_REVIEWS_VERSION,
-        ValidityBasis::PointInTime,
-    )?;
-    let Some((latest, observed_at)) = candidates.pop() else {
-        assertion.outcome = Outcome::InsufficientEvidence;
-        assertion.missing.push(MissingEvidence {
-            requirement: "branch_protection_snapshot".into(),
-            subject: format!("{}#{}", target.repository, target.branch),
-            reason: "configured review intent cannot be established without a branch-protection observation at or before the evaluation time".into(),
-        });
-        assertion.reasoning.push(step(
-            "configuration_missing",
-            "no applicable branch-protection observation was available",
-            &[],
-        ));
-        return Ok(assertion);
-    };
-    let data: BranchProtectionData = payload(latest)?;
-    assertion.validity.at = Some(format_time(at)?);
-    assertion.validity.fresh_until = Some(format_time(
-        observed_at + Duration::days(CONFIG_FRESHNESS_DAYS),
-    )?);
-    for (older, _) in candidates {
-        assertion.considered.push(use_evidence(
-            older,
-            "older configuration snapshot was superseded for this point-in-time evaluation",
-        ));
-    }
-    if data.required_approving_review_count >= 2 && data.requires_last_push_approval {
-        assertion.support.push(use_evidence(latest, "latest branch-protection snapshot requires at least two approvals and last-push approval"));
-        assertion.reasoning.push(step("configured_threshold_met", "the latest observed configuration requires two approvals and a separate last-push approval", &[latest]));
-        assertion.outcome = if at - observed_at > Duration::days(CONFIG_FRESHNESS_DAYS) {
-            Outcome::Stale
-        } else {
-            Outcome::Supported
-        };
-    } else {
-        assertion.contradictions.push(use_evidence(latest, &format!("latest branch-protection snapshot requires {} approval(s); last-push approval is {}", data.required_approving_review_count, data.requires_last_push_approval)));
-        assertion.reasoning.push(step(
-            "configured_threshold_not_met",
-            "the latest authoritative snapshot contradicts the configured requirement",
-            &[latest],
-        ));
-        assertion.outcome = Outcome::Contradicted;
-    }
-    assertion.limitations.push("github configuration establishes configured intent, not that reviews occurred or that reviewers were organizationally independent".into());
     Ok(assertion)
 }
 
@@ -1110,17 +1085,7 @@ fn judge_review(
         return Ok(Some(ReviewVerdict::OutsideInterval));
     }
     let occurred_at = parse_timestamp(&event.occurred_at)?;
-    let reviewed = pull_request.approvals.iter().any(|approval| {
-        approval.state == "approved"
-            && approval.actor != pull_request.author
-            && approval
-                .submitted_at
-                .as_deref()
-                .is_some_and(|submitted_at| {
-                    parse_timestamp(submitted_at).is_ok_and(|submitted| submitted < occurred_at)
-                })
-    });
-    if reviewed {
+    if !qualifying_approvals(pull_request, occurred_at).is_empty() {
         return Ok(Some(ReviewVerdict::Reviewed));
     }
     let unsettled = pull_request.approvals.iter().any(|approval| {
@@ -1141,35 +1106,55 @@ fn judge_review(
     })
 }
 
+/// approvals by someone other than the author, submitted before `occurred_at`.
+fn qualifying_approvals(
+    pull_request: &PullRequestData,
+    occurred_at: OffsetDateTime,
+) -> Vec<ReviewApproval> {
+    pull_request
+        .approvals
+        .iter()
+        .filter(|approval| approval.state == "approved" && approval.actor != pull_request.author)
+        .filter_map(|approval| {
+            let submitted_at = approval.submitted_at.as_deref()?;
+            parse_timestamp(submitted_at)
+                .is_ok_and(|submitted| submitted < occurred_at)
+                .then(|| ReviewApproval {
+                    actor: approval.actor.clone(),
+                    submitted_at: submitted_at.into(),
+                })
+        })
+        .collect()
+}
+
 /// the verdict every deciding record reaches, with those records; `None` when they disagree.
-fn agreed_review<'a>(
+type ReviewRecord<'a, 'r> = (&'a Observation, &'r PullRequestData);
+
+fn agreed_review<'a, 'r>(
     target: &EvaluationTarget,
     event: &MutationEventData,
-    records: &[(&'a Observation, PullRequestData)],
+    records: &'r [(&'a Observation, PullRequestData)],
     considered: &mut Vec<EvidenceUse>,
-) -> Result<Option<(ReviewVerdict, Vec<&'a Observation>)>> {
+) -> Result<Option<(ReviewVerdict, Vec<ReviewRecord<'a, 'r>>)>> {
     let any_complete = records
         .iter()
         .any(|(_, pull_request)| pull_request.enumeration_complete);
     let mut deciding = Vec::new();
     for (observation, pull_request) in records {
         match judge_review(target, event, pull_request)? {
-            Some(verdict) => deciding.push((*observation, verdict)),
+            Some(verdict) => deciding.push(((*observation, pull_request), verdict)),
             None if any_complete => considered.push(use_evidence(
                 observation,
                 &format!("incomplete review history for pull request #{} showed no decisive review state and was set aside for a complete record", pull_request.number),
             )),
-            None => deciding.push((*observation, ReviewVerdict::Inconclusive)),
+            None => deciding.push(((*observation, pull_request), ReviewVerdict::Inconclusive)),
         }
     }
     if deciding.windows(2).any(|pair| pair[0].1 != pair[1].1) {
         return Ok(None);
     }
-    let observations = deciding
-        .iter()
-        .map(|(observation, _)| *observation)
-        .collect();
-    Ok(deciding.pop().map(|(_, verdict)| (verdict, observations)))
+    let records = deciding.iter().map(|(record, _)| *record).collect();
+    Ok(deciding.pop().map(|(_, verdict)| (verdict, records)))
 }
 
 fn evaluate_mutation_reviews(
@@ -1227,7 +1212,7 @@ fn evaluate_mutation_reviews(
             }
             _ => {}
         }
-        for review_observation in &deciding {
+        for (review_observation, _) in &deciding {
             assertion.identity_joins.push(join(
                 mutation,
                 review_observation,
@@ -1247,19 +1232,23 @@ fn evaluate_mutation_reviews(
                         event.event_id
                     ),
                 ));
-                for review_observation in &deciding {
-                    assertion.support.push(use_evidence(
+                for (review_observation, pull_request) in &deciding {
+                    assertion.support.push(review_evidence(
                         review_observation,
                         &format!("pull request #{number} had an approving review by another recorded actor before integration"),
-                    ));
+                        pull_request,
+                        &event,
+                    )?);
                 }
             }
             ReviewVerdict::Unreviewed => {
-                for review_observation in &deciding {
-                    assertion.contradictions.push(use_evidence(
+                for (review_observation, pull_request) in &deciding {
+                    assertion.contradictions.push(review_evidence(
                         review_observation,
                         &format!("pull request #{number} had no approving review before integration"),
-                    ));
+                        pull_request,
+                        &event,
+                    )?);
                 }
             }
             _ => assertion.missing.push(MissingEvidence {
@@ -1531,7 +1520,26 @@ fn use_evidence(observation: &Observation, reason: &str) -> EvidenceUse {
         observation_id: observation.id.clone(),
         source_id: observation.provenance.source_id.clone(),
         reason: reason.into(),
+        review: None,
     }
+}
+
+fn review_evidence(
+    observation: &Observation,
+    reason: &str,
+    pull_request: &PullRequestData,
+    event: &MutationEventData,
+) -> Result<EvidenceUse> {
+    Ok(EvidenceUse {
+        review: Some(IntegrationReview {
+            pull_request: pull_request.number,
+            author: pull_request.author.clone(),
+            merged_at: pull_request.merged_at.clone(),
+            integrated_at: event.occurred_at.clone(),
+            approvals: qualifying_approvals(pull_request, parse_timestamp(&event.occurred_at)?),
+        }),
+        ..use_evidence(observation, reason)
+    })
 }
 
 fn missing(requirement: &str, target: &EvaluationTarget, reason: &str) -> MissingEvidence {
@@ -1580,7 +1588,6 @@ fn format_time(value: OffsetDateTime) -> Result<String> {
 #[derive(Deserialize)]
 struct BranchProtectionData {
     required_approving_review_count: u64,
-    requires_last_push_approval: bool,
 }
 
 #[derive(Deserialize)]
