@@ -71,11 +71,6 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// render a view from saved assertions
-    Export {
-        #[command(subcommand)]
-        kind: ExportCommand,
-    },
     /// advanced: list configured packs
     Packs {
         /// repository checkout to read
@@ -169,25 +164,6 @@ enum Command {
         /// path to write the stream to
         #[arg(short, long)]
         output: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
-enum ExportCommand {
-    /// render a due-diligence evidence response
-    Dd {
-        /// evidence state directory
-        #[arg(long, default_value = ".evidence")]
-        state: PathBuf,
-        /// label of the evaluation to render
-        #[arg(long, default_value = "current")]
-        evaluation: String,
-        /// label of the written view
-        #[arg(long, default_value = "dd-response")]
-        output: String,
-        /// print the result as json
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -487,14 +463,6 @@ fn run(cli: Cli) -> Result<()> {
             output,
             json,
         } => state_review(&state, since.as_deref(), &current, &output, json),
-        Command::Export { kind } => match kind {
-            ExportCommand::Dd {
-                state,
-                evaluation,
-                output,
-                json,
-            } => state_dd(&state, &evaluation, &output, json),
-        },
         Command::Verify { state } => print_json(&divinate::verification::verify(&state)?),
         Command::Provenance {
             state,
@@ -2050,32 +2018,6 @@ fn state_review(
         writeln!(
             out,
             "\nreview: {}",
-            state.join("views").join(format!("{label}.md")).display()
-        )
-        .map_err(stdout_error)
-    }
-}
-
-fn state_dd(state: &std::path::Path, evaluation: &str, label: &str, json: bool) -> Result<()> {
-    require_evaluation(state, evaluation)?;
-    let assertions: Vec<DerivedAssertion> =
-        read_json(&state.join("assertions").join(format!("{evaluation}.json")))?;
-    let response = divinate::views::dd_response(&assertions);
-    write_view(
-        state,
-        label,
-        &response,
-        &divinate::views::render_dd(&response),
-    )?;
-    if json {
-        print_json(&response)
-    } else {
-        let mut out = io::stdout().lock();
-        writeln!(out, "Exported").map_err(stdout_error)?;
-        writeln!(out, "  claims  {}", response.claims.len()).map_err(stdout_error)?;
-        writeln!(
-            out,
-            "\nresponse: {}",
             state.join("views").join(format!("{label}.md")).display()
         )
         .map_err(stdout_error)

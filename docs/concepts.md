@@ -110,6 +110,6 @@ it does not rewrite a historical transcript.
 
 *documents for people.*
 
-dossiers, reviews, and due-diligence responses select and render saved assertions.
+dossiers and reviews select and render saved assertions.
 they do not collect evidence and contain no independent assertion logic. use the
 json assertion set when another system needs the structured result.

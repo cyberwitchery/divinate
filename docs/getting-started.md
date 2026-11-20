@@ -175,7 +175,6 @@ divinate collect --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
 
 ```sh
 divinate status       # summary: results, source health, open gaps
-divinate export dd    # the answers as a document: .evidence/views/dd-response.md
 ```
 
 `.evidence/dossiers/current.md` has the full reasoning for every answer.

@@ -372,31 +372,7 @@ fn recurring_gap_is_not_new_only_because_its_interval_advanced() {
 }
 
 #[test]
-fn dd_view_reuses_existing_assertions_and_sources_without_acquisition() {
-    let assertions = assertions::evaluate_all(&corpus(), &target(), latest_capture()).unwrap();
-    let response = views::dd_response(&assertions);
-    assert_eq!(response.reuse.evidence_newly_acquired, [] as [String; 0]);
-    assert_eq!(response.reuse.new_derivations, [] as [String; 0]);
-    assert_eq!(response.claims.len(), 4);
-    assert!(response
-        .claims
-        .iter()
-        .any(|claim| claim.outcome == Outcome::Supported && !claim.identity_joins.is_empty()));
-}
-
-#[test]
-fn dd_view_groups_equivalent_coverage_gaps_without_merging_requirements() {
-    let mut corpus = corpus();
-    corpus.collections.clear();
-    let assertions = assertions::evaluate_all(&corpus, &target(), latest_capture()).unwrap();
-    let markdown = views::render_dd(&views::dd_response(&assertions));
-    let interval = "uncovered intervals: 2026-09-01T00:00:00Z to 2026-09-05T00:00:00Z";
-    assert_eq!(markdown.matches(interval).count(), 1);
-    assert!(markdown.contains("missing coverage: pull request reviews, repository mutations"));
-}
-
-#[test]
-fn pack_assertions_reach_both_views_without_conflating_subjects() {
+fn pack_assertions_reach_the_review_view_without_conflating_subjects() {
     let mut previous = assertions::evaluate_all(&corpus(), &target(), latest_capture()).unwrap();
     let mut first = previous[0].clone();
     first.id = "asrt_pack_first".into();
@@ -434,14 +410,6 @@ fn pack_assertions_reach_both_views_without_conflating_subjects() {
             .filter(|change| matches!(change.assertion_type, AssertionType::External(_)))
             .count(),
         1
-    );
-    let dd = views::dd_response(&current);
-    assert_eq!(
-        dd.claims
-            .iter()
-            .filter(|assertion| matches!(assertion.assertion_type, AssertionType::External(_)))
-            .count(),
-        2
     );
 }
 

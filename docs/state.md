@@ -127,7 +127,7 @@ change evidence semantics.
 - `assertions/` contains saved evaluations, contract registries, and each
   evaluation's configuration reference.
 - `dossiers/` contains JSON dossiers and their Markdown rendering.
-- `views/` contains JSON and Markdown reviews and due-diligence responses.
+- `views/` contains JSON and Markdown reviews.
 
 `verify` checks every immutable object present. without `corpus.json`, it checks
 execution and acquisition transcript integrity, blobs, pack invocations, and

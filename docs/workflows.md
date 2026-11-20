@@ -32,7 +32,6 @@ period:
 
 ```sh
 divinate collect --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
-divinate export dd
 ```
 
 `from` is included and `until` is not. questions about history, such as "did
@@ -42,15 +41,14 @@ they are when you collect; divinate cannot read past settings from GitHub or
 Azure DevOps.
 
 the next `divinate collect` replaces `current`. to keep the period's answers
-under their own name, save a named evaluation and export it:
+under their own name, save a named evaluation:
 
 ```sh
 divinate evaluate --label 2026-q3 \
   --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
-divinate export dd --evaluation 2026-q3 --output 2026-q3
 ```
 
-this writes `.evidence/views/2026-q3.md`. the evaluation uses all evidence
+this writes `.evidence/dossiers/2026-q3.md`. the evaluation uses all evidence
 collected so far. archive `.evidence/` with it so the answers stay verifiable.
 
 GitHub keeps about one year of repository activity. collect at least once a
@@ -183,7 +181,6 @@ configured collection for recurring use.
 
 ```sh
 divinate review
-divinate export dd
 ```
 
 views consume saved assertions. they do not read raw evidence, acquire new
