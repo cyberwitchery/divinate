@@ -179,27 +179,31 @@ fn conflicting_corpus_objects_under_a_stored_id_are_refused_without_writing() {
 }
 
 #[test]
-fn conflicting_acquisition_content_under_a_stored_id_is_refused_without_writing() {
+fn a_committed_transcript_failing_integrity_is_refused_without_writing() {
     let state = tempfile::tempdir().unwrap();
-    let transcript = transcript();
-    workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&transcript)).unwrap();
-    let before = snapshot(state.path());
-
-    // the id is the digest of the contents, so a committed transcript carrying
-    // other contents under it fails integrity, and only a stored copy that
-    // differs reaches the collision check.
-    let mut rewritten = transcript.clone();
+    let mut rewritten = transcript();
     rewritten.contents.captured_at = "2026-09-04T01:00:00Z".into();
+    let before = snapshot(state.path());
     let error = workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&rewritten))
         .unwrap_err();
     assert!(
-        error
-            .to_string()
-            .contains(&format!("acquisition {} failed integrity", transcript.id)),
+        error.to_string().contains(&format!(
+            "acquisition {} failed integrity verification",
+            rewritten.id
+        )),
         "{error}"
     );
     assert_eq!(snapshot(state.path()), before);
+}
 
+#[test]
+fn a_stored_acquisition_differing_from_the_committed_transcript_is_refused_without_writing() {
+    let state = tempfile::tempdir().unwrap();
+    let transcript = transcript();
+    workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&transcript)).unwrap();
+
+    let mut rewritten = transcript.clone();
+    rewritten.contents.captured_at = "2026-09-04T01:00:00Z".into();
     let stored = state
         .path()
         .join("acquisitions")

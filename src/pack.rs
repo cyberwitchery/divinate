@@ -979,7 +979,12 @@ fn reseal(mut capture: PackCapture, metadata: &PackMetadata) -> Result<PackCaptu
     Ok(capture)
 }
 
-fn seal(contents: PackInvocationContents) -> Result<PackInvocation> {
+/// create a content-addressed pack invocation.
+///
+/// # Errors
+///
+/// returns an error when the contents cannot be serialized.
+pub fn seal(contents: PackInvocationContents) -> Result<PackInvocation> {
     let digest = hex_digest(&canonical_json(
         &serde_json::to_value(&contents).map_err(Error::Serialize)?,
     )?);

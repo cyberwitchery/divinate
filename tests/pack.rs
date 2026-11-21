@@ -2393,17 +2393,11 @@ fn executable(path: &Path, bytes: &[u8]) {
     fs::rename(temporary, path).unwrap();
 }
 
-/// the invocation as if the pack had answered `operation`, under the identity
-/// core would compute for it.
+/// the invocation as if the pack had answered `operation`, sealed by core.
 fn reseal_as(invocation: &pack::PackInvocation, operation: &str) -> pack::PackInvocation {
     let mut contents = invocation.contents.clone();
     contents.operation = operation.into();
-    let identity = divinate::canonical_json(&serde_json::to_value(&contents).unwrap()).unwrap();
-    pack::PackInvocation {
-        id: format!("packrun_{}", &divinate::hex_digest(&identity)[..20]),
-        schema_version: invocation.schema_version.clone(),
-        contents,
-    }
+    pack::seal(contents).unwrap()
 }
 
 fn git(repository: &Path, args: &[&str]) {

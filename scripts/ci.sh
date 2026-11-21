@@ -9,6 +9,21 @@ skip() {
     skipped+=("$1: $2")
 }
 
+# list the skips on every exit path. a failing step keeps its own status, and a
+# run that skipped a check fails.
+report() {
+    local status=$?
+    if [ "${#skipped[@]}" -gt 0 ]; then
+        echo "not all checks ran, install the missing tools and run again:" >&2
+        printf '  %s\n' "${skipped[@]}" >&2
+        if [ "$status" -eq 0 ]; then
+            status=1
+        fi
+    fi
+    exit "$status"
+}
+trap report EXIT
+
 echo "==> fmt"
 cargo fmt --all -- --check
 
@@ -69,10 +84,6 @@ else
     skip "coverage" "cargo install cargo-llvm-cov"
 fi
 
-if [ "${#skipped[@]}" -gt 0 ]; then
-    echo "not all checks ran, install the missing tools and run again:" >&2
-    printf '  %s\n' "${skipped[@]}" >&2
-    exit 1
+if [ "${#skipped[@]}" -eq 0 ]; then
+    echo "all checks passed"
 fi
-
-echo "all checks passed"
