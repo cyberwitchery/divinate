@@ -773,16 +773,18 @@ fn evaluate_release_pull_requests(
         let merged_at = parse_timestamp(&pull_request.merged_at)?;
         first_merge =
             Some(first_merge.map_or(merged_at, |current: OffsetDateTime| current.min(merged_at)));
-        let Some((configuration, required_approvals)) =
-            policy_history_at(corpus, target, merged_at, known_at)?
-        else {
-            assertion.missing.push(MissingEvidence {
-                requirement: "complete_branch_policy_history_at_merge".into(),
-                subject: format!("{}#pull/{number}", target.repository),
-                reason: policy_history_gap(corpus, target),
-            });
-            continue;
-        };
+        let (configuration, required_approvals) =
+            match policy_history_at(corpus, target, merged_at, known_at)? {
+                Ok(policy) => policy,
+                Err(reason) => {
+                    assertion.missing.push(MissingEvidence {
+                        requirement: "complete_branch_policy_history_at_merge".into(),
+                        subject: format!("{}#pull/{number}", target.repository),
+                        reason,
+                    });
+                    continue;
+                }
+            };
         used_configurations.insert(configuration.id.as_str());
         evaluate_pull_request(
             target,
@@ -867,35 +869,46 @@ fn evaluate_pull_request(
     Ok(())
 }
 
+/// the latest authoritative branch-policy history known at `known_at` and the review
+/// count it required at the merge, or why no history decides the merge.
 fn policy_history_at<'a>(
     corpus: &'a Corpus,
     target: &EvaluationTarget,
-    effective_at: OffsetDateTime,
+    merged_at: OffsetDateTime,
     known_at: OffsetDateTime,
-) -> Result<Option<(&'a Observation, u64)>> {
+) -> Result<std::result::Result<(&'a Observation, u64), String>> {
     let history = latest_matching(corpus, target, known_at, |item| {
         is_branch_policy_history(item, target)
             && observation_authoritative(corpus, item, Proposition::BranchConfiguration)
     })?;
     let Some((history, _)) = history else {
-        return Ok(None);
+        return Ok(Err(policy_history_gap(corpus, target)));
     };
     let data: BranchPolicyHistoryData = payload(history)?;
-    if effective_at < parse_timestamp(&data.complete_from)?
-        || effective_at > parse_timestamp(&data.complete_through)?
+    if merged_at < parse_timestamp(&data.complete_from)?
+        || merged_at > parse_timestamp(&data.complete_through)?
     {
-        return Ok(None);
+        return Ok(Err(format!(
+            "the latest authoritative branch-policy history declares coverage from {} through {}, which does not contain the merge at {}",
+            data.complete_from,
+            data.complete_through,
+            format_time(merged_at)?
+        )));
     }
     let mut events = data
         .events
         .iter()
         .map(|event| Ok((event, parse_timestamp(&event.effective_at)?)))
         .collect::<Result<Vec<_>>>()?;
-    events.retain(|(_, event_at)| *event_at <= effective_at);
+    events.retain(|(_, event_at)| *event_at <= merged_at);
     events.sort_by_key(|(event, effective_at)| (*effective_at, &event.event_id));
-    Ok(events
-        .pop()
-        .map(|(event, _)| (history, event.required_approving_review_count)))
+    let Some((event, _)) = events.pop() else {
+        return Ok(Err(format!(
+            "the latest authoritative branch-policy history records no policy event at or before the merge at {}",
+            format_time(merged_at)?
+        )));
+    };
+    Ok(Ok((history, event.required_approving_review_count)))
 }
 
 fn is_branch_policy_history(observation: &Observation, target: &EvaluationTarget) -> bool {
@@ -905,7 +918,7 @@ fn is_branch_policy_history(observation: &Observation, target: &EvaluationTarget
         && observation.subject.qualifier("branch") == Some(target.branch.as_str())
 }
 
-/// why no authoritative branch-policy history decides a merge.
+/// why no authoritative branch-policy history is known.
 fn policy_history_gap(corpus: &Corpus, target: &EvaluationTarget) -> String {
     corpus
         .observations

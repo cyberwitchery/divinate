@@ -139,6 +139,11 @@
   status checks, and branch-policy history without one no longer decides
   `release_review_operation`. the answer has insufficient evidence, and its gap
   names why the evidence is not authoritative
+- say why branch-policy history leaves a `release_review_operation` merge
+  undecided: when the latest authoritative history's declared coverage does not
+  contain the merge time, the gap names that window, and when it records no
+  policy event at or before the merge, the gap says so. both used to read as if
+  no history existed
 - refuse a pack assertion from an evaluator that declares `branch_configuration`
   when it supports or contradicts with configuration evidence that no such run
   backs

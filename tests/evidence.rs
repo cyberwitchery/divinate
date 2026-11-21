@@ -421,6 +421,83 @@ fn release_reviews_need_a_collection_run_behind_branch_policy_history() {
 }
 
 #[test]
+fn release_review_gaps_say_how_authoritative_history_misses_a_merge() {
+    let gaps = |corpus: &evidence_spike::model::Corpus| {
+        let assertion = evaluate_release_reviews(corpus, &target(), latest_capture()).unwrap();
+        let gaps = assertion
+            .missing
+            .iter()
+            .map(|item| {
+                (
+                    item.requirement.clone(),
+                    item.subject.clone(),
+                    item.reason.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        (assertion.outcome, gaps)
+    };
+    let with_history = |data: serde_json::Value| {
+        let mut corpus = corpus_with_branch_configuration_run();
+        for item in corpus
+            .observations
+            .iter_mut()
+            .filter(|item| item.kind == ObservationKind::ConfigurationHistory)
+        {
+            item.data = data.clone();
+        }
+        corpus
+    };
+    let pull_101_gap = |reason: &str| {
+        (
+            Outcome::InsufficientEvidence,
+            vec![(
+                "complete_branch_policy_history_at_merge".to_owned(),
+                "github:cyberwitchery/example#pull/101".to_owned(),
+                reason.to_owned(),
+            )],
+        )
+    };
+    let fixture = corpus_with_branch_configuration_run()
+        .observations
+        .into_iter()
+        .find(|item| item.kind == ObservationKind::ConfigurationHistory)
+        .unwrap()
+        .data;
+
+    let mut late = fixture.clone();
+    late["complete_from"] = json!("2026-09-03T00:00:00Z");
+    let mut late = with_history(late);
+    let uncovered = pull_101_gap("the latest authoritative branch-policy history declares coverage from 2026-09-03T00:00:00Z through 2026-09-04T10:00:00Z, which does not contain the merge at 2026-09-02T12:00:00Z");
+    assert_eq!(gaps(&late), uncovered);
+
+    let mut imported = late
+        .observations
+        .iter()
+        .find(|item| item.kind == ObservationKind::ConfigurationHistory)
+        .unwrap()
+        .clone();
+    imported.id = format!("{}-imported", imported.id);
+    imported.collection_run_id = None;
+    late.observations.push(imported);
+    assert_eq!(
+        gaps(&late),
+        uncovered,
+        "a run would not let the imported history decide a merge outside its window"
+    );
+
+    let mut eventless = fixture;
+    eventless["events"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|event| event["event_id"] != "policy-201");
+    assert_eq!(
+        gaps(&with_history(eventless)),
+        pull_101_gap("the latest authoritative branch-policy history records no policy event at or before the merge at 2026-09-02T12:00:00Z")
+    );
+}
+
+#[test]
 fn snapshots_do_not_substitute_for_complete_policy_history() {
     let mut corpus = corpus();
     corpus
@@ -428,10 +505,10 @@ fn snapshots_do_not_substitute_for_complete_policy_history() {
         .retain(|item| item.kind != ObservationKind::ConfigurationHistory);
     let assertion = evaluate_release_reviews(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
-    assert!(assertion
-        .missing
-        .iter()
-        .all(|item| item.requirement == "complete_branch_policy_history_at_merge"));
+    assert!(assertion.missing.iter().all(|item| {
+        item.requirement == "complete_branch_policy_history_at_merge"
+            && item.reason == "the required review count at merge time cannot be established from point snapshots alone"
+    }));
 }
 
 #[test]

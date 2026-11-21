@@ -7,8 +7,8 @@ use std::process::{Command, Stdio};
 
 use divinate::assertions::{AssertionType, DerivedAssertion, Outcome};
 use divinate::model::{
-    CollectionOutcome, CollectionRun, CollectionScope, Corpus, Enumeration, Producer, Proposition,
-    Subject, TimeRange,
+    CollectionOutcome, CollectionRun, CollectionScope, Corpus, Enumeration, ObservationKind,
+    Producer, Proposition, Subject, TimeRange,
 };
 use divinate::{pack, project, read_json, workflow};
 
@@ -1902,6 +1902,16 @@ fn core_rejects_branch_configuration_answers_without_a_collection_run() {
             "used evidence ev_00000000000000000002 without authority: it has no collection run, so no provider acquisition backs it"
         ),
         "{error}"
+    );
+    let mut history = corpus(None, vec![]);
+    history.observations[0].kind = ObservationKind::ConfigurationHistory;
+    history.observations[0].claim_key = "github:branch-policy-history:main".into();
+    let error = evaluate(&declared, &history).unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "used evidence ev_00000000000000000002 without authority: it has no collection run, so no provider acquisition backs it"
+        ),
+        "run-less branch-policy history: {error}"
     );
     let error = evaluate(&declared, &corpus(Some("config-run"), vec![])).unwrap_err();
     assert!(
