@@ -315,26 +315,26 @@ pub fn evaluate_configured_independent_review(
                 && item.kind == ObservationKind::ConfigurationSnapshot
                 && item.subject.id == target.repository
                 && item.subject.qualifier("branch") == Some(target.branch.as_str())
-                && !observation_authoritative(
-                    corpus,
-                    target,
-                    item,
-                    Proposition::BranchConfiguration,
-                )
+                && !observation_authoritative(corpus, item, Proposition::BranchConfiguration)
         });
         let reason = match unauthoritative {
             Some(item) => format!(
                 "matching branch-protection evidence exists, but it is not authoritative: {}",
                 mirror_gap(&target.repository, target.mirror_of.as_deref(), item).unwrap_or_else(
-                    || corpus
-                        .collections
-                        .iter()
-                        .find(|run| item.collection_run_id.as_ref() == Some(&run.id))
-                        .and_then(|run| run.limitations.first())
-                        .map_or_else(
-                            || "its linked acquisition contract has no current authority".into(),
-                            |item| item.detail.clone()
-                        )
+                    || match &item.collection_run_id {
+                        None =>
+                            "it has no collection run, so no provider acquisition backs it".into(),
+                        Some(run_id) => corpus
+                            .collections
+                            .iter()
+                            .find(|run| &run.id == run_id)
+                            .and_then(|run| run.limitations.first())
+                            .map_or_else(
+                                || "its linked acquisition contract has no current authority"
+                                    .into(),
+                                |item| item.detail.clone(),
+                            ),
+                    }
                 )
             ),
             None => "current configured review intent was not observed".into(),
@@ -1364,7 +1364,7 @@ fn branch_configurations<'a>(
                 && item.evidence_class == EvidenceClass::ConfiguredIntent
                 && item.subject.id == target.repository
                 && item.subject.qualifier("branch") == Some(target.branch.as_str())
-                && observation_authoritative(corpus, target, item, Proposition::BranchConfiguration)
+                && observation_authoritative(corpus, item, Proposition::BranchConfiguration)
         })
         .map(|item| Ok((item, parse_timestamp(&item.observed_at)?)))
         .collect::<Result<Vec<_>>>()?;
@@ -1381,14 +1381,19 @@ fn is_github_branch_protection(observation: &Observation, branch: &str) -> bool 
             == Some(branch)
 }
 
+/// whether a collection run with authority for the proposition backs the observation.
+///
+/// evidence without a run has none. a declared mirror's runs lose theirs in
+/// `with_declared_mirror`.
 fn observation_authoritative(
     corpus: &Corpus,
-    target: &EvaluationTarget,
     observation: &Observation,
     proposition: Proposition,
 ) -> bool {
-    mirror_gap(&target.repository, target.mirror_of.as_deref(), observation).is_none()
-        && observation.collection_run_id.as_ref().is_none_or(|run_id| {
+    observation
+        .collection_run_id
+        .as_ref()
+        .is_some_and(|run_id| {
             corpus
                 .collections
                 .iter()

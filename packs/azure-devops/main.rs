@@ -70,12 +70,16 @@ fn collect(input: &Value) -> Value {
 
 fn normalize(input: &Value) -> Value {
     let payload = common::source_payload(input);
-    let subject = common::source_subject(input);
-    let branch = subject.get("branch").and_then(Value::as_str).unwrap_or("");
     match common::adapter(input) {
-        "azure-devops-branch-policy/v1" => normalize_branch_payload(&payload, branch),
-        "azure-devops-repository-mutations/v1" => normalize_mutations(&payload, branch),
-        "azure-devops-pull-request-reviews/v1" => normalize_reviews(&payload, branch),
+        "azure-devops-branch-policy/v1" => {
+            normalize_branch_payload(&payload, common::subject_str(input, "branch"))
+        }
+        "azure-devops-repository-mutations/v1" => {
+            normalize_mutations(&payload, common::subject_str(input, "branch"))
+        }
+        "azure-devops-pull-request-reviews/v1" => {
+            normalize_reviews(&payload, common::subject_str(input, "branch"))
+        }
         _ => common::fail("unsupported adapter"),
     }
 }
@@ -196,6 +200,16 @@ fn repository_prefix(contents: &TranscriptContents) -> String {
         .unwrap_or_else(|| common::fail("azure devops history has no repository lookup"))
 }
 
+/// the `$top` page size a list request asked for. a page shorter than it ends the list.
+fn requested_page_size(url: &str) -> Option<usize> {
+    url.split_once('?')?
+        .1
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| matches!(*key, "%24top" | "$top"))
+        .and_then(|(_, value)| value.parse().ok())
+}
+
 fn percent_encode(value: &str) -> String {
     value
         .bytes()
@@ -228,11 +242,12 @@ fn history(payload: &Value, branch: &str) -> AzureHistory {
                     .cloned(),
             );
         } else if let Some(Route::PullRequests) = resource {
-            result.pull_population_complete = values.is_some_and(|items| items.len() < 100)
-                && !exchange
-                    .response
-                    .headers
-                    .contains_key("x-ms-continuationtoken");
+            result.pull_population_complete = values.is_some_and(|items| {
+                requested_page_size(&exchange.request.url).is_some_and(|top| items.len() < top)
+            }) && !exchange
+                .response
+                .headers
+                .contains_key("x-ms-continuationtoken");
             for pull in values.unwrap_or_else(|| {
                 common::fail("azure devops pull-request response has no value array")
             }) {
@@ -646,6 +661,73 @@ mod tests {
         ] {
             assert_eq!(vote_state(&json!(vote)), state);
             assert_eq!(vote_state(&json!(vote.to_string())), state);
+        }
+    }
+
+    #[test]
+    fn normalize_refuses_a_subject_without_a_branch() {
+        for adapter in [
+            "azure-devops-branch-policy/v1",
+            "azure-devops-repository-mutations/v1",
+            "azure-devops-pull-request-reviews/v1",
+        ] {
+            for branch in [None, Some("")] {
+                let mut subject = json!({
+                    "kind": "repository", "id": "azure-devops:org/project/repository",
+                    "revision": "integrated"
+                });
+                if let Some(branch) = branch {
+                    subject["branch"] = json!(branch);
+                }
+                let input =
+                    json!({"adapter": adapter, "source": {"content": "{}"}, "subject": subject});
+                let error = std::panic::catch_unwind(|| normalize(&input)).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<String>().map(String::as_str),
+                    Some("normalize request subject has no branch"),
+                    "{adapter} {branch:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn pull_population_completeness_uses_the_requested_page_size() {
+        for (query, kind) in [
+            ("%24top=2&%24skip=0", "pull_request_merge"),
+            ("%24top=3&%24skip=0", "direct_push"),
+            ("$top=3", "direct_push"),
+            ("api-version=7.1", "pull_request_merge"),
+        ] {
+            let pulls = format!(
+                "https://dev.azure.com/org/project/_apis/git/repositories/id/pullrequests?{query}"
+            );
+            let payload = common::historical_payload(
+                "azure-devops:org/project/repository",
+                "develop",
+                vec![
+                    (
+                        "https://dev.azure.com/org/project/_apis/git/repositories/repository",
+                        json!({"id":"id","name":"repository"}),
+                    ),
+                    (
+                        "https://dev.azure.com/org/project/_apis/git/repositories/id/pushes?",
+                        json!({"value":[{"pushId":1,"date":"2026-09-11T12:00:00Z","refUpdates":[{"name":"refs/heads/develop","newObjectId":"direct"}]}]}),
+                    ),
+                    (
+                        &pulls,
+                        json!({"value":[
+                            {"pullRequestId":41,"targetRefName":"refs/heads/develop","lastMergeCommit":{"commitId":"first"}},
+                            {"pullRequestId":42,"targetRefName":"refs/heads/develop","lastMergeCommit":{"commitId":"second"}}
+                        ]}),
+                    ),
+                ],
+            );
+            assert_eq!(
+                normalize_mutations(&payload, "develop")["data"]["events"][0]["kind"],
+                kind,
+                "{query}"
+            );
         }
     }
 }

@@ -74,18 +74,22 @@ fn collect(input: &Value) -> Value {
 
 fn normalize(input: &Value) -> Value {
     let payload = common::source_payload(input);
-    let subject = common::source_subject(input);
-    let branch = subject.get("branch").and_then(Value::as_str).unwrap_or("");
-    let revision = subject
-        .get("revision")
-        .and_then(Value::as_str)
-        .unwrap_or("");
     match common::adapter(input) {
-        "github-branch-protection/v1" => normalize_branch(&payload, branch),
-        "github-check-runs/v1" => normalize_checks(&payload, revision),
-        "github-commit-statuses/v1" => normalize_statuses(&payload, revision),
-        "github-repository-mutations/v1" => normalize_mutations(&payload, branch),
-        "github-pull-request-reviews/v1" => normalize_reviews(&payload, branch),
+        "github-branch-protection/v1" => {
+            normalize_branch(&payload, common::subject_str(input, "branch"))
+        }
+        "github-check-runs/v1" => {
+            normalize_checks(&payload, common::subject_str(input, "revision"))
+        }
+        "github-commit-statuses/v1" => {
+            normalize_statuses(&payload, common::subject_str(input, "revision"))
+        }
+        "github-repository-mutations/v1" => {
+            normalize_mutations(&payload, common::subject_str(input, "branch"))
+        }
+        "github-pull-request-reviews/v1" => {
+            normalize_reviews(&payload, common::subject_str(input, "branch"))
+        }
         _ => common::fail("unsupported adapter"),
     }
 }
@@ -863,6 +867,38 @@ mod tests {
                 "approved",
                 "{paged}"
             );
+        }
+    }
+
+    #[test]
+    fn normalize_refuses_a_subject_without_a_field_its_adapter_uses() {
+        for (adapter, field) in [
+            ("github-branch-protection/v1", "branch"),
+            ("github-check-runs/v1", "revision"),
+            ("github-commit-statuses/v1", "revision"),
+            ("github-repository-mutations/v1", "branch"),
+            ("github-pull-request-reviews/v1", "branch"),
+        ] {
+            for value in [None, Some("")] {
+                let mut subject = json!({
+                    "kind": "repository", "id": "github:owner/repository",
+                    "branch": "main", "revision": "integrated"
+                });
+                match value {
+                    None => {
+                        subject.as_object_mut().unwrap().remove(field);
+                    }
+                    Some(value) => subject[field] = json!(value),
+                }
+                let input =
+                    json!({"adapter": adapter, "source": {"content": "{}"}, "subject": subject});
+                let error = std::panic::catch_unwind(|| normalize(&input)).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<String>().map(String::as_str),
+                    Some(format!("normalize request subject has no {field}").as_str()),
+                    "{adapter} {value:?}"
+                );
+            }
         }
     }
 }

@@ -93,6 +93,27 @@ fn latest_capture() -> time::OffsetDateTime {
         .unwrap()
 }
 
+/// the fixture with its branch-protection snapshots read by a run with
+/// branch-configuration authority. the manifest imports them without one.
+fn corpus_with_branch_configuration_run() -> evidence_spike::model::Corpus {
+    let mut corpus = corpus();
+    let mut run = corpus.collections[0].clone();
+    run.id = "run-branch-configuration".into();
+    run.requested_scope.proposition = Proposition::BranchConfiguration;
+    run.observed_scope = Some(run.requested_scope.clone());
+    run.authority = vec![Proposition::BranchConfiguration];
+    run.observation_ids.clear();
+    for observation in corpus.observations.iter_mut().filter(|item| {
+        item.kind == ObservationKind::ConfigurationSnapshot
+            && item.claim_key.starts_with("github:branch-protection")
+    }) {
+        observation.collection_run_id = Some(run.id.clone());
+        run.observation_ids.push(observation.id.clone());
+    }
+    corpus.collections.push(run);
+    corpus
+}
+
 fn requirement(proposition: Proposition) -> CoverageRequirement {
     CoverageRequirement {
         proposition,
@@ -137,7 +158,7 @@ fn observation_shapes_and_semantics_remain_distinct() {
 
 #[test]
 fn configured_intent_does_not_substitute_for_observed_operation() {
-    let mut corpus = corpus();
+    let mut corpus = corpus_with_branch_configuration_run();
     corpus
         .observations
         .retain(|item| item.kind != ObservationKind::ReviewRecord);
@@ -155,7 +176,7 @@ fn configured_intent_does_not_substitute_for_observed_operation() {
 
 #[test]
 fn historical_configuration_survives_a_later_change() {
-    let mut corpus = corpus();
+    let mut corpus = corpus_with_branch_configuration_run();
     let snapshots = corpus
         .observations
         .iter_mut()
@@ -178,7 +199,7 @@ fn historical_configuration_survives_a_later_change() {
 
 #[test]
 fn core_github_evaluators_ignore_newer_azure_branch_policy_observations() {
-    let mut corpus = corpus();
+    let mut corpus = corpus_with_branch_configuration_run();
     let mut azure = corpus
         .observations
         .iter()
@@ -217,7 +238,7 @@ fn core_github_evaluators_ignore_newer_azure_branch_policy_observations() {
 
 #[test]
 fn old_support_is_stale_when_no_newer_configuration_exists() {
-    let mut corpus = corpus();
+    let mut corpus = corpus_with_branch_configuration_run();
     corpus.observations.retain(|item| {
         item.kind != ObservationKind::ConfigurationSnapshot
             || item.observed_at == "2026-09-01T08:00:00Z"
@@ -230,6 +251,49 @@ fn old_support_is_stale_when_no_newer_configuration_exists() {
     let fresh_until = assertion.validity.fresh_until.as_deref().unwrap();
     assert!(fresh_until > "2026-09-01T08:00:00Z", "{fresh_until}");
     assert!(fresh_until < "2026-09-09T12:00:00Z", "{fresh_until}");
+}
+
+#[test]
+fn a_branch_protection_snapshot_without_a_collection_run_is_insufficient_evidence() {
+    let mut corpus = corpus_with_branch_configuration_run();
+    let collected =
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
+    assert_eq!(collected.outcome, Outcome::Supported);
+
+    for snapshot in corpus
+        .observations
+        .iter_mut()
+        .filter(|item| item.kind == ObservationKind::ConfigurationSnapshot)
+    {
+        snapshot.collection_run_id = None;
+    }
+    let supporting =
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
+    for snapshot in corpus
+        .observations
+        .iter_mut()
+        .filter(|item| item.kind == ObservationKind::ConfigurationSnapshot)
+    {
+        snapshot.data["required_approving_review_count"] = json!(0);
+    }
+    let contradicting =
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
+
+    for assertion in [supporting, contradicting] {
+        assert_eq!(assertion.outcome, Outcome::InsufficientEvidence);
+        assert_eq!(assertion.support, []);
+        assert_eq!(assertion.contradictions, []);
+        assert_eq!(assertion.missing.len(), 1);
+        assert_eq!(
+            assertion.missing[0].requirement,
+            "branch_protection_snapshot"
+        );
+        assert_eq!(
+            assertion.missing[0].reason,
+            "matching branch-protection evidence exists, but it is not authoritative: \
+             it has no collection run, so no provider acquisition backs it"
+        );
+    }
 }
 
 #[test]
@@ -992,20 +1056,7 @@ fn a_declared_mirror_cannot_contradict_review_with_its_own_pushes() {
 
 #[test]
 fn a_declared_mirror_names_itself_as_the_branch_configuration_gap() {
-    let mut corpus = corpus();
-    let mut run = corpus.collections[0].clone();
-    run.id = "run-branch-configuration".into();
-    run.requested_scope.proposition = Proposition::BranchConfiguration;
-    run.observed_scope = Some(run.requested_scope.clone());
-    run.authority = vec![Proposition::BranchConfiguration];
-    for observation in corpus.observations.iter_mut().filter(|item| {
-        item.kind == ObservationKind::ConfigurationSnapshot
-            && item.claim_key.starts_with("github:branch-protection")
-    }) {
-        observation.collection_run_id = Some(run.id.clone());
-        run.observation_ids.push(observation.id.clone());
-    }
-    corpus.collections.push(run);
+    let corpus = corpus_with_branch_configuration_run();
     let assertion =
         evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
     assert_eq!(assertion.outcome, Outcome::Supported);

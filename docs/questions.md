@@ -72,7 +72,8 @@ evidence from: the GitHub `branch-protection` collector, or the Azure DevOps
   reviewers policy.
 - **contradicted**: the settings were read completely and require no approval.
 - **insufficient evidence**: the settings were not read, or not completely, for
-  example because the credential lacks permission to see branch protection.
+  example because the credential lacks permission to see branch protection, or
+  a snapshot was imported without a collection run.
 - **stale**: on GitHub, the settings were last read more than 7 days before
   the evaluation. collect again.
 
