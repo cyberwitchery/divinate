@@ -2,6 +2,13 @@
 # run the ci checks in workflow order.
 set -euo pipefail
 
+skipped=()
+
+skip() {
+    echo "skipped: $2"
+    skipped+=("$1: $2")
+}
+
 echo "==> fmt"
 cargo fmt --all -- --check
 
@@ -15,7 +22,7 @@ echo "==> msrv"
 if rustup toolchain list 2>/dev/null | grep -q '^1\.95'; then
     cargo +1.95 check --all-targets --all-features
 else
-    echo "skipped: rustup toolchain install 1.95"
+    skip "msrv" "rustup toolchain install 1.95"
 fi
 
 echo "==> doc"
@@ -38,28 +45,34 @@ echo "==> schemas"
 if python3 -c "import jsonschema" >/dev/null 2>&1; then
     python3 scripts/validate-schemas.py
 else
-    echo "skipped: pip install jsonschema"
+    skip "schemas" "pip install jsonschema"
 fi
 
 echo "==> deny"
 if command -v cargo-deny >/dev/null 2>&1; then
     cargo deny check
 else
-    echo "skipped: cargo install cargo-deny"
+    skip "deny" "cargo install cargo-deny"
 fi
 
 echo "==> unsafe budget"
 if command -v unsafe-budget >/dev/null 2>&1; then
     unsafe-budget check
 else
-    echo "skipped: cargo install unsafe-budget"
+    skip "unsafe budget" "cargo install unsafe-budget"
 fi
 
 echo "==> coverage"
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
     cargo llvm-cov --all-features --summary-only --fail-under-lines 70
 else
-    echo "skipped: cargo install cargo-llvm-cov"
+    skip "coverage" "cargo install cargo-llvm-cov"
+fi
+
+if [ "${#skipped[@]}" -gt 0 ]; then
+    echo "not all checks ran, install the missing tools and run again:" >&2
+    printf '  %s\n' "${skipped[@]}" >&2
+    exit 1
 fi
 
 echo "all checks passed"
