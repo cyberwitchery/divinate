@@ -1774,8 +1774,27 @@ fn core_rejects_review_details_supplied_by_a_pack() {
 }
 
 #[test]
-fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
-    let request = |mirror_of: serde_json::Value| {
+fn github_required_checks_need_a_run_with_branch_configuration_authority() {
+    let request = |authority: Option<&str>, mirror_of: serde_json::Value| {
+        let mut protection = serde_json::json!({
+            "id": "protection",
+            "claim_key": "github:branch-protection",
+            "kind": "configuration_snapshot",
+            "observed_at": "2026-09-12T00:00:00Z",
+            "subject": {"id": "github:cyberwitchery/divinate", "branch": "main"},
+            "data": {"required_status_checks": []},
+            "provenance": {"source_id": "src_protection"}
+        });
+        let collections = authority.map_or_else(Vec::new, |authority| {
+            protection["collection_run_id"] = serde_json::json!("protection-run");
+            vec![serde_json::json!({
+                "id": "protection-run",
+                "outcome": "complete",
+                "authority": [authority],
+                "limitations": [],
+                "enumeration": {"terminal_page_reached": true, "next_token_present": false}
+            })]
+        });
         serde_json::json!({
             "protocol_version": 1,
             "operation": "evaluate",
@@ -1792,28 +1811,113 @@ fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
                 },
                 "evaluated_at": "2026-09-12T00:00:00Z",
                 "coverage": [],
-                "corpus": {
-                    "collections": [],
-                    "observations": [{
-                        "id": "protection",
-                        "claim_key": "github:branch-protection",
-                        "kind": "configuration_snapshot",
-                        "observed_at": "2026-09-12T00:00:00Z",
-                        "subject": {"id": "github:cyberwitchery/divinate", "branch": "main"},
-                        "data": {"required_status_checks": []},
-                        "provenance": {"source_id": "src_protection"}
-                    }]
-                }
+                "corpus": {"collections": collections, "observations": [protection]}
             }
         })
     };
-    let response = github_pack_result(&request(serde_json::Value::Null));
+    for (authority, mirror_of) in [
+        (None, serde_json::Value::Null),
+        (None, serde_json::json!("an internal forge")),
+        (Some("revision_checks"), serde_json::Value::Null),
+    ] {
+        let response = github_pack_result(&request(authority, mirror_of.clone()));
+        let result = &response["result"][0];
+        assert_eq!(
+            result["outcome"], "insufficient_evidence",
+            "{authority:?} {mirror_of}"
+        );
+        assert_eq!(result["contradictions"], serde_json::json!([]));
+        assert_eq!(
+            result["missing"][0]["reason"],
+            "no authoritative branch protection snapshot is available"
+        );
+    }
+    let response = github_pack_result(&request(
+        Some("branch_configuration"),
+        serde_json::Value::Null,
+    ));
     assert_eq!(response["result"][0]["outcome"], "contradicted");
-    let response = github_pack_result(&request(serde_json::json!("an internal forge")));
-    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
-    assert_eq!(
-        response["result"][0]["contradictions"],
-        serde_json::json!([])
+}
+
+#[test]
+fn core_rejects_branch_configuration_answers_without_a_collection_run() {
+    let state = tempfile::tempdir().unwrap();
+    let snapshot = |collection_run_id: Option<&str>| -> divinate::model::Observation {
+        serde_json::from_value(serde_json::json!({
+            "claim_key": "github:branch-protection:main",
+            "collection_run_id": collection_run_id,
+            "data": {"required_status_checks": []},
+            "evidence_class": "configured_intent",
+            "id": "ev_00000000000000000002",
+            "kind": "configuration_snapshot",
+            "observed_at": "2026-09-09T00:00:00Z",
+            "producer": {"name": "fixture", "version": "1", "collector": "fixture"},
+            "provenance": {"pointer": "", "source_id": "src_fixture"},
+            "subject": {"kind": "repository", "id": "github:cyberwitchery/example", "branch": "main"}
+        }))
+        .unwrap()
+    };
+    let corpus = |collection_run_id: Option<&str>, authority: Vec<Proposition>| {
+        let collections = collection_run_id.map_or_else(Vec::new, |id| {
+            let mut run = collection_run(id, Proposition::BranchConfiguration);
+            run.authority = authority;
+            run.observation_ids = vec!["ev_00000000000000000002".into()];
+            vec![run]
+        });
+        Corpus {
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            collections,
+            observations: vec![snapshot(collection_run_id)],
+            sources: vec![],
+        }
+    };
+    let target = pack_target();
+    let mut assertion = pack_assertion(&target, &serde_json::json!([]));
+    assertion["outcome"] = serde_json::json!("contradicted");
+    assertion["contradictions"] = serde_json::json!([{
+        "observation_id": "ev_00000000000000000002",
+        "source_id": "src_fixture",
+        "reason": "the branch requires no status checks"
+    }]);
+    let evaluate = |propositions: &[&str], corpus: &Corpus| {
+        let path = state
+            .path()
+            .join(format!("{}-pack", propositions.join("-")));
+        assertion_pack_declaring(&path, &assertion, propositions);
+        let config = pack_config(path, serde_json::Value::Null);
+        let (metadata, _) = pack::describe(&config).unwrap();
+        pack::evaluate(
+            &config,
+            &metadata,
+            "check",
+            corpus,
+            &target,
+            "2026-09-09T00:01:00Z",
+        )
+    };
+    let declared = ["branch_configuration"];
+    let error = evaluate(&declared, &corpus(None, vec![])).unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "used evidence ev_00000000000000000002 without authority: it has no collection run, so no provider acquisition backs it"
+        ),
+        "{error}"
+    );
+    let error = evaluate(&declared, &corpus(Some("config-run"), vec![])).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("its linked acquisition contract has no current authority"),
+        "{error}"
+    );
+    assert!(evaluate(
+        &declared,
+        &corpus(Some("config-run"), vec![Proposition::BranchConfiguration])
+    )
+    .is_ok());
+    assert!(
+        evaluate(&["repository_mutations"], &corpus(None, vec![])).is_ok(),
+        "an evaluator that answers no branch-configuration question keeps run-less configuration evidence"
     );
 }
 
@@ -2062,10 +2166,14 @@ fn pack_assertion(
 }
 
 fn assertion_pack(path: &Path, assertion: &serde_json::Value) {
+    assertion_pack_declaring(path, assertion, &["repository_mutations"]);
+}
+
+fn assertion_pack_declaring(path: &Path, assertion: &serde_json::Value, propositions: &[&str]) {
     let metadata = serde_json::json!({
         "id": "example.coverage", "version": "1", "protocol_version": 1,
         "collectors": [], "evaluators": ["check"], "evaluator_inputs": {"check": []},
-        "evaluator_propositions": {"check": ["repository_mutations"]},
+        "evaluator_propositions": {"check": propositions},
         "source_contracts": [], "configuration_schema": {}
     });
     let script = format!(

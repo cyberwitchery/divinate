@@ -44,11 +44,10 @@ fn dossier() -> (evidence_spike::model::Corpus, Dossier) {
     run.observed_scope = Some(run.requested_scope.clone());
     run.authority = vec![Proposition::BranchConfiguration];
     run.observation_ids.clear();
-    for observation in corpus
-        .observations
-        .iter_mut()
-        .filter(|item| item.kind == ObservationKind::ConfigurationSnapshot)
-    {
+    for observation in corpus.observations.iter_mut().filter(|item| {
+        item.kind == ObservationKind::ConfigurationSnapshot
+            && item.claim_key.starts_with("github:branch-protection")
+    }) {
         observation.collection_run_id = Some(run.id.clone());
         run.observation_ids.push(observation.id.clone());
     }

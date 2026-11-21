@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::model::{
     Corpus, EvidenceClass, Observation, ObservationKind, Proposition, Status, TimeRange,
 };
-use crate::provenance::mirror_gap;
+use crate::provenance::{branch_configuration_gap, mirror_gap, observation_authoritative};
 use crate::{hex_digest, parse_timestamp};
 
 const RELEASE_REVIEWS_VERSION: &str = "release-reviews/v1";
@@ -310,35 +310,26 @@ pub fn evaluate_configured_independent_review(
         ValidityBasis::PointInTime,
     )?;
     let Some((latest, observed_at)) = branch_configurations(corpus, target, at)?.pop() else {
-        let unauthoritative = corpus.observations.iter().find(|item| {
-            is_github_branch_protection(item, &target.branch)
-                && item.kind == ObservationKind::ConfigurationSnapshot
-                && item.subject.id == target.repository
-                && item.subject.qualifier("branch") == Some(target.branch.as_str())
-                && !observation_authoritative(corpus, item, Proposition::BranchConfiguration)
-        });
-        let reason = match unauthoritative {
-            Some(item) => format!(
-                "matching branch-protection evidence exists, but it is not authoritative: {}",
-                mirror_gap(&target.repository, target.mirror_of.as_deref(), item).unwrap_or_else(
-                    || match &item.collection_run_id {
-                        None =>
-                            "it has no collection run, so no provider acquisition backs it".into(),
-                        Some(run_id) => corpus
-                            .collections
-                            .iter()
-                            .find(|run| &run.id == run_id)
-                            .and_then(|run| run.limitations.first())
-                            .map_or_else(
-                                || "its linked acquisition contract has no current authority"
-                                    .into(),
-                                |item| item.detail.clone(),
-                            ),
-                    }
-                )
-            ),
-            None => "current configured review intent was not observed".into(),
-        };
+        let reason = corpus
+            .observations
+            .iter()
+            .filter(|item| {
+                is_github_branch_protection(item, &target.branch)
+                    && item.kind == ObservationKind::ConfigurationSnapshot
+                    && item.subject.id == target.repository
+                    && item.subject.qualifier("branch") == Some(target.branch.as_str())
+            })
+            .find_map(|item| {
+                branch_configuration_gap(corpus, &target.repository, target.mirror_of.as_deref(), item)
+            })
+            .map_or_else(
+                || "current configured review intent was not observed".into(),
+                |gap| {
+                    format!(
+                        "matching branch-protection evidence exists, but it is not authoritative: {gap}"
+                    )
+                },
+            );
         assertion.missing.push(MissingEvidence {
             requirement: "branch_protection_snapshot".into(),
             subject: format!("{}#{}", target.repository, target.branch),
@@ -788,7 +779,7 @@ fn evaluate_release_pull_requests(
             assertion.missing.push(MissingEvidence {
                 requirement: "complete_branch_policy_history_at_merge".into(),
                 subject: format!("{}#pull/{number}", target.repository),
-                reason: "the required review count at merge time cannot be established from point snapshots alone".into(),
+                reason: policy_history_gap(corpus, target),
             });
             continue;
         };
@@ -883,10 +874,8 @@ fn policy_history_at<'a>(
     known_at: OffsetDateTime,
 ) -> Result<Option<(&'a Observation, u64)>> {
     let history = latest_matching(corpus, target, known_at, |item| {
-        item.kind == ObservationKind::ConfigurationHistory
-            && item.evidence_class == EvidenceClass::ConfiguredIntent
-            && item.subject.id == target.repository
-            && item.subject.qualifier("branch") == Some(target.branch.as_str())
+        is_branch_policy_history(item, target)
+            && observation_authoritative(corpus, item, Proposition::BranchConfiguration)
     })?;
     let Some((history, _)) = history else {
         return Ok(None);
@@ -907,6 +896,28 @@ fn policy_history_at<'a>(
     Ok(events
         .pop()
         .map(|(event, _)| (history, event.required_approving_review_count)))
+}
+
+fn is_branch_policy_history(observation: &Observation, target: &EvaluationTarget) -> bool {
+    observation.kind == ObservationKind::ConfigurationHistory
+        && observation.evidence_class == EvidenceClass::ConfiguredIntent
+        && observation.subject.id == target.repository
+        && observation.subject.qualifier("branch") == Some(target.branch.as_str())
+}
+
+/// why no authoritative branch-policy history decides a merge.
+fn policy_history_gap(corpus: &Corpus, target: &EvaluationTarget) -> String {
+    corpus
+        .observations
+        .iter()
+        .filter(|item| is_branch_policy_history(item, target))
+        .find_map(|item| {
+            branch_configuration_gap(corpus, &target.repository, target.mirror_of.as_deref(), item)
+        })
+        .map_or_else(
+            || "the required review count at merge time cannot be established from point snapshots alone".into(),
+            |gap| format!("matching branch-policy history exists, but it is not authoritative: {gap}"),
+        )
 }
 
 fn matching_supply_gates<'a>(
@@ -1379,27 +1390,6 @@ fn is_github_branch_protection(observation: &Observation, branch: &str) -> bool 
             .claim_key
             .strip_prefix("github:branch-protection:")
             == Some(branch)
-}
-
-/// whether a collection run with authority for the proposition backs the observation.
-///
-/// evidence without a run has none. a declared mirror's runs lose theirs in
-/// `with_declared_mirror`.
-fn observation_authoritative(
-    corpus: &Corpus,
-    observation: &Observation,
-    proposition: Proposition,
-) -> bool {
-    observation
-        .collection_run_id
-        .as_ref()
-        .is_some_and(|run_id| {
-            corpus
-                .collections
-                .iter()
-                .find(|run| &run.id == run_id)
-                .is_some_and(|run| run.authority.contains(&proposition))
-        })
 }
 
 fn latest_matching<'a, F>(

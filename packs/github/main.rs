@@ -447,7 +447,9 @@ fn target_or<'a>(value: &'a Value, key: &str) -> &'a Value {
     value.get(key).unwrap_or(&Value::Null)
 }
 
-fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
+/// the newest established observations under the claim key. with a proposition, only
+/// those from a run with authority for it count, as core requires of branch configuration.
+fn latest<'a>(evaluation: &'a Value, key: &str, authority: Option<&str>) -> Vec<&'a Value> {
     let target = evaluation.get("target").unwrap_or(&Value::Null);
     let mut matching = evaluation
         .pointer("/corpus/observations")
@@ -459,6 +461,7 @@ fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
                 && item.pointer("/subject/id") == target.get("repository")
                 && item.pointer("/subject/branch") == target.get("branch")
                 && established(evaluation, item)
+                && authority.is_none_or(|proposition| authoritative(evaluation, item, proposition))
         })
         .collect::<Vec<_>>();
     let observed_at = matching
@@ -467,6 +470,22 @@ fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
         .max();
     matching.retain(|item| item.get("observed_at").and_then(Value::as_str) == observed_at);
     matching
+}
+
+/// whether a run with authority for the proposition backs the observation. evidence
+/// without a run has none.
+fn authoritative(evaluation: &Value, observation: &Value, proposition: &str) -> bool {
+    let Some(run_id) = observation.get("collection_run_id").and_then(Value::as_str) else {
+        return false;
+    };
+    evaluation
+        .pointer("/corpus/collections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|run| run.get("id").and_then(Value::as_str) == Some(run_id))
+        .and_then(|run| run.get("authority").and_then(Value::as_array))
+        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(proposition)))
 }
 
 /// whether the observation's collection run established anything: a failed, denied,
@@ -563,7 +582,11 @@ fn complete(evaluation: &Value, observations: &[&Value]) -> bool {
 }
 
 fn evaluate_required_checks(evaluation: &Value) -> Value {
-    let observations = latest(evaluation, "github:branch-protection");
+    let observations = latest(
+        evaluation,
+        "github:branch-protection",
+        Some("branch_configuration"),
+    );
     let mut result = assertion_base(
         "github_required_status_checks_configured",
         "the protected branch requires named status checks",
@@ -600,8 +623,8 @@ fn evaluate_required_checks(evaluation: &Value) -> Value {
 }
 
 fn evaluate_current_checks(evaluation: &Value) -> Value {
-    let check_observations = latest(evaluation, "github:check-runs");
-    let status_observations = latest(evaluation, "github:commit-statuses");
+    let check_observations = latest(evaluation, "github:check-runs", None);
+    let status_observations = latest(evaluation, "github:commit-statuses", None);
     let mut result = assertion_base("github_current_revision_checks_passed", "GitHub check runs and commit statuses for the current revision were completely enumerated and had acceptable terminal outcomes", evaluation);
     result["limitations"] = json!([
         "this assertion covers observed results, not satisfaction of configured required contexts",

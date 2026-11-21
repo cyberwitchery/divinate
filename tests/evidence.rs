@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -93,8 +94,8 @@ fn latest_capture() -> time::OffsetDateTime {
         .unwrap()
 }
 
-/// the fixture with its branch-protection snapshots read by a run with
-/// branch-configuration authority. the manifest imports them without one.
+/// the fixture with its branch-protection snapshots and branch-policy history read by
+/// a run with branch-configuration authority. the manifest imports them without one.
 fn corpus_with_branch_configuration_run() -> evidence_spike::model::Corpus {
     let mut corpus = corpus();
     let mut run = corpus.collections[0].clone();
@@ -104,8 +105,10 @@ fn corpus_with_branch_configuration_run() -> evidence_spike::model::Corpus {
     run.authority = vec![Proposition::BranchConfiguration];
     run.observation_ids.clear();
     for observation in corpus.observations.iter_mut().filter(|item| {
-        item.kind == ObservationKind::ConfigurationSnapshot
-            && item.claim_key.starts_with("github:branch-protection")
+        (item.kind == ObservationKind::ConfigurationSnapshot
+            && item.claim_key.starts_with("github:branch-protection"))
+            || (item.kind == ObservationKind::ConfigurationHistory
+                && item.claim_key.starts_with("github:branch-policy-history"))
     }) {
         observation.collection_run_id = Some(run.id.clone());
         run.observation_ids.push(observation.id.clone());
@@ -298,7 +301,12 @@ fn a_branch_protection_snapshot_without_a_collection_run_is_insufficient_evidenc
 
 #[test]
 fn release_reviews_use_policy_observed_for_each_merge() {
-    let assertion = evaluate_release_reviews(&corpus(), &target(), latest_capture()).unwrap();
+    let assertion = evaluate_release_reviews(
+        &corpus_with_branch_configuration_run(),
+        &target(),
+        latest_capture(),
+    )
+    .unwrap();
     assert_eq!(assertion.outcome, Outcome::Supported);
     assert!(assertion
         .reasoning
@@ -331,7 +339,7 @@ fn release_approvals_without_a_usable_time_are_insufficient_evidence() {
             Outcome::Contradicted,
         ),
     ] {
-        let mut corpus = corpus();
+        let mut corpus = corpus_with_branch_configuration_run();
         let review = corpus
             .observations
             .iter_mut()
@@ -348,6 +356,68 @@ fn release_approvals_without_a_usable_time_are_insufficient_evidence() {
             assert!(assertion.missing[0].reason.contains("#101"), "{approvals}");
         }
     }
+}
+
+#[test]
+fn release_reviews_need_a_collection_run_behind_branch_policy_history() {
+    let history_gaps = |corpus: &evidence_spike::model::Corpus| {
+        let assertion = evaluate_release_reviews(corpus, &target(), latest_capture()).unwrap();
+        let history = corpus
+            .observations
+            .iter()
+            .find(|item| item.kind == ObservationKind::ConfigurationHistory)
+            .unwrap();
+        assert!(assertion
+            .support
+            .iter()
+            .all(|item| item.observation_id != history.id));
+        let gaps = assertion
+            .missing
+            .iter()
+            .filter(|item| item.requirement == "complete_branch_policy_history_at_merge")
+            .map(|item| item.reason.clone())
+            .collect::<BTreeSet<_>>();
+        (assertion.outcome, gaps)
+    };
+    let authoritative = corpus_with_branch_configuration_run();
+    assert_eq!(
+        evaluate_release_reviews(&authoritative, &target(), latest_capture())
+            .unwrap()
+            .outcome,
+        Outcome::Supported
+    );
+
+    let mut runless = authoritative.clone();
+    for item in runless
+        .observations
+        .iter_mut()
+        .filter(|item| item.kind == ObservationKind::ConfigurationHistory)
+    {
+        item.collection_run_id = None;
+    }
+    assert_eq!(
+        history_gaps(&runless),
+        (
+            Outcome::InsufficientEvidence,
+            BTreeSet::from(["matching branch-policy history exists, but it is not authoritative: it has no collection run, so no provider acquisition backs it".to_owned()])
+        )
+    );
+
+    let mut withdrawn = authoritative;
+    for run in withdrawn
+        .collections
+        .iter_mut()
+        .filter(|run| run.id == "run-branch-configuration")
+    {
+        run.authority.clear();
+    }
+    assert_eq!(
+        history_gaps(&withdrawn),
+        (
+            Outcome::InsufficientEvidence,
+            BTreeSet::from(["matching branch-policy history exists, but it is not authoritative: its linked acquisition contract has no current authority".to_owned()])
+        )
+    );
 }
 
 #[test]

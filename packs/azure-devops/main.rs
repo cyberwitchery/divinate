@@ -11,6 +11,7 @@ const PACK_ID: &str = "cyberwitchery.azure-devops";
 const PACK_VERSION: &str = "0.1.0";
 const MINIMUM_REVIEWERS: &str = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd";
 const BUILD_VALIDATION: &str = "0609b952-1397-4640-95ec-e00a01b2c241";
+const MAX_TRUSTED_PAGE_SIZE: usize = 100;
 
 fn main() {
     let request = common::request();
@@ -200,14 +201,17 @@ fn repository_prefix(contents: &TranscriptContents) -> String {
         .unwrap_or_else(|| common::fail("azure devops history has no repository lookup"))
 }
 
-/// the `$top` page size a list request asked for. a page shorter than it ends the list.
+/// the page size a list request can prove: its `$top`, at most 100. a page shorter
+/// than it ends the list. core's own paging takes a page of 100 without a continuation
+/// token as cut, so a larger `$top` proves no more.
 fn requested_page_size(url: &str) -> Option<usize> {
     url.split_once('?')?
         .1
         .split('&')
         .filter_map(|pair| pair.split_once('='))
         .find(|(key, _)| matches!(*key, "%24top" | "$top"))
-        .and_then(|(_, value)| value.parse().ok())
+        .and_then(|(_, value)| value.parse::<usize>().ok())
+        .map(|top| top.min(MAX_TRUSTED_PAGE_SIZE))
 }
 
 fn percent_encode(value: &str) -> String {
@@ -688,6 +692,38 @@ mod tests {
                     "{adapter} {branch:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn pull_population_completeness_trusts_no_page_size_above_100() {
+        for (count, kind) in [(100, "pull_request_merge"), (99, "direct_push")] {
+            let listed = (1..=count)
+                .map(|number| json!({"pullRequestId":number,"targetRefName":"refs/heads/develop","lastMergeCommit":{"commitId":format!("merge-{number}")}}))
+                .collect::<Vec<_>>();
+            let payload = common::historical_payload(
+                "azure-devops:org/project/repository",
+                "develop",
+                vec![
+                    (
+                        "https://dev.azure.com/org/project/_apis/git/repositories/repository",
+                        json!({"id":"id","name":"repository"}),
+                    ),
+                    (
+                        "https://dev.azure.com/org/project/_apis/git/repositories/id/pushes?",
+                        json!({"value":[{"pushId":1,"date":"2026-09-11T12:00:00Z","refUpdates":[{"name":"refs/heads/develop","newObjectId":"direct"}]}]}),
+                    ),
+                    (
+                        "https://dev.azure.com/org/project/_apis/git/repositories/id/pullrequests?%24top=150&%24skip=0",
+                        json!({"value": listed}),
+                    ),
+                ],
+            );
+            assert_eq!(
+                normalize_mutations(&payload, "develop")["data"]["events"][0]["kind"],
+                kind,
+                "{count} pull requests"
+            );
         }
     }
 

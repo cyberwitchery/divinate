@@ -159,7 +159,8 @@ evidence from: the GitHub `branch-protection` collector.
   check, and the settings were read completely.
 - **contradicted**: branch protection requires no status checks.
 - **insufficient evidence**: branch protection was not read, did not report its
-  status-check settings, or was not read completely.
+  status-check settings, or was not read completely, or a snapshot was imported
+  without a collection run.
 
 never tells you: that those checks ran or passed for any change, or what was
 required in the past.
@@ -255,8 +256,9 @@ number of reviews before merge" (`release_review_operation`)
 
 this answer needs release membership and branch-policy history evidence, which
 divinate cannot currently collect from GitHub. it can only be answered from
-evidence imported with `divinate collect manifest`. without that, the result is
-**insufficient evidence**.
+evidence imported with `divinate collect manifest`, and the branch-policy
+history counts only through a collection run with `branch_configuration`
+authority. without that, the result is **insufficient evidence**.
 
 never tells you: review quality or organisational independence.
 
