@@ -132,3 +132,10 @@
 - leave no pack invocations or blobs behind when `evaluate`, or the evaluation
   that ends `collect`, refuses a pack assertion that its invocation does not
   bind
+- stop a branch-protection snapshot without a collection run, such as a
+  manifest entry with no `collection_run`, from supporting or contradicting
+  `configured_independent_review`; the claim has insufficient evidence and its
+  gap says the snapshot has no collection run
+- refuse a github or azure devops pack normalization whose source subject lacks
+  the branch or revision the adapter reads, instead of returning an empty
+  observation
