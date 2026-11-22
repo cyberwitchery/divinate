@@ -90,6 +90,14 @@ pub fn source_subject(input: &Value) -> &Value {
     input.get("subject").unwrap_or(&Value::Null)
 }
 
+pub fn subject_str<'a>(input: &'a Value, field: &str) -> &'a str {
+    source_subject(input)
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| fail(&format!("normalize request subject has no {field}")))
+}
+
 pub fn adapter(input: &Value) -> &str {
     input
         .get("adapter")

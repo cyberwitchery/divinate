@@ -1906,8 +1906,8 @@ fn core_rejects_review_details_supplied_by_a_pack() {
 }
 
 #[test]
-fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
-    let request = |mirror_of: serde_json::Value| {
+fn github_required_checks_need_a_run_with_branch_configuration_authority() {
+    let request = |collection_run_id: serde_json::Value| {
         serde_json::json!({
             "protocol_version": 1,
             "operation": "evaluate",
@@ -1919,16 +1919,16 @@ fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
                     "branch": "main",
                     "release": null,
                     "from": "2026-09-11T00:00:00Z",
-                    "until": "2026-09-12T00:00:00Z",
-                    "mirror_of": mirror_of
+                    "until": "2026-09-12T00:00:00Z"
                 },
                 "evaluated_at": "2026-09-12T00:00:00Z",
                 "coverage": [],
                 "corpus": {
-                    "collections": [],
+                    "collections": [{"id": "run", "outcome": "complete", "authority": ["branch_configuration"]}, {"id": "withdrawn", "outcome": "complete", "authority": []}],
                     "observations": [{
                         "id": "protection",
                         "claim_key": "github:branch-protection",
+                        "collection_run_id": collection_run_id,
                         "kind": "configuration_snapshot",
                         "observed_at": "2026-09-12T00:00:00Z",
                         "subject": {"id": "github:cyberwitchery/divinate", "branch": "main"},
@@ -1940,13 +1940,11 @@ fn github_required_checks_ignore_evidence_withheld_from_a_declared_mirror() {
         })
     };
     let response = github_pack_result(&request(serde_json::Value::Null));
-    assert_eq!(response["result"][0]["outcome"], "contradicted");
-    let response = github_pack_result(&request(serde_json::json!("an internal forge")));
     assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
-    assert_eq!(
-        response["result"][0]["contradictions"],
-        serde_json::json!([])
-    );
+    let response = github_pack_result(&request(serde_json::json!("withdrawn")));
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    let response = github_pack_result(&request(serde_json::json!("run")));
+    assert_eq!(response["result"][0]["outcome"], "contradicted");
 }
 
 #[test]

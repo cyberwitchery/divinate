@@ -27,12 +27,26 @@
       "authority": ["repository_mutations"],
       "started_at": "2026-09-05T00:00:00Z",
       "completed_at": "2026-09-05T00:06:00Z"
+    },
+    {
+      "id": "run-branch-configuration-complete",
+      "collector": {"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-configuration"},
+      "endpoint": "GET /repos/cyberwitchery/example/branches/main/protection + audit-log",
+      "subject": {"kind":"repository","id":"github:cyberwitchery/example"},
+      "requested_scope": {"proposition":"branch_configuration","branch":"main","interval":{"from":"2026-09-01T00:00:00Z","until":"2026-09-05T00:00:00Z"}},
+      "observed_scope": {"proposition":"branch_configuration","branch":"main","interval":{"from":"2026-09-01T00:00:00Z","until":"2026-09-05T00:00:00Z"}},
+      "enumeration": {"items_fetched":3,"items_reported":3,"pages_fetched":3,"terminal_page_reached":true,"next_token_present":false},
+      "outcome": "complete",
+      "limitations": [],
+      "authority": ["branch_configuration"],
+      "started_at": "2026-09-01T08:00:00Z",
+      "completed_at": "2026-09-04T10:01:00Z"
     }
   ],
   "sources": [
-    {"adapter":"github-branch-protection","path":"github-branch-protection.json","observed_at":"2026-09-01T08:00:00Z","producer":{"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-protection"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main","revision":"1111111111111111111111111111111111111111"}},
-    {"adapter":"github-branch-protection","path":"github-branch-protection-weakened.json","observed_at":"2026-09-03T08:00:00Z","producer":{"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-protection"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main","revision":"2222222222222222222222222222222222222222"}},
-    {"adapter":"github-branch-policy-history","path":"github-branch-policy-history.json","observed_at":"2026-09-04T10:01:00Z","producer":{"name":"github-audit-log-collector","version":"0.1.0","collector":"evidence-spike/github-branch-policy-history"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main"}},
+    {"adapter":"github-branch-protection","collection_run":"run-branch-configuration-complete","path":"github-branch-protection.json","observed_at":"2026-09-01T08:00:00Z","producer":{"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-protection"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main","revision":"1111111111111111111111111111111111111111"}},
+    {"adapter":"github-branch-protection","collection_run":"run-branch-configuration-complete","path":"github-branch-protection-weakened.json","observed_at":"2026-09-03T08:00:00Z","producer":{"name":"github-rest-api","version":"2022-11-28","collector":"evidence-spike/github-branch-protection"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main","revision":"2222222222222222222222222222222222222222"}},
+    {"adapter":"github-branch-policy-history","collection_run":"run-branch-configuration-complete","path":"github-branch-policy-history.json","observed_at":"2026-09-04T10:01:00Z","producer":{"name":"github-audit-log-collector","version":"0.1.0","collector":"evidence-spike/github-branch-policy-history"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main"}},
     {"adapter":"github-release-membership","path":"github-release-membership.json","observed_at":"2026-09-04T10:05:00Z","producer":{"name":"github-release-collector","version":"0.1.0","collector":"evidence-spike/github-release-membership"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","base_revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}},
     {"adapter":"github-pull-request-reviews","collection_run":"run-reviews-complete","path":"github-pull-request-reviews.json","observed_at":"2026-09-05T00:06:00Z","producer":{"name":"github-review-collector","version":"0.1.0","collector":"evidence-spike/github-pull-request-reviews"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
     {"adapter":"github-repository-mutations","collection_run":"run-mutations-complete","path":"github-repository-mutations.json","observed_at":"2026-09-05T00:06:30Z","producer":{"name":"github-audit-log-collector","version":"0.1.0","collector":"evidence-spike/github-repository-mutations"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main"}},

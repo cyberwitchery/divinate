@@ -74,18 +74,14 @@ fn collect(input: &Value) -> Value {
 
 fn normalize(input: &Value) -> Value {
     let payload = common::source_payload(input);
-    let subject = common::source_subject(input);
-    let branch = subject.get("branch").and_then(Value::as_str).unwrap_or("");
-    let revision = subject
-        .get("revision")
-        .and_then(Value::as_str)
-        .unwrap_or("");
+    let branch = || common::subject_str(input, "branch");
+    let revision = || common::subject_str(input, "revision");
     match common::adapter(input) {
-        "github-branch-protection/v1" => normalize_branch(&payload, branch),
-        "github-check-runs/v1" => normalize_checks(&payload, revision),
-        "github-commit-statuses/v1" => normalize_statuses(&payload, revision),
-        "github-repository-mutations/v1" => normalize_mutations(&payload, branch),
-        "github-pull-request-reviews/v1" => normalize_reviews(&payload, branch),
+        "github-branch-protection/v1" => normalize_branch(&payload, branch()),
+        "github-check-runs/v1" => normalize_checks(&payload, revision()),
+        "github-commit-statuses/v1" => normalize_statuses(&payload, revision()),
+        "github-repository-mutations/v1" => normalize_mutations(&payload, branch()),
+        "github-pull-request-reviews/v1" => normalize_reviews(&payload, branch()),
         _ => common::fail("unsupported adapter"),
     }
 }
@@ -443,7 +439,7 @@ fn target_or<'a>(value: &'a Value, key: &str) -> &'a Value {
     value.get(key).unwrap_or(&Value::Null)
 }
 
-fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
+fn latest<'a>(evaluation: &'a Value, key: &str, authority: Option<&str>) -> Vec<&'a Value> {
     let target = evaluation.get("target").unwrap_or(&Value::Null);
     let mut matching = evaluation
         .pointer("/corpus/observations")
@@ -454,7 +450,7 @@ fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
             item.get("claim_key").and_then(Value::as_str) == Some(key)
                 && item.pointer("/subject/id") == target.get("repository")
                 && item.pointer("/subject/branch") == target.get("branch")
-                && established(evaluation, item)
+                && established(evaluation, item, authority)
         })
         .collect::<Vec<_>>();
     let observed_at = matching
@@ -466,10 +462,11 @@ fn latest<'a>(evaluation: &'a Value, key: &str) -> Vec<&'a Value> {
 }
 
 /// whether the observation's collection run established anything: a failed, denied,
-/// or unattempted run did not, and neither did a declared mirror.
-fn established(evaluation: &Value, observation: &Value) -> bool {
+/// or unattempted run did not, and neither did a declared mirror. with an authority,
+/// only a run that holds it did.
+fn established(evaluation: &Value, observation: &Value, authority: Option<&str>) -> bool {
     let Some(run_id) = observation.get("collection_run_id").and_then(Value::as_str) else {
-        return !withheld_by_mirror(evaluation, observation);
+        return authority.is_none() && !withheld_by_mirror(evaluation, observation);
     };
     evaluation
         .pointer("/corpus/collections")
@@ -488,6 +485,11 @@ fn established(evaluation: &Value, observation: &Value) -> bool {
                 .flatten()
                 .any(|item| {
                     item.get("kind").and_then(Value::as_str) == Some("not_system_of_record")
+                })
+                && authority.is_none_or(|authority| {
+                    run.get("authority")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| items.iter().any(|item| item == authority))
                 })
         })
 }
@@ -559,7 +561,11 @@ fn complete(evaluation: &Value, observations: &[&Value]) -> bool {
 }
 
 fn evaluate_required_checks(evaluation: &Value) -> Value {
-    let observations = latest(evaluation, "github:branch-protection");
+    let observations = latest(
+        evaluation,
+        "github:branch-protection",
+        Some("branch_configuration"),
+    );
     let mut result = assertion_base(
         "github_required_status_checks_configured",
         "the protected branch requires named status checks",
@@ -596,8 +602,8 @@ fn evaluate_required_checks(evaluation: &Value) -> Value {
 }
 
 fn evaluate_current_checks(evaluation: &Value) -> Value {
-    let check_observations = latest(evaluation, "github:check-runs");
-    let status_observations = latest(evaluation, "github:commit-statuses");
+    let check_observations = latest(evaluation, "github:check-runs", None);
+    let status_observations = latest(evaluation, "github:commit-statuses", None);
     let mut result = assertion_base("github_current_revision_checks_passed", "GitHub check runs and commit statuses for the current revision were completely enumerated and had acceptable terminal outcomes", evaluation);
     result["limitations"] = json!([
         "this assertion covers observed results, not satisfaction of configured required contexts",
@@ -863,6 +869,27 @@ mod tests {
                 "approved",
                 "{paged}"
             );
+        }
+    }
+
+    #[test]
+    fn normalize_refuses_a_subject_without_the_field_its_adapter_reads() {
+        for (adapter, field) in [
+            ("github-branch-protection/v1", "branch"),
+            ("github-check-runs/v1", "revision"),
+            ("github-commit-statuses/v1", "revision"),
+            ("github-repository-mutations/v1", "branch"),
+            ("github-pull-request-reviews/v1", "branch"),
+        ] {
+            for subject in [json!({}), json!({field: ""})] {
+                let input =
+                    json!({"adapter": adapter, "source": {"content": "{}"}, "subject": subject});
+                let error = std::panic::catch_unwind(|| normalize(&input)).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<String>().unwrap(),
+                    &format!("normalize request subject has no {field}")
+                );
+            }
         }
     }
 }

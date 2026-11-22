@@ -332,7 +332,11 @@ pub fn evaluate_configured_independent_review(
                         .find(|run| item.collection_run_id.as_ref() == Some(&run.id))
                         .and_then(|run| run.limitations.first())
                         .map_or_else(
-                            || "its linked acquisition contract has no current authority".into(),
+                            || if item.collection_run_id.is_some() {
+                                "its linked acquisition contract has no current authority".into()
+                            } else {
+                                "it has no collection run, so no acquisition backs it".into()
+                            },
                             |item| item.detail.clone()
                         )
                 )
@@ -887,6 +891,7 @@ fn policy_history_at<'a>(
             && item.evidence_class == EvidenceClass::ConfiguredIntent
             && item.subject.id == target.repository
             && item.subject.qualifier("branch") == Some(target.branch.as_str())
+            && observation_authoritative(corpus, target, item, Proposition::BranchConfiguration)
     })?;
     let Some((history, _)) = history else {
         return Ok(None);
@@ -1388,11 +1393,11 @@ fn observation_authoritative(
     proposition: Proposition,
 ) -> bool {
     mirror_gap(&target.repository, target.mirror_of.as_deref(), observation).is_none()
-        && observation.collection_run_id.as_ref().is_none_or(|run_id| {
+        && observation.collection_run_id.as_ref().is_some_and(|id| {
             corpus
                 .collections
                 .iter()
-                .find(|run| &run.id == run_id)
+                .find(|run| &run.id == id)
                 .is_some_and(|run| run.authority.contains(&proposition))
         })
 }

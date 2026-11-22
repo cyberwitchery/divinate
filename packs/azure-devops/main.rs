@@ -70,8 +70,7 @@ fn collect(input: &Value) -> Value {
 
 fn normalize(input: &Value) -> Value {
     let payload = common::source_payload(input);
-    let subject = common::source_subject(input);
-    let branch = subject.get("branch").and_then(Value::as_str).unwrap_or("");
+    let branch = common::subject_str(input, "branch");
     match common::adapter(input) {
         "azure-devops-branch-policy/v1" => normalize_branch_payload(&payload, branch),
         "azure-devops-repository-mutations/v1" => normalize_mutations(&payload, branch),
@@ -646,6 +645,25 @@ mod tests {
         ] {
             assert_eq!(vote_state(&json!(vote)), state);
             assert_eq!(vote_state(&json!(vote.to_string())), state);
+        }
+    }
+
+    #[test]
+    fn normalize_refuses_a_subject_without_a_branch() {
+        for adapter in [
+            "azure-devops-branch-policy/v1",
+            "azure-devops-repository-mutations/v1",
+            "azure-devops-pull-request-reviews/v1",
+        ] {
+            for subject in [json!({}), json!({"branch": ""})] {
+                let input =
+                    json!({"adapter": adapter, "source": {"content": "{}"}, "subject": subject});
+                let error = std::panic::catch_unwind(|| normalize(&input)).unwrap_err();
+                assert_eq!(
+                    error.downcast_ref::<String>().unwrap(),
+                    "normalize request subject has no branch"
+                );
+            }
         }
     }
 }

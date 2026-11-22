@@ -2,6 +2,11 @@
 
 ## unreleased
 
+- count branch configuration only through a collection run with
+  `branch_configuration` authority. a branch-protection snapshot or branch-policy
+  history without one, such as a manifest entry with no `collection_run`, no
+  longer supports or contradicts `configured_independent_review`, the github
+  pack's required status checks, or `release_review_operation`
 - remove `divinate export dd`, the `DdResponse` view and the `dd-response`
   schema. the dossier is the answer document to hand over, and a named
   evaluation writes its own, `.evidence/dossiers/<label>.md`

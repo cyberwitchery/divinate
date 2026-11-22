@@ -287,6 +287,28 @@ fn release_approvals_without_a_usable_time_are_insufficient_evidence() {
 }
 
 #[test]
+fn branch_configuration_without_a_collection_run_is_insufficient_evidence() {
+    let mut corpus = corpus();
+    for observation in &mut corpus.observations {
+        if observation.collection_run_id.as_deref() == Some("run-branch-configuration-complete") {
+            observation.collection_run_id = None;
+        }
+    }
+    let configured =
+        evaluate_configured_independent_review(&corpus, &target(), latest_capture()).unwrap();
+    assert_eq!(configured.outcome, Outcome::InsufficientEvidence);
+    assert!(configured.missing[0]
+        .reason
+        .ends_with("it has no collection run, so no acquisition backs it"));
+    let release = evaluate_release_reviews(&corpus, &target(), latest_capture()).unwrap();
+    assert_eq!(release.outcome, Outcome::InsufficientEvidence);
+    assert_eq!(
+        release.missing[0].requirement,
+        "complete_branch_policy_history_at_merge"
+    );
+}
+
+#[test]
 fn snapshots_do_not_substitute_for_complete_policy_history() {
     let mut corpus = corpus();
     corpus
@@ -1029,7 +1051,12 @@ fn a_declared_mirror_names_itself_as_the_branch_configuration_gap() {
 
 #[test]
 fn a_declared_mirror_withholds_imported_process_evidence() {
-    let corpus = corpus();
+    let mut corpus = corpus();
+    for observation in &mut corpus.observations {
+        if observation.collection_run_id.as_deref() == Some("run-branch-configuration-complete") {
+            observation.collection_run_id = None;
+        }
+    }
     let mut mirrored = target();
     mirrored.mirror_of = Some("an internal forge".into());
     let at = latest_capture();

@@ -274,6 +274,7 @@ fn historical_graph_excludes_observations_until_their_provenance_exists() {
     let mut local = corpus();
     local.collections.clear();
     local.observations.truncate(1);
+    local.observations[0].collection_run_id = None;
     local
         .sources
         .retain(|source| source.id == local.observations[0].provenance.source_id);
