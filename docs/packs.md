@@ -126,10 +126,7 @@ protocol version fails the operation.
 `evaluator_inputs` limits an evaluator to declared claim keys.
 `evaluator_propositions` limits the collection runs it receives and defines the
 coverage requirements core enforces. relevant zero-result collection runs remain
-available to evaluators. an evaluator that declares `branch_configuration` may
-support or contradict only with configuration evidence from a collection run
-that has `branch_configuration` authority. core refuses an assertion that uses
-any other, such as a snapshot imported without a collection run.
+available to evaluators.
 
 the examples under [`packs/`](../packs) include an sbom collector, a
 configuration collector, the in-tree GitHub and Azure DevOps sources, and a

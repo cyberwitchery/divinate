@@ -11,7 +11,6 @@ const PACK_ID: &str = "cyberwitchery.azure-devops";
 const PACK_VERSION: &str = "0.1.0";
 const MINIMUM_REVIEWERS: &str = "fa4e907d-c16b-4a4c-9dfa-4906e5d171dd";
 const BUILD_VALIDATION: &str = "0609b952-1397-4640-95ec-e00a01b2c241";
-const MAX_TRUSTED_PAGE_SIZE: usize = 100;
 
 fn main() {
     let request = common::request();
@@ -71,16 +70,11 @@ fn collect(input: &Value) -> Value {
 
 fn normalize(input: &Value) -> Value {
     let payload = common::source_payload(input);
+    let branch = common::subject_str(input, "branch");
     match common::adapter(input) {
-        "azure-devops-branch-policy/v1" => {
-            normalize_branch_payload(&payload, common::subject_str(input, "branch"))
-        }
-        "azure-devops-repository-mutations/v1" => {
-            normalize_mutations(&payload, common::subject_str(input, "branch"))
-        }
-        "azure-devops-pull-request-reviews/v1" => {
-            normalize_reviews(&payload, common::subject_str(input, "branch"))
-        }
+        "azure-devops-branch-policy/v1" => normalize_branch_payload(&payload, branch),
+        "azure-devops-repository-mutations/v1" => normalize_mutations(&payload, branch),
+        "azure-devops-pull-request-reviews/v1" => normalize_reviews(&payload, branch),
         _ => common::fail("unsupported adapter"),
     }
 }
@@ -201,19 +195,6 @@ fn repository_prefix(contents: &TranscriptContents) -> String {
         .unwrap_or_else(|| common::fail("azure devops history has no repository lookup"))
 }
 
-/// the page size a list request can prove: its `$top`, at most 100. a page shorter
-/// than it ends the list. core's own paging takes a page of 100 without a continuation
-/// token as cut, so a larger `$top` proves no more.
-fn requested_page_size(url: &str) -> Option<usize> {
-    url.split_once('?')?
-        .1
-        .split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| matches!(*key, "%24top" | "$top"))
-        .and_then(|(_, value)| value.parse::<usize>().ok())
-        .map(|top| top.min(MAX_TRUSTED_PAGE_SIZE))
-}
-
 fn percent_encode(value: &str) -> String {
     value
         .bytes()
@@ -246,12 +227,11 @@ fn history(payload: &Value, branch: &str) -> AzureHistory {
                     .cloned(),
             );
         } else if let Some(Route::PullRequests) = resource {
-            result.pull_population_complete = values.is_some_and(|items| {
-                requested_page_size(&exchange.request.url).is_some_and(|top| items.len() < top)
-            }) && !exchange
-                .response
-                .headers
-                .contains_key("x-ms-continuationtoken");
+            result.pull_population_complete = values.is_some_and(|items| items.len() < 100)
+                && !exchange
+                    .response
+                    .headers
+                    .contains_key("x-ms-continuationtoken");
             for pull in values.unwrap_or_else(|| {
                 common::fail("azure devops pull-request response has no value array")
             }) {
@@ -675,95 +655,15 @@ mod tests {
             "azure-devops-repository-mutations/v1",
             "azure-devops-pull-request-reviews/v1",
         ] {
-            for branch in [None, Some("")] {
-                let mut subject = json!({
-                    "kind": "repository", "id": "azure-devops:org/project/repository",
-                    "revision": "integrated"
-                });
-                if let Some(branch) = branch {
-                    subject["branch"] = json!(branch);
-                }
+            for subject in [json!({}), json!({"branch": ""})] {
                 let input =
                     json!({"adapter": adapter, "source": {"content": "{}"}, "subject": subject});
                 let error = std::panic::catch_unwind(|| normalize(&input)).unwrap_err();
                 assert_eq!(
-                    error.downcast_ref::<String>().map(String::as_str),
-                    Some("normalize request subject has no branch"),
-                    "{adapter} {branch:?}"
+                    error.downcast_ref::<String>().unwrap(),
+                    "normalize request subject has no branch"
                 );
             }
-        }
-    }
-
-    #[test]
-    fn pull_population_completeness_trusts_no_page_size_above_100() {
-        for (count, kind) in [(100, "pull_request_merge"), (99, "direct_push")] {
-            let listed = (1..=count)
-                .map(|number| json!({"pullRequestId":number,"targetRefName":"refs/heads/develop","lastMergeCommit":{"commitId":format!("merge-{number}")}}))
-                .collect::<Vec<_>>();
-            let payload = common::historical_payload(
-                "azure-devops:org/project/repository",
-                "develop",
-                vec![
-                    (
-                        "https://dev.azure.com/org/project/_apis/git/repositories/repository",
-                        json!({"id":"id","name":"repository"}),
-                    ),
-                    (
-                        "https://dev.azure.com/org/project/_apis/git/repositories/id/pushes?",
-                        json!({"value":[{"pushId":1,"date":"2026-09-11T12:00:00Z","refUpdates":[{"name":"refs/heads/develop","newObjectId":"direct"}]}]}),
-                    ),
-                    (
-                        "https://dev.azure.com/org/project/_apis/git/repositories/id/pullrequests?%24top=150&%24skip=0",
-                        json!({"value": listed}),
-                    ),
-                ],
-            );
-            assert_eq!(
-                normalize_mutations(&payload, "develop")["data"]["events"][0]["kind"],
-                kind,
-                "{count} pull requests"
-            );
-        }
-    }
-
-    #[test]
-    fn pull_population_completeness_uses_the_requested_page_size() {
-        for (query, kind) in [
-            ("%24top=2&%24skip=0", "pull_request_merge"),
-            ("%24top=3&%24skip=0", "direct_push"),
-            ("$top=3", "direct_push"),
-            ("api-version=7.1", "pull_request_merge"),
-        ] {
-            let pulls = format!(
-                "https://dev.azure.com/org/project/_apis/git/repositories/id/pullrequests?{query}"
-            );
-            let payload = common::historical_payload(
-                "azure-devops:org/project/repository",
-                "develop",
-                vec![
-                    (
-                        "https://dev.azure.com/org/project/_apis/git/repositories/repository",
-                        json!({"id":"id","name":"repository"}),
-                    ),
-                    (
-                        "https://dev.azure.com/org/project/_apis/git/repositories/id/pushes?",
-                        json!({"value":[{"pushId":1,"date":"2026-09-11T12:00:00Z","refUpdates":[{"name":"refs/heads/develop","newObjectId":"direct"}]}]}),
-                    ),
-                    (
-                        &pulls,
-                        json!({"value":[
-                            {"pullRequestId":41,"targetRefName":"refs/heads/develop","lastMergeCommit":{"commitId":"first"}},
-                            {"pullRequestId":42,"targetRefName":"refs/heads/develop","lastMergeCommit":{"commitId":"second"}}
-                        ]}),
-                    ),
-                ],
-            );
-            assert_eq!(
-                normalize_mutations(&payload, "develop")["data"]["events"][0]["kind"],
-                kind,
-                "{query}"
-            );
         }
     }
 }

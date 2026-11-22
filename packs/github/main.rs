@@ -74,22 +74,14 @@ fn collect(input: &Value) -> Value {
 
 fn normalize(input: &Value) -> Value {
     let payload = common::source_payload(input);
+    let branch = || common::subject_str(input, "branch");
+    let revision = || common::subject_str(input, "revision");
     match common::adapter(input) {
-        "github-branch-protection/v1" => {
-            normalize_branch(&payload, common::subject_str(input, "branch"))
-        }
-        "github-check-runs/v1" => {
-            normalize_checks(&payload, common::subject_str(input, "revision"))
-        }
-        "github-commit-statuses/v1" => {
-            normalize_statuses(&payload, common::subject_str(input, "revision"))
-        }
-        "github-repository-mutations/v1" => {
-            normalize_mutations(&payload, common::subject_str(input, "branch"))
-        }
-        "github-pull-request-reviews/v1" => {
-            normalize_reviews(&payload, common::subject_str(input, "branch"))
-        }
+        "github-branch-protection/v1" => normalize_branch(&payload, branch()),
+        "github-check-runs/v1" => normalize_checks(&payload, revision()),
+        "github-commit-statuses/v1" => normalize_statuses(&payload, revision()),
+        "github-repository-mutations/v1" => normalize_mutations(&payload, branch()),
+        "github-pull-request-reviews/v1" => normalize_reviews(&payload, branch()),
         _ => common::fail("unsupported adapter"),
     }
 }
@@ -447,8 +439,6 @@ fn target_or<'a>(value: &'a Value, key: &str) -> &'a Value {
     value.get(key).unwrap_or(&Value::Null)
 }
 
-/// the newest established observations under the claim key. with a proposition, only
-/// those from a run with authority for it count, as core requires of branch configuration.
 fn latest<'a>(evaluation: &'a Value, key: &str, authority: Option<&str>) -> Vec<&'a Value> {
     let target = evaluation.get("target").unwrap_or(&Value::Null);
     let mut matching = evaluation
@@ -460,8 +450,7 @@ fn latest<'a>(evaluation: &'a Value, key: &str, authority: Option<&str>) -> Vec<
             item.get("claim_key").and_then(Value::as_str) == Some(key)
                 && item.pointer("/subject/id") == target.get("repository")
                 && item.pointer("/subject/branch") == target.get("branch")
-                && established(evaluation, item)
-                && authority.is_none_or(|proposition| authoritative(evaluation, item, proposition))
+                && established(evaluation, item, authority)
         })
         .collect::<Vec<_>>();
     let observed_at = matching
@@ -472,27 +461,12 @@ fn latest<'a>(evaluation: &'a Value, key: &str, authority: Option<&str>) -> Vec<
     matching
 }
 
-/// whether a run with authority for the proposition backs the observation. evidence
-/// without a run has none.
-fn authoritative(evaluation: &Value, observation: &Value, proposition: &str) -> bool {
-    let Some(run_id) = observation.get("collection_run_id").and_then(Value::as_str) else {
-        return false;
-    };
-    evaluation
-        .pointer("/corpus/collections")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|run| run.get("id").and_then(Value::as_str) == Some(run_id))
-        .and_then(|run| run.get("authority").and_then(Value::as_array))
-        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(proposition)))
-}
-
 /// whether the observation's collection run established anything: a failed, denied,
-/// or unattempted run did not, and neither did a declared mirror.
-fn established(evaluation: &Value, observation: &Value) -> bool {
+/// or unattempted run did not, and neither did a declared mirror. with an authority,
+/// only a run that holds it did.
+fn established(evaluation: &Value, observation: &Value, authority: Option<&str>) -> bool {
     let Some(run_id) = observation.get("collection_run_id").and_then(Value::as_str) else {
-        return !withheld_by_mirror(evaluation, observation);
+        return authority.is_none() && !withheld_by_mirror(evaluation, observation);
     };
     evaluation
         .pointer("/corpus/collections")
@@ -511,6 +485,11 @@ fn established(evaluation: &Value, observation: &Value) -> bool {
                 .flatten()
                 .any(|item| {
                     item.get("kind").and_then(Value::as_str) == Some("not_system_of_record")
+                })
+                && authority.is_none_or(|authority| {
+                    run.get("authority")
+                        .and_then(Value::as_array)
+                        .is_some_and(|items| items.iter().any(|item| item == authority))
                 })
         })
 }
@@ -894,7 +873,7 @@ mod tests {
     }
 
     #[test]
-    fn normalize_refuses_a_subject_without_a_field_its_adapter_uses() {
+    fn normalize_refuses_a_subject_without_the_field_its_adapter_reads() {
         for (adapter, field) in [
             ("github-branch-protection/v1", "branch"),
             ("github-check-runs/v1", "revision"),
@@ -902,24 +881,13 @@ mod tests {
             ("github-repository-mutations/v1", "branch"),
             ("github-pull-request-reviews/v1", "branch"),
         ] {
-            for value in [None, Some("")] {
-                let mut subject = json!({
-                    "kind": "repository", "id": "github:owner/repository",
-                    "branch": "main", "revision": "integrated"
-                });
-                match value {
-                    None => {
-                        subject.as_object_mut().unwrap().remove(field);
-                    }
-                    Some(value) => subject[field] = json!(value),
-                }
+            for subject in [json!({}), json!({field: ""})] {
                 let input =
                     json!({"adapter": adapter, "source": {"content": "{}"}, "subject": subject});
                 let error = std::panic::catch_unwind(|| normalize(&input)).unwrap_err();
                 assert_eq!(
-                    error.downcast_ref::<String>().map(String::as_str),
-                    Some(format!("normalize request subject has no {field}").as_str()),
-                    "{adapter} {value:?}"
+                    error.downcast_ref::<String>().unwrap(),
+                    &format!("normalize request subject has no {field}")
                 );
             }
         }

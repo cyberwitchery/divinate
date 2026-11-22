@@ -460,58 +460,6 @@ pub fn mirror_gap(
     mirror_withholds(proposition).then(|| mirror_detail(repository, upstream, proposition))
 }
 
-/// whether a collection run with authority for the proposition backs the observation.
-///
-/// evidence without a run has none. a declared mirror's runs lose theirs in
-/// [`with_declared_mirror`].
-pub(crate) fn observation_authoritative(
-    corpus: &Corpus,
-    observation: &crate::model::Observation,
-    proposition: Proposition,
-) -> bool {
-    observation
-        .collection_run_id
-        .as_ref()
-        .is_some_and(|run_id| {
-            corpus
-                .collections
-                .iter()
-                .find(|run| &run.id == run_id)
-                .is_some_and(|run| run.authority.contains(&proposition))
-        })
-}
-
-/// why branch-configuration evidence has no authority, if it has none.
-///
-/// a declared mirror is named first, then a missing collection run, then the run's
-/// own limitation.
-pub(crate) fn branch_configuration_gap(
-    corpus: &Corpus,
-    repository: &str,
-    mirror_of: Option<&str>,
-    observation: &crate::model::Observation,
-) -> Option<String> {
-    if observation_authoritative(corpus, observation, Proposition::BranchConfiguration) {
-        return None;
-    }
-    Some(
-        mirror_gap(repository, mirror_of, observation).unwrap_or_else(|| {
-            match &observation.collection_run_id {
-                None => "it has no collection run, so no provider acquisition backs it".into(),
-                Some(run_id) => corpus
-                    .collections
-                    .iter()
-                    .find(|run| &run.id == run_id)
-                    .and_then(|run| run.limitations.first())
-                    .map_or_else(
-                        || "its linked acquisition contract has no current authority".into(),
-                        |item| item.detail.clone(),
-                    ),
-            }
-        }),
-    )
-}
-
 const fn mirror_withholds(proposition: Proposition) -> bool {
     !matches!(
         proposition,

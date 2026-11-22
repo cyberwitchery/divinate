@@ -2,6 +2,11 @@
 
 ## unreleased
 
+- count branch configuration only through a collection run with
+  `branch_configuration` authority. a branch-protection snapshot or branch-policy
+  history without one, such as a manifest entry with no `collection_run`, no
+  longer supports or contradicts `configured_independent_review`, the github
+  pack's required status checks, or `release_review_operation`
 - remove `divinate export dd`, the `DdResponse` view and the `dd-response`
   schema. the dossier is the answer document to hand over, and a named
   evaluation writes its own, `.evidence/dossiers/<label>.md`
@@ -132,25 +137,3 @@
 - leave no pack invocations or blobs behind when `evaluate`, or the evaluation
   that ends `collect`, refuses a pack assertion that its invocation does not
   bind
-- count branch configuration only through a collection run with
-  branch-configuration authority. a branch-protection snapshot without one, such
-  as a manifest entry with no `collection_run`, no longer supports or
-  contradicts `configured_independent_review` or the github pack's required
-  status checks, and branch-policy history without one no longer decides
-  `release_review_operation`. the answer has insufficient evidence, and its gap
-  names why the evidence is not authoritative
-- say why branch-policy history leaves a `release_review_operation` merge
-  undecided: when the latest authoritative history's declared coverage does not
-  contain the merge time, the gap names that window, and when it records no
-  policy event at or before the merge, the gap says so. both used to read as if
-  no history existed
-- refuse a pack assertion from an evaluator that declares `branch_configuration`
-  when it supports or contradicts with configuration evidence that no such run
-  backs
-- count an azure devops pull-request list as complete only when its last page
-  holds fewer items than the request's `$top`, trusted up to 100. a transcript
-  whose pull-request url has no `$top`, such as an imported one, never counts as
-  a complete pull-request population
-- refuse a github or azure devops pack normalization whose source subject lacks
-  the branch or revision the adapter reads, instead of returning an empty
-  observation

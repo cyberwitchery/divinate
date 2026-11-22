@@ -3,7 +3,6 @@ use std::path::Path;
 use divinate as evidence_spike;
 use evidence_spike::assertions::{self, AssertionType, EvaluationTarget, Outcome};
 use evidence_spike::dossier::{self, Dossier};
-use evidence_spike::model::{ObservationKind, Proposition};
 use evidence_spike::{collect, parse_timestamp, source_bytes};
 
 fn target() -> EvaluationTarget {
@@ -34,24 +33,8 @@ fn latest_capture() -> time::OffsetDateTime {
         .unwrap()
 }
 
-/// the fixture's dossier, with its branch-protection snapshots read by a run with
-/// branch-configuration authority. the manifest imports them without one.
 fn dossier() -> (evidence_spike::model::Corpus, Dossier) {
-    let mut corpus = collect(Path::new("fixtures/collection.json")).unwrap();
-    let mut run = corpus.collections[0].clone();
-    run.id = "run-branch-configuration".into();
-    run.requested_scope.proposition = Proposition::BranchConfiguration;
-    run.observed_scope = Some(run.requested_scope.clone());
-    run.authority = vec![Proposition::BranchConfiguration];
-    run.observation_ids.clear();
-    for observation in corpus.observations.iter_mut().filter(|item| {
-        item.kind == ObservationKind::ConfigurationSnapshot
-            && item.claim_key.starts_with("github:branch-protection")
-    }) {
-        observation.collection_run_id = Some(run.id.clone());
-        run.observation_ids.push(observation.id.clone());
-    }
-    corpus.collections.push(run);
+    let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
     let at = latest_capture();
     let assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
     let dossier = dossier::build(&corpus, &assertions, &[], &target(), at).unwrap();

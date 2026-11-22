@@ -1591,64 +1591,28 @@ fn validate_assertions(
                     metadata.id, observation.id
                 )));
             }
-            if let Some(run_id) = observation.collection_run_id.as_ref() {
-                let run = corpus
-                    .collections
-                    .iter()
-                    .find(|run| &run.id == run_id)
-                    .ok_or_else(|| {
-                        Error::Invalid(format!(
-                            "pack assertion references observation {} from missing collection run {run_id}",
-                            evidence.observation_id
-                        ))
-                    })?;
-                if let Some(reason) = unestablished(run) {
-                    return Err(Error::Invalid(format!(
-                        "pack {} used evidence from collection run {run_id}, which established nothing: {reason}",
-                        metadata.id
-                    )));
-                }
-            }
-            if let Some(reason) =
-                branch_configuration_answer_gap(declared_propositions, corpus, target, observation)
-            {
+            let Some(run_id) = observation.collection_run_id.as_ref() else {
+                continue;
+            };
+            let run = corpus
+                .collections
+                .iter()
+                .find(|run| &run.id == run_id)
+                .ok_or_else(|| {
+                    Error::Invalid(format!(
+                        "pack assertion references observation {} from missing collection run {run_id}",
+                        evidence.observation_id
+                    ))
+                })?;
+            if let Some(reason) = unestablished(run) {
                 return Err(Error::Invalid(format!(
-                    "pack {} used evidence {} without authority: {reason}",
-                    metadata.id, observation.id
+                    "pack {} used evidence from collection run {run_id}, which established nothing: {reason}",
+                    metadata.id
                 )));
             }
         }
     }
     Ok(())
-}
-
-/// why configuration evidence cannot answer for an evaluator that declares branch
-/// configuration, if it cannot.
-///
-/// such an evaluator answers a branch-configuration question, so its configuration
-/// evidence needs a run with branch-configuration authority, as core's own evaluators
-/// require. a run-less snapshot's kind does not say what it configures, so evaluators
-/// that declare no branch-configuration question may still use one.
-fn branch_configuration_answer_gap(
-    declared: &[Proposition],
-    corpus: &crate::model::Corpus,
-    target: &EvaluationTarget,
-    observation: &crate::model::Observation,
-) -> Option<String> {
-    (declared.contains(&Proposition::BranchConfiguration)
-        && matches!(
-            observation.kind,
-            ObservationKind::ConfigurationSnapshot | ObservationKind::ConfigurationHistory
-        ))
-    .then(|| {
-        crate::provenance::branch_configuration_gap(
-            corpus,
-            &target.repository,
-            target.mirror_of.as_deref(),
-            observation,
-        )
-    })
-    .flatten()
 }
 
 /// the evidence must name a retained observation by its own source, with no core-derived detail.
