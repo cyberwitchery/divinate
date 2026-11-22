@@ -1924,7 +1924,7 @@ fn github_required_checks_need_a_run_with_branch_configuration_authority() {
                 "evaluated_at": "2026-09-12T00:00:00Z",
                 "coverage": [],
                 "corpus": {
-                    "collections": [{"id": "run", "outcome": "complete", "authority": ["branch_configuration"]}],
+                    "collections": [{"id": "run", "outcome": "complete", "authority": ["branch_configuration"]}, {"id": "withdrawn", "outcome": "complete", "authority": []}],
                     "observations": [{
                         "id": "protection",
                         "claim_key": "github:branch-protection",
@@ -1940,6 +1940,8 @@ fn github_required_checks_need_a_run_with_branch_configuration_authority() {
         })
     };
     let response = github_pack_result(&request(serde_json::Value::Null));
+    assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
+    let response = github_pack_result(&request(serde_json::json!("withdrawn")));
     assert_eq!(response["result"][0]["outcome"], "insufficient_evidence");
     let response = github_pack_result(&request(serde_json::json!("run")));
     assert_eq!(response["result"][0]["outcome"], "contradicted");
