@@ -1401,6 +1401,138 @@ fn executable_changes_change_identity_without_rewriting_history() {
 }
 
 #[test]
+fn core_rejects_an_observation_bound_to_an_operation_it_does_not_know() {
+    let state = tempfile::tempdir().unwrap();
+    configure_project(
+        state.path(),
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
+            sources: BTreeMap::default(),
+            packs: BTreeMap::from([(
+                "example.backup-control".into(),
+                pack_file(
+                    example("packs/config-collector/divinate-pack-config-collector"),
+                    serde_json::json!({
+                        "repository": "github:cyberwitchery/example",
+                        "source_command": "/usr/bin/printf",
+                        "source_argv": ["%s", "{\"encrypted\":true}"],
+                        "observed_at": "2026-09-08T12:00:00Z"
+                    }),
+                ),
+            )]),
+        },
+    )
+    .unwrap();
+    cli(&[
+        "collect",
+        "pack",
+        "--state",
+        state.path().to_str().unwrap(),
+        "--repository-path",
+        state.path().to_str().unwrap(),
+        "example.backup-control",
+        "backup-encryption",
+    ]);
+    divinate::verification::verify(state.path()).unwrap();
+    let corpus_path = workflow::corpus_path(state.path());
+    let mut corpus = divinate::load_corpus(&corpus_path).unwrap();
+    let normalize = workflow::load_pack_invocations(state.path())
+        .unwrap()
+        .into_iter()
+        .find(|item| item.contents.operation == "normalize")
+        .unwrap();
+    let unknown = reseal_as(&normalize, "transform");
+    pack::verify_stored(&unknown, &workflow::load_blobs(state.path()).unwrap()).unwrap();
+    divinate::write_json(
+        &unknown,
+        &state
+            .path()
+            .join("pack-invocations")
+            .join(format!("{}.json", unknown.id)),
+    )
+    .unwrap();
+    let link = corpus.observations[0]
+        .pack_invocation_ids
+        .iter_mut()
+        .find(|id| **id == normalize.id)
+        .unwrap();
+    link.clone_from(&unknown.id);
+    divinate::write_json(&corpus, &corpus_path).unwrap();
+    let error = divinate::verification::verify(state.path())
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("pack operation transform cannot bind an observation"),
+        "{error}"
+    );
+}
+
+#[test]
+fn core_rejects_an_assertion_citing_an_invocation_that_did_not_evaluate() {
+    let state = tempfile::tempdir().unwrap();
+    configure_project(
+        state.path(),
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
+            sources: BTreeMap::default(),
+            packs: BTreeMap::from([(
+                "example.backup-evaluator".into(),
+                pack_file(
+                    example("packs/external-evaluator/divinate-pack-external-evaluator"),
+                    serde_json::json!({}),
+                ),
+            )]),
+        },
+    )
+    .unwrap();
+    workflow::init(state.path()).unwrap();
+    divinate::write_json(
+        &Corpus {
+            collections: vec![],
+            observations: vec![],
+            schema_version: divinate::SCHEMA_VERSION.into(),
+            sources: vec![],
+        },
+        &workflow::corpus_path(state.path()),
+    )
+    .unwrap();
+    evaluate(state.path(), "current");
+    let mut assertions: Vec<DerivedAssertion> =
+        read_json(&state.path().join("assertions/current.json")).unwrap();
+    let mut invocations = workflow::load_pack_invocations(state.path()).unwrap();
+    let blobs = workflow::load_blobs(state.path()).unwrap();
+    pack::verify_assertion_links(&assertions, &invocations, &blobs).unwrap();
+    let assertion = assertions
+        .iter_mut()
+        .find(|item| item.derivation.pack_invocation_id.is_some())
+        .unwrap();
+    let evaluated = invocations
+        .iter()
+        .find(|item| assertion.derivation.pack_invocation_id.as_ref() == Some(&item.id))
+        .unwrap();
+    let normalize = reseal_as(evaluated, "normalize");
+    pack::verify_stored(&normalize, &blobs).unwrap();
+    assertion.derivation.pack_invocation_id = Some(normalize.id.clone());
+    let expected = format!(
+        "pack invocation {} does not bind assertion {}",
+        normalize.id, assertion.id
+    );
+    invocations.push(normalize);
+    let error = pack::verify_assertion_links(&assertions, &invocations, &blobs)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains(&expected), "{error}");
+}
+
+#[test]
 fn evaluator_receives_declared_zero_result_coverage_but_not_unrelated_runs() {
     let state = tempfile::tempdir().unwrap();
     let path = state.path().join("coverage-pack");
@@ -2377,6 +2509,13 @@ fn executable(path: &Path, bytes: &[u8]) {
     permissions.set_mode(0o755);
     fs::set_permissions(&temporary, permissions).unwrap();
     fs::rename(temporary, path).unwrap();
+}
+
+/// the invocation as if the pack had answered `operation`, sealed by core.
+fn reseal_as(invocation: &pack::PackInvocation, operation: &str) -> pack::PackInvocation {
+    let mut contents = invocation.contents.clone();
+    contents.operation = operation.into();
+    pack::seal(contents).unwrap()
 }
 
 fn git(repository: &Path, args: &[&str]) {

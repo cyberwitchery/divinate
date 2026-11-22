@@ -153,6 +153,75 @@ fn failed_commit_leaves_the_state_directory_untouched() {
 }
 
 #[test]
+fn conflicting_corpus_objects_under_a_stored_id_are_refused_without_writing() {
+    let stored = corpus();
+    let mut observation = stored.clone();
+    observation.observations[0].data = serde_json::json!({"rewritten": true});
+    let mut run = stored.clone();
+    run.collections[0].endpoint = "GET /repos/cyberwitchery/elsewhere/pulls".into();
+    for (conflicting, collision) in [
+        (
+            observation,
+            format!("observation id collision: {}", stored.observations[0].id),
+        ),
+        (
+            run,
+            format!("collection run id collision: {}", stored.collections[0].id),
+        ),
+    ] {
+        let state = tempfile::tempdir().unwrap();
+        workflow::accumulate(state.path(), &stored, &[]).unwrap();
+        let before = snapshot(state.path());
+        let error = workflow::accumulate(state.path(), &conflicting, &[]).unwrap_err();
+        assert!(error.to_string().contains(&collision), "{error}");
+        assert_eq!(snapshot(state.path()), before, "{collision}");
+    }
+}
+
+#[test]
+fn a_committed_transcript_failing_integrity_is_refused_without_writing() {
+    let state = tempfile::tempdir().unwrap();
+    let mut rewritten = transcript();
+    rewritten.contents.captured_at = "2026-09-04T01:00:00Z".into();
+    let before = snapshot(state.path());
+    let error = workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&rewritten))
+        .unwrap_err();
+    assert!(
+        error.to_string().contains(&format!(
+            "acquisition {} failed integrity verification",
+            rewritten.id
+        )),
+        "{error}"
+    );
+    assert_eq!(snapshot(state.path()), before);
+}
+
+#[test]
+fn a_stored_acquisition_differing_from_the_committed_transcript_is_refused_without_writing() {
+    let state = tempfile::tempdir().unwrap();
+    let transcript = transcript();
+    workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&transcript)).unwrap();
+
+    let mut rewritten = transcript.clone();
+    rewritten.contents.captured_at = "2026-09-04T01:00:00Z".into();
+    let stored = state
+        .path()
+        .join("acquisitions")
+        .join(format!("{}.json", transcript.id));
+    evidence_spike::write_json(&rewritten, &stored).unwrap();
+    let before = snapshot(state.path());
+    let error = workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&transcript))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("acquisition id collision: {}", transcript.id)),
+        "{error}"
+    );
+    assert_eq!(snapshot(state.path()), before);
+}
+
+#[test]
 fn separate_cycle_increments_accumulate_without_rewriting_earlier_evidence() {
     let complete = corpus();
     let mut early = complete.clone();
