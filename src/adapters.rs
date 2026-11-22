@@ -440,6 +440,52 @@ mod tests {
     }
 
     #[test]
+    fn sbom_diff_0_11_output_is_adapted() {
+        let payload =
+            serde_json::from_str(include_str!("../fixtures/sbom-diff-0.11.0.json")).unwrap();
+        let output = adapt("sbom-diff", &payload, &subject()).unwrap();
+        assert_eq!(output.claim_key, "sbom-diff:dependency-change");
+        assert_eq!(output.status, None);
+        assert_eq!(
+            output.data["counts"],
+            json!({"added": 1, "changed": 3, "dependency_edges_changed": 1, "new_total": 4, "old_total": 4, "removed": 1, "unchanged": 0})
+        );
+        assert_eq!(
+            output.data["components"]["added"],
+            json!(["pkg:cargo/memchr@2.7.4"])
+        );
+        assert_eq!(
+            output.data["components"]["removed"],
+            json!(["pkg:cargo/ryu@1.0.15"])
+        );
+        assert_eq!(
+            output.data["components"]["changed"][2],
+            "pkg:cargo/itoa@1.0.11"
+        );
+        assert_eq!(
+            output.data["metadata_changed"]["timestamp"][1],
+            "2026-11-22T17:38:29.949954Z"
+        );
+    }
+
+    #[test]
+    fn unsafe_budget_0_6_violation_is_adapted() {
+        let payload =
+            serde_json::from_str(include_str!("../fixtures/unsafe-budget-0.6.0.json")).unwrap();
+        let output = adapt("unsafe-budget", &payload, &subject()).unwrap();
+        assert_eq!(output.claim_key, "unsafe-budget:default");
+        assert_eq!(output.status, Some(Status::Fail));
+        assert_eq!(output.severity, Some(Severity::High));
+        assert_eq!(output.data["analyzer_id"], "rustc_unsafe_lint");
+        assert_eq!(output.data["language"], "rust");
+        assert_eq!(output.data["scope"]["include_deps"], true);
+        assert_eq!(output.data["totals"]["overall_unsafe"], 1);
+        assert_eq!(output.data["units"][0]["unsafe_count"], 1);
+        assert_eq!(output.data["violations"][0]["delta"], 1);
+        assert_eq!(output.data["warnings"], json!([]));
+    }
+
+    #[test]
     fn branch_checks_are_deduplicated() {
         let output = adapt(
             "github-branch-protection",

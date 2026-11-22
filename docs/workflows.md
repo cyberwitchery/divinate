@@ -78,8 +78,12 @@ taking precedence over repository tags. recorded tag revisions become expected
 revisions on later runs, so a moved tag is rejected.
 
 the workflow records two executions. one produces the dependency diff; the other
-runs the same comparison with the configured gate. their output bytes must match.
-identical verified executions are reused unless `--force` is present.
+runs the same comparison with `--fail-on added-components`, the only gate
+divinate accepts. the gate's stdout must equal the diff's stdout byte for byte.
+gate exit 0 records a passed gate and exit 2 or 3 a failed one (sbom-diff 0.11.0
+exits 3 when a `--fail-on` condition triggers and 2 on a license violation); any
+other exit stops collection. identical verified executions are reused unless
+`--force` is present.
 
 override shared release context for an exceptional cycle:
 
