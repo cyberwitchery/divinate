@@ -16,6 +16,10 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 STATE = "dossiers/sbom-diff/repeated/.evidence"
+# requests core sent to the in-tree packs and the stdout each pack wrote back,
+# captured by `cargo test --test pack pack_protocol_messages` with
+# DIVINATE_PACK_PROTOCOL_CAPTURE set to the directory.
+PACK_PROTOCOL = "fixtures/pack-protocol"
 
 
 def registry() -> Registry:
@@ -29,8 +33,26 @@ def registry() -> Registry:
     )
 
 
-def pairs() -> list[tuple[str, str, bool]]:
-    """(schema name, document path, document is a list of instances)"""
+def pack_protocol(directory: str) -> list[tuple[str, str, bool]]:
+    """each request, and each response against the result of its request's operation."""
+    items = []
+    for request in glob.glob(f"{directory}/*.request.json"):
+        operation = json.load(open(request))["operation"]
+        response = request.removesuffix(".request.json") + ".response.json"
+        items.append(("pack-protocol.schema.json", request, False))
+        if operation == "collect":
+            # every captured collection runs a configured source.
+            source = "pack-protocol.schema.json#/$defs/source_collect"
+            items.append((source, request, False))
+        result = f"pack-response.schema.json#/$defs/{operation}"
+        items.append((result, response, False))
+    if not items:
+        sys.exit(f"no pack protocol messages in {directory}")
+    return items
+
+
+def pairs(captures: list[str]) -> list[tuple[str, str, bool]]:
+    """(schema reference, document path, document is a list of instances)"""
     items = [
         ("evidence-corpus", f"{STATE}/corpus.json", False),
         ("contract-registry", f"{STATE}/contracts.json", False),
@@ -61,15 +83,18 @@ def pairs() -> list[tuple[str, str, bool]]:
         ("collection-cycle", p, False)
         for p in glob.glob(f"{STATE}/collection-cycles/*.json")
     ]
+    items = [(f"{name}.schema.json", path, is_list) for name, path, is_list in items]
+    for directory in [PACK_PROTOCOL, *captures]:
+        items += pack_protocol(directory)
     return sorted(items, key=lambda item: (item[0], item[1]))
 
 
-def main() -> int:
+def main(captures: list[str]) -> int:
+    """validate the shipped artifacts, plus pack protocol captures in `captures`."""
     reg = registry()
     checked = failed = 0
-    for name, path, is_list in pairs():
-        schema = json.load(open(f"schema/{name}.schema.json"))
-        validator = Validator(schema, registry=reg)
+    for name, path, is_list in pairs(captures):
+        validator = Validator({"$ref": name}, registry=reg)
         document = json.load(open(path))
         instances = document if is_list else [document]
         errors = [error for one in instances for error in validator.iter_errors(one)]
@@ -85,4 +110,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

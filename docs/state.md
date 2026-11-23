@@ -173,8 +173,9 @@ links. partial copies can leave provenance incomplete.
 
 the `schema/` directory publishes draft 2020-12 schemas for project
 configuration, configuration provenance, evidence corpora, transcripts,
-contract registries, assertions, dossiers, pack protocol messages, and views.
-`project-config.schema.json` describes the YAML data model.
+contract registries, assertions, dossiers, pack protocol requests and
+responses, and views. `project-config.schema.json` describes the YAML data
+model.
 
 schema validity is not semantic verification. `divinate verify` also checks
 identities, content digests, retained bytes, and cross-object links.

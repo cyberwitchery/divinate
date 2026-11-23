@@ -91,33 +91,51 @@ protocol version 1 has four operations:
 - `normalize` converts retained command output into typed observation fields.
 - `evaluate` derives structured assertion fields from selected saved state.
 
-requests contain one json document:
+core writes one json request to the pack's stdin and reads one json response
+from its stdout.
+[`schema/pack-protocol.schema.json`](../schema/pack-protocol.schema.json)
+describes the request, with `input` typed by `operation`.
+[`schema/pack-response.schema.json`](../schema/pack-response.schema.json)
+describes the response, and its `$defs/describe`, `collect`, `normalize`, and
+`evaluate` type each operation's result. where core refuses unknown members, the
+schemas do too.
+
+| operation | `input` | `result` |
+| --- | --- | --- |
+| `describe` | `null` | pack metadata |
+| `collect` | `collector`, `context` | one collection plan |
+| `normalize` | `adapter`, `source` (`content`, `sha256`), `subject` | one observation's fields |
+| `evaluate` | `evaluator`, `corpus`, `target`, `evaluated_at`, `coverage` | an array of assertions |
+
+`configuration` is the pack's `config` from `divinate.yaml`, `{}` when it sets
+none:
 
 ```json
-{"protocol_version":1,"operation":"describe","configuration":{},"input":null}
+{"configuration":{},"input":null,"operation":"describe","protocol_version":1}
 ```
 
-successful responses contain one json document:
+a configured source's collector receives `repository`, `branch`, `revision`,
+`repository_path`, `interval`, `observed_at`, the source's `configuration`, and
+`release` as its `context`. `release` is null unless the source sets
+`context: release`. `divinate collect pack` passes its `--context` file instead,
+or null without one.
 
-```json
-{"ok":true,"result":{}}
-```
+a pack answers `{"ok":true,"result":...}` with the operation's result, or
+`{"ok":false,"error":"..."}` and exit zero for a semantic failure. a non-zero
+exit, invalid json, trailing stdout, a missing or null result, timeout, or
+incompatible protocol version fails the operation.
 
-semantic failures use `{"ok":false,"error":"..."}` and exit zero. a non-zero
-exit, invalid json, trailing stdout, missing result, timeout, or incompatible
-protocol version fails the operation.
-
-`describe` returns this shape:
+the cargo-lock pack answers `describe` with:
 
 ```json
 {"ok":true,"result":{
-  "id":"example.backup-control",
+  "id":"cyberwitchery.cargo-lock",
   "version":"0.1.0",
   "protocol_version":1,
-  "collectors":["backup-encryption"],
-  "evaluators":[],
-  "evaluator_inputs":{},
-  "evaluator_propositions":{},
+  "collectors":["lockfile"],
+  "evaluators":["lockfile-captured"],
+  "evaluator_inputs":{"lockfile-captured":["cargo:dependency-lock"]},
+  "evaluator_propositions":{"lockfile-captured":[]},
   "source_contracts":[],
   "configuration_schema":{}
 }}
@@ -130,14 +148,28 @@ available to evaluators.
 
 the examples under [`packs/`](../packs) include an sbom collector, a
 configuration collector, the in-tree GitHub and Azure DevOps sources, and a
-separately distributed evaluator.
+separately distributed evaluator. [`fixtures/pack-protocol`](../fixtures/pack-protocol)
+holds requests core sent them for every operation and each pack's exact stdout,
+captured with
+`DIVINATE_PACK_PROTOCOL_CAPTURE=fixtures/pack-protocol cargo test --test pack pack_protocol_messages`.
+ci validates them, and a fresh capture, against the schemas.
 
-remote plans are provider-aware and deliberately narrow:
+a collection plan names its `adapter`, `subject`, and `observed_at`, and exactly
+one of `command`, a local command for core to execute, or `acquisition`, a
+remote read. remote plans are provider-aware and deliberately narrow. the GitHub
+pack plans `branch-protection` as:
 
 ```json
-{"acquisition":{"provider":"github","resource":"commit_statuses","per_page":100,"max_pages":10}}
-{"acquisition":{"provider":"azure_devops","resource":"branch_policy","max_pages":10}}
+{"ok":true,"result":{
+  "acquisition":{"max_pages":10,"per_page":100,"provider":"github","resource":"branch_protection"},
+  "adapter":"github-branch-protection/v1",
+  "observed_at":"2026-11-23T08:32:44.419494Z",
+  "subject":{"branch":"main","id":"github:cyberwitchery/example","kind":"repository","repository":"github:cyberwitchery/example","revision":"166b402faf0b2ff15eba2dff6f07af02c9c9dbcc"}
+}}
 ```
+
+an Azure DevOps acquisition takes no `per_page`:
+`{"max_pages":10,"provider":"azure_devops","resource":"branch_policy"}`.
 
 GitHub resources are `branch_protection`, `check_runs`, `commit_statuses`,
 `repository_mutations`, `pull_request_reviews`, and `build_validation_history`.
