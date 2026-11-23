@@ -2056,6 +2056,212 @@ fn protocol_crash_and_malformed_response_do_not_create_canonical_evidence() {
     }
 }
 
+/// runs the in-tree packs through core and replays each retained request to
+/// the pack for its exact stdout. `DIVINATE_PACK_PROTOCOL_CAPTURE=<dir>` writes
+/// the pairs there for `scripts/validate-schemas.py`.
+#[test]
+fn pack_protocol_messages() {
+    let root = tempfile::tempdir().unwrap();
+    let packs = protocol_project(root.path());
+    // evidence is available from its capture time, so the interval ends now.
+    let now = time::OffsetDateTime::now_utc();
+    let [from, until] = [
+        now - time::Duration::days(1),
+        now - time::Duration::minutes(1),
+    ]
+    .map(|at| {
+        at.format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    });
+    let state = root.path().to_str().unwrap();
+    cli(&[
+        "collect",
+        "--state",
+        state,
+        "--repository-path",
+        state,
+        "--from",
+        &from,
+        "--until",
+        &until,
+    ]);
+    let mut invocations = workflow::load_pack_invocations(root.path()).unwrap();
+    let request = |invocation: &pack::PackInvocation| -> serde_json::Value {
+        serde_json::from_str(&invocation.contents.request).unwrap()
+    };
+    let context = invocations
+        .iter()
+        .find(|item| item.contents.operation == "collect")
+        .map(|item| request(item)["input"]["context"].clone())
+        .unwrap();
+    invocations.extend(remote_plan_invocations(&context));
+
+    let mut exchanges = BTreeMap::new();
+    for invocation in &invocations {
+        let sent = request(invocation);
+        let name = sent["input"]
+            .get("collector")
+            .or_else(|| sent["input"].get("evaluator"))
+            .or_else(|| sent["input"].get("adapter"))
+            .and_then(serde_json::Value::as_str)
+            .map_or(String::new(), |name| format!("-{}", name.replace('/', "-")));
+        let stdout = pack_stdout(
+            &packs[&invocation.contents.pack_id],
+            invocation.contents.request.as_bytes(),
+        );
+        let response: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(response["ok"], true, "{response}");
+        assert_eq!(
+            divinate::canonical_json(&response["result"]).unwrap(),
+            invocation.contents.response.as_bytes()
+        );
+        let key = format!(
+            "{}.{}{name}",
+            invocation.contents.pack_id, invocation.contents.operation
+        );
+        exchanges
+            .entry(key)
+            .or_insert((invocation.contents.request.clone(), stdout));
+    }
+    for operation in ["describe", "collect", "normalize", "evaluate"] {
+        let operation = format!(".{operation}");
+        assert!(exchanges.keys().any(|key| key.contains(&operation)));
+    }
+    let sent = exchanges["cyberwitchery.github.collect-branch-protection"]
+        .0
+        .clone();
+    let refused = pack_stdout(&packs["example.backup-evaluator"], sent.as_bytes());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&refused).unwrap()["ok"],
+        false
+    );
+    exchanges.insert(
+        "example.backup-evaluator.collect-refused".into(),
+        (sent, refused),
+    );
+    if let Some(out) = std::env::var_os("DIVINATE_PACK_PROTOCOL_CAPTURE") {
+        write_protocol_captures(Path::new(&out), exchanges);
+    }
+}
+
+/// a repository whose cargo-lock source runs, with the github and evaluator
+/// packs configured to evaluate it. returns each in-tree pack's executable.
+fn protocol_project(root: &Path) -> BTreeMap<String, PathBuf> {
+    let cargo_lock = root.join("divinate-pack-cargo-lock");
+    fs::copy(
+        example("packs/cargo-lock/divinate-pack-cargo-lock"),
+        &cargo_lock,
+    )
+    .unwrap();
+    fs::write(
+        root.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"example\"\nversion = \"0.1.0\"\ndependencies = [\n \"itoa\",\n]\n\n[[package]]\nname = \"itoa\"\nversion = \"1.0.18\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682\"\n",
+    )
+    .unwrap();
+    let packs = BTreeMap::from([
+        ("cyberwitchery.cargo-lock".to_string(), cargo_lock),
+        ("cyberwitchery.github".into(), github_pack()),
+        ("cyberwitchery.azure-devops".into(), azure_devops_pack()),
+        (
+            "example.backup-evaluator".into(),
+            example("packs/external-evaluator/divinate-pack-external-evaluator"),
+        ),
+    ]);
+    configure_project(
+        root,
+        &project::ProjectFile {
+            repository: project::RepositoryConfig {
+                identity: "github:cyberwitchery/example".into(),
+                branch: "main".into(),
+                mirror_of: None,
+            },
+            sources: BTreeMap::from([(
+                "cargo-lock".into(),
+                project::SourceFileConfig {
+                    provider: project::SourceFileProvider::Pack(project::PackProvider {
+                        pack: "cyberwitchery.cargo-lock".into(),
+                        collector: "lockfile".into(),
+                    }),
+                    configuration: serde_json::json!({}),
+                    context: workflow::SourceContext::Repository,
+                    required: true,
+                },
+            )]),
+            // both provider packs derive the same assertions for one repository.
+            packs: packs
+                .iter()
+                .filter(|(id, _)| *id != "cyberwitchery.azure-devops")
+                .map(|(id, path)| (id.clone(), pack_file(path.clone(), serde_json::json!({}))))
+                .collect(),
+        },
+    )
+    .unwrap();
+    packs
+}
+
+/// remote collection plans and a remote normalization, which a configured
+/// source would follow with a network read.
+fn remote_plan_invocations(context: &serde_json::Value) -> Vec<pack::PackInvocation> {
+    let mut invocations = Vec::new();
+    for (executable, collector) in [
+        (github_pack(), "branch-protection"),
+        (azure_devops_pack(), "branch-policy"),
+    ] {
+        let config = pack_config(executable, serde_json::json!({}));
+        let (metadata, described) = pack::describe(&config).unwrap();
+        let (plan, planned) = pack::plan(&config, &metadata, collector, context).unwrap();
+        invocations.extend([described.invocation, planned.invocation]);
+        if metadata.id == "cyberwitchery.github" {
+            let source = br#"{"protected":false}"#;
+            let (_, normalized) = pack::normalize(
+                &config,
+                &metadata,
+                &plan.adapter,
+                source,
+                &divinate::hex_digest(source),
+                &plan.subject,
+            )
+            .unwrap();
+            invocations.push(normalized.invocation);
+        }
+    }
+    invocations
+}
+
+/// replaces the json files in `out` with one request and response per exchange.
+fn write_protocol_captures(out: &Path, exchanges: BTreeMap<String, (String, Vec<u8>)>) {
+    fs::create_dir_all(out).unwrap();
+    for entry in fs::read_dir(out).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+        {
+            fs::remove_file(path).unwrap();
+        }
+    }
+    for (key, (sent, received)) in exchanges {
+        fs::write(out.join(format!("{key}.request.json")), sent).unwrap();
+        fs::write(out.join(format!("{key}.response.json")), received).unwrap();
+    }
+}
+
+/// the pack's stdout for one request, run the way core runs it.
+fn pack_stdout(executable: &Path, request: &[u8]) -> Vec<u8> {
+    let scratch = tempfile::tempdir().unwrap();
+    let mut child = Command::new(executable)
+        .env_clear()
+        .current_dir(scratch.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(request).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    output.stdout
+}
+
 fn cli(args: &[&str]) {
     let output = Command::new(env!("CARGO_BIN_EXE_divinate"))
         .args(args)

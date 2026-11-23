@@ -58,7 +58,10 @@ CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- 
 
 echo "==> schemas"
 if python3 -c "import jsonschema" >/dev/null 2>&1; then
-    python3 scripts/validate-schemas.py
+    captures="$(mktemp -d)"
+    DIVINATE_PACK_PROTOCOL_CAPTURE="$captures" cargo test --quiet --test pack pack_protocol_messages
+    python3 scripts/validate-schemas.py "$captures"
+    rm -rf "$captures"
 else
     skip "schemas" "pip install jsonschema"
 fi

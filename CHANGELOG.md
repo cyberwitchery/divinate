@@ -2,6 +2,9 @@
 
 ## unreleased
 
+- publish a schema for every pack protocol message: `pack-protocol.schema.json`
+  types each operation's `input`, and `pack-response.schema.json` describes the
+  response and each operation's result
 - count branch configuration only through a collection run with
   `branch_configuration` authority. a branch-protection snapshot or branch-policy
   history without one, such as a manifest entry with no `collection_run`, no

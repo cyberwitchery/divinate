@@ -1,0 +1,1 @@
+{"ok":true,"result":{"acquisition":{"max_pages":10,"provider":"azure_devops","resource":"branch_policy"},"adapter":"azure-devops-branch-policy/v1","observed_at":"2026-11-23T08:32:44.419494Z","subject":{"branch":"main","id":"github:cyberwitchery/example","kind":"repository","repository":"github:cyberwitchery/example","revision":"166b402faf0b2ff15eba2dff6f07af02c9c9dbcc"}}}
