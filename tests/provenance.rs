@@ -1,26 +1,25 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use divinate as evidence_spike;
-use evidence_spike::acquisition::{
+use divinate::acquisition::{
     seal_transcript, AcquisitionTermination, ContractInvalidation, ContractRegistry,
     ContractStatus, HttpExchange, HttpRequest, HttpResponse, TranscriptContents,
     GITHUB_BRANCH_PROTECTION_CONTRACT,
 };
-use evidence_spike::assertions::{self, EvaluationTarget, Outcome};
-use evidence_spike::execution::{self, ExecutionCapture, ExecutionRequest, NamedPath};
-use evidence_spike::model::{
+use divinate::assertions::{self, EvaluationTarget, Outcome};
+use divinate::execution::{self, ExecutionCapture, ExecutionRequest, NamedPath};
+use divinate::model::{
     CollectionOutcome, CollectionRun, CollectionScope, Enumeration, ObservationKind, Producer,
     Proposition, TimeRange,
 };
-use evidence_spike::provenance::{
+use divinate::provenance::{
     verify_collection_links, verify_execution_links, with_current_authority,
 };
-use evidence_spike::{collect, hex_digest, parse_timestamp, source_bytes};
+use divinate::{collect, hex_digest, parse_timestamp, source_bytes};
 
 fn linked() -> (
-    evidence_spike::model::Corpus,
-    evidence_spike::acquisition::AcquisitionTranscript,
+    divinate::model::Corpus,
+    divinate::acquisition::AcquisitionTranscript,
 ) {
     let mut corpus = collect(Path::new("fixtures/collection.json")).unwrap();
     corpus.observations.retain(|observation| {
@@ -76,7 +75,7 @@ fn linked() -> (
         collector: Producer {
             name: "github-rest-api".into(),
             version: "2022-11-28".into(),
-            collector: "evidence-spike/github-branch-protection".into(),
+            collector: "divinate/github-branch-protection".into(),
         },
         endpoint: "GET /repos/cyberwitchery/example/branches/main/protection".into(),
         subject: observation.subject.clone(),
@@ -183,7 +182,7 @@ fn broken_and_tampered_transcript_links_are_detected() {
     );
 }
 
-fn link_error(corpus: &mut evidence_spike::model::Corpus, contents: TranscriptContents) -> String {
+fn link_error(corpus: &mut divinate::model::Corpus, contents: TranscriptContents) -> String {
     let transcript = seal_transcript(contents).unwrap();
     corpus
         .collections

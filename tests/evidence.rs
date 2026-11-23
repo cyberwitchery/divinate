@@ -1,23 +1,22 @@
 use std::fs;
 use std::path::Path;
 
-use divinate as evidence_spike;
-use evidence_spike::assertions::{
+use divinate::assertions::{
     evaluate_adequate_security_review, evaluate_all, evaluate_configured_independent_review,
     evaluate_every_main_change_reviewed, evaluate_release_reviews, evaluate_supply_chain,
     EvaluationTarget, Outcome,
 };
-use evidence_spike::coverage::{assess, CoverageOutcome, CoverageRequirement, RunDisposition};
-use evidence_spike::model::{
+use divinate::coverage::{assess, CoverageOutcome, CoverageRequirement, RunDisposition};
+use divinate::model::{
     CollectionLimitation, CollectionLimitationKind, CollectionOutcome, EvidenceClass,
     ObservationKind, Proposition, TimeRange,
 };
-use evidence_spike::{collect, hex_digest, parse_timestamp, source_bytes};
+use divinate::{collect, hex_digest, parse_timestamp, source_bytes};
 use serde_json::json;
 
 const FIXTURES: &str = "fixtures";
 
-fn corpus() -> evidence_spike::model::Corpus {
+fn corpus() -> divinate::model::Corpus {
     collect(Path::new(FIXTURES).join("collection.json").as_path()).unwrap()
 }
 
@@ -569,7 +568,7 @@ fn complete_empty_reviews_are_a_concrete_counterexample() {
 fn overlapping_review_records(
     earlier_record: (&str, &serde_json::Value, bool),
     later_record: (&str, &serde_json::Value, bool),
-) -> evidence_spike::model::Corpus {
+) -> divinate::model::Corpus {
     let mut earlier = corpus();
     let mut run = earlier
         .collections
@@ -596,13 +595,13 @@ fn overlapping_review_records(
         observation.data["pull_requests"][0]["approvals"] = approvals.clone();
         observation.data["pull_requests"][0]["enumeration_complete"] = json!(complete);
     }
-    let later = evidence_spike::model::Corpus {
+    let later = divinate::model::Corpus {
         collections: vec![run],
         observations: vec![later],
         schema_version: earlier.schema_version.clone(),
         sources: vec![],
     };
-    evidence_spike::workflow::merge(&earlier, &later).unwrap()
+    divinate::workflow::merge(&earlier, &later).unwrap()
 }
 
 #[test]

@@ -1,13 +1,12 @@
 use std::collections::BTreeMap;
 
-use divinate as evidence_spike;
-use evidence_spike::acquisition::{
+use divinate::acquisition::{
     assess, seal_transcript, AcquisitionTermination, ContractInvalidation, ContractRegistry,
     ContractStatus, EnumerationStatus, HttpExchange, HttpRequest, HttpResponse, IntegrityStatus,
     TranscriptContents, GITHUB_COMMITS_CONTRACT,
 };
-use evidence_spike::hex_digest;
-use evidence_spike::model::{Proposition, Subject, TimeRange};
+use divinate::hex_digest;
+use divinate::model::{Proposition, Subject, TimeRange};
 
 fn response(url: &str, body: &str, next: Option<&str>) -> HttpExchange {
     let headers = next.map_or_else(BTreeMap::new, |next| {
