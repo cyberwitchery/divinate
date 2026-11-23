@@ -58,7 +58,7 @@
         "source":{
           "type":"object","additionalProperties":false,"required":["content","sha256"],
           "properties": {
-            "content":{"type":"string","description":"the retained bytes as utf-8: the command's stdout, or the canonical acquisition transcript for a remote plan"},
+            "content":{"type":"string","description":"the retained bytes as utf-8: the command's stdout; for a remote plan with resource repository_mutations, pull_request_reviews or build_validation_history, the canonical acquisition transcript; for any other remote resource, the body of one 200 response, with a call for each such response after any leading github repository lookup"},
             "sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
           }
         },
@@ -69,7 +69,7 @@
       "type":"object","additionalProperties":false,"required":["evaluator","corpus","target","evaluated_at","coverage"],
       "properties": {
         "evaluator":{"type":"string","description":"one of the evaluators the pack declared in describe"},
-        "corpus":{"$ref":"evidence-corpus.schema.json","description":"the observations with the evaluator's declared claim keys, the collection runs for its declared propositions or behind those observations, and the sources the observations cite"},
+        "corpus":{"$ref":"evidence-corpus.schema.json","description":"the observations with the evaluator's declared claim keys or from a collection run for one of its declared propositions, the collection runs for its declared propositions or behind those observations, and the sources the observations cite"},
         "target":{
           "type":"object","additionalProperties":false,"required":["repository","branch","release","from","until","mirror_of"],
           "properties": {
