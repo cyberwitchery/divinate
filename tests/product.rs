@@ -1,8 +1,7 @@
 use std::path::Path;
 
-use divinate as evidence_spike;
-use evidence_spike::assertions::{AssertionType, DerivedAssertion, Outcome};
-use evidence_spike::{load_corpus, provenance, read_json, workflow};
+use divinate::assertions::{AssertionType, DerivedAssertion, Outcome};
+use divinate::{load_corpus, provenance, read_json, workflow};
 
 const STATE: &str = "dossiers/sbom-diff/repeated/.evidence";
 

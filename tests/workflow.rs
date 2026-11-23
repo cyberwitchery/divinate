@@ -3,18 +3,17 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
-use divinate as evidence_spike;
-use evidence_spike::acquisition::{
+use divinate::acquisition::{
     seal_transcript, AcquisitionTermination, HttpExchange, HttpRequest, HttpResponse,
     TranscriptContents, GITHUB_COMMITS_CONTRACT,
 };
-use evidence_spike::assertions::{self, AssertionType, EvaluationTarget, Outcome};
-use evidence_spike::execution::{self, ExecutionRequest};
-use evidence_spike::model::{Proposition, Subject, TimeRange};
-use evidence_spike::views;
-use evidence_spike::{collect, hex_digest, parse_timestamp, workflow};
+use divinate::assertions::{self, AssertionType, EvaluationTarget, Outcome};
+use divinate::execution::{self, ExecutionRequest};
+use divinate::model::{Proposition, Subject, TimeRange};
+use divinate::views;
+use divinate::{collect, hex_digest, parse_timestamp, workflow};
 
-fn corpus() -> evidence_spike::model::Corpus {
+fn corpus() -> divinate::model::Corpus {
     collect(Path::new("fixtures/collection.json")).unwrap()
 }
 
@@ -46,7 +45,7 @@ fn target() -> EvaluationTarget {
     }
 }
 
-fn transcript() -> evidence_spike::acquisition::AcquisitionTranscript {
+fn transcript() -> divinate::acquisition::AcquisitionTranscript {
     let body = "[]";
     let request = HttpRequest {
         method: "GET".into(),
@@ -83,7 +82,7 @@ fn transcript() -> evidence_spike::acquisition::AcquisitionTranscript {
 }
 
 fn temp_state(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("evidence-spike-{name}-{}", std::process::id()))
+    std::env::temp_dir().join(format!("divinate-{name}-{}", std::process::id()))
 }
 
 #[test]
@@ -128,10 +127,10 @@ fn snapshot(root: &Path) -> Vec<(PathBuf, Option<String>)> {
 fn failed_commit_leaves_the_state_directory_untouched() {
     let mut broken = corpus();
     broken.collections[0].acquisition_transcript_ids = vec!["acq_missing".into()];
-    let empty = evidence_spike::model::Corpus {
+    let empty = divinate::model::Corpus {
         collections: vec![],
         observations: vec![],
-        schema_version: evidence_spike::SCHEMA_VERSION.into(),
+        schema_version: divinate::SCHEMA_VERSION.into(),
         sources: vec![],
     };
     for seeded in [false, true] {
@@ -208,7 +207,7 @@ fn a_stored_acquisition_differing_from_the_committed_transcript_is_refused_witho
         .path()
         .join("acquisitions")
         .join(format!("{}.json", transcript.id));
-    evidence_spike::write_json(&rewritten, &stored).unwrap();
+    divinate::write_json(&rewritten, &stored).unwrap();
     let before = snapshot(state.path());
     let error = workflow::accumulate(state.path(), &corpus(), std::slice::from_ref(&transcript))
         .unwrap_err();

@@ -1,9 +1,8 @@
 use std::path::Path;
 
-use divinate as evidence_spike;
-use evidence_spike::assertions::{self, AssertionType, EvaluationTarget, Outcome};
-use evidence_spike::dossier::{self, Dossier};
-use evidence_spike::{collect, parse_timestamp, source_bytes};
+use divinate::assertions::{self, AssertionType, EvaluationTarget, Outcome};
+use divinate::dossier::{self, Dossier};
+use divinate::{collect, parse_timestamp, source_bytes};
 
 fn target() -> EvaluationTarget {
     EvaluationTarget {
@@ -33,7 +32,7 @@ fn latest_capture() -> time::OffsetDateTime {
         .unwrap()
 }
 
-fn dossier() -> (evidence_spike::model::Corpus, Dossier) {
+fn dossier() -> (divinate::model::Corpus, Dossier) {
     let corpus = collect(Path::new("fixtures/collection.json")).unwrap();
     let at = latest_capture();
     let assertions = assertions::evaluate_all(&corpus, &target(), at).unwrap();
@@ -151,7 +150,7 @@ fn current_and_historical_configuration_are_both_in_the_historical_context() {
             .observations
             .iter()
             .find(|item| {
-                item.kind == evidence_spike::model::ObservationKind::ConfigurationSnapshot
+                item.kind == divinate::model::ObservationKind::ConfigurationSnapshot
                     && item.observed_at == observed_at
             })
             .unwrap()

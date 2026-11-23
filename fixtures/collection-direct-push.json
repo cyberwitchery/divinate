@@ -2,7 +2,7 @@
   "collection_runs": [
     {
       "id": "run-reviews-complete",
-      "collector": {"name":"github-review-collector","version":"0.1.0","collector":"evidence-spike/github-pull-request-reviews"},
+      "collector": {"name":"github-review-collector","version":"0.1.0","collector":"divinate/github-pull-request-reviews"},
       "endpoint": "GET /repos/cyberwitchery/example/pulls + reviews",
       "subject": {"kind":"repository","id":"github:cyberwitchery/example"},
       "requested_scope": {"proposition":"pull_request_reviews","branch":"main","interval":{"from":"2026-09-01T00:00:00Z","until":"2026-09-05T00:00:00Z"}},
@@ -13,7 +13,7 @@
     },
     {
       "id": "run-mutations-complete",
-      "collector": {"name":"github-audit-log-collector","version":"0.1.0","collector":"evidence-spike/github-repository-mutations"},
+      "collector": {"name":"github-audit-log-collector","version":"0.1.0","collector":"divinate/github-repository-mutations"},
       "endpoint": "GET /orgs/cyberwitchery/audit-log",
       "subject": {"kind":"repository","id":"github:cyberwitchery/example"},
       "requested_scope": {"proposition":"repository_mutations","branch":"main","interval":{"from":"2026-09-01T00:00:00Z","until":"2026-09-05T00:00:00Z"}},
@@ -24,7 +24,7 @@
     }
   ],
   "sources": [
-    {"adapter":"github-pull-request-reviews","collection_run":"run-reviews-complete","path":"github-pull-request-reviews.json","observed_at":"2026-09-05T00:06:00Z","producer":{"name":"github-review-collector","version":"0.1.0","collector":"evidence-spike/github-pull-request-reviews"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
-    {"adapter":"github-repository-mutations","collection_run":"run-mutations-complete","path":"github-repository-mutations-direct-push.json","observed_at":"2026-09-05T00:06:30Z","producer":{"name":"github-audit-log-collector","version":"0.1.0","collector":"evidence-spike/github-repository-mutations"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main"}}
+    {"adapter":"github-pull-request-reviews","collection_run":"run-reviews-complete","path":"github-pull-request-reviews.json","observed_at":"2026-09-05T00:06:00Z","producer":{"name":"github-review-collector","version":"0.1.0","collector":"divinate/github-pull-request-reviews"},"subject":{"kind":"release","id":"github:cyberwitchery/example:v1.4","repository":"github:cyberwitchery/example","release":"v1.4","revision":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+    {"adapter":"github-repository-mutations","collection_run":"run-mutations-complete","path":"github-repository-mutations-direct-push.json","observed_at":"2026-09-05T00:06:30Z","producer":{"name":"github-audit-log-collector","version":"0.1.0","collector":"divinate/github-repository-mutations"},"subject":{"kind":"repository","id":"github:cyberwitchery/example","branch":"main"}}
   ]
 }

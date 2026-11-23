@@ -2,9 +2,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::process::Command;
 
-use divinate as evidence_spike;
-use evidence_spike::execution::{self, ExecutionRequest, NamedPath, RetainedBytes};
-use evidence_spike::{hex_digest, workflow};
+use divinate::execution::{self, ExecutionRequest, NamedPath, RetainedBytes};
+use divinate::{hex_digest, workflow};
 
 fn request(directory: &std::path::Path) -> ExecutionRequest {
     let input = directory.join("input");
