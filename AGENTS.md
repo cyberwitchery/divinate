@@ -30,25 +30,27 @@ guidelines for ai agents working on this codebase.
 
 this is the part that is easy to break without noticing.
 
-- never widen what a claim asserts to make a test pass. `insufficient_evidence` with a named gap is a correct answer.
-- absence of returned records is not absence of the fact. a universal or absence claim needs a collection run proving complete enumeration of the required population.
-- authority is scoped to a proposition, subject, and interval. there is no global source ranking.
-- an observation is unavailable until every transcript justifying it was captured. a declared `observed_at` never makes evidence available before its own provenance.
-- a pack supplies interpretation, never evidence. core computes identity, executes commands, recomputes coverage, and writes state.
+- the record holds no verdicts. a statement is a recorded value or a gap with its reason. kept and broken belong to a process check, which is not stored.
+- no absence claim without a complete read. a listing that did not complete is a gap, and nothing is concluded from what it did not return.
+- what is partly known is recorded with a note that says what is missing. a check that finds nothing in a partial reading answers cannot tell.
+- derivation is a pure function of the transcripts. it makes no requests and reads no clock, so `verify` can repeat it offline.
+- a change to what is derived from the same transcripts needs a new `DERIVATION` in `src/record.rs`.
+- an entity is identified by the source's own id, never by its name.
+- every source produces the same shapes. build scopes with `source/build.rs` and work items and events with `source/work.rs`.
 
 ## security considerations
 
 this is a security tool. when modifying:
 
-- never execute untrusted code from analyzed projects
-- validate all external tool output before parsing
-- do not retain credentials: authorization headers, cookies, and credential-like argv and environment names are refused, not redacted
-- stdout and stderr are retained byte-exact and unredacted, so never route a secret-printing tool through `run`
+- core makes every request. a source says what to read and what the responses mean.
+- do not retain credentials. request headers are never kept, and a response that repeats a credential is refused.
+- only follow links on the source's own origin.
+- build a url only from values that were checked, never from a response as it came.
 
 ## testing
 
 - unit tests go in the same file as the code
-- integration tests live in `tests/` and use `fixtures/`
+- integration tests live in `tests/` and read canned responses through `tests/common`
 - test both success and error cases
 - assert on semantics, not on rendered markdown
 - never pin a fixed future timestamp in a test; derive it from the evidence or the clock

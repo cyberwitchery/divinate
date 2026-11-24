@@ -9,22 +9,25 @@ before submitting a change, run:
 scripts/ci.sh
 ```
 
-## evidence rules
+## rules of the record
 
-- acquisitions, executions, pack invocations, and blobs are immutable. conflicting
-  content under an existing id is an error.
-- unsupported claims identify the missing population and remain valid assertion
-  outcomes.
-- configured intent, observed operation, and observed state are separate evidence
-  classes.
-- format changes include the corresponding files under `schema/` and must validate
-  against the example corpus.
+- a statement is a recorded value or a gap with its reason. the record holds no
+  verdicts.
+- nothing is concluded from what a reading did not return. a listing that did
+  not complete is a gap.
+- derivation is a pure function of the retained transcripts, so `verify` can
+  repeat it offline. a change to what the same transcripts say needs a new
+  `DERIVATION` in `src/record.rs`.
+- a new source implements `Source` and builds its entities and statements with
+  the shared builders under `src/source/`, so every source produces the same
+  shapes.
 
+[DESIGN.md](DESIGN.md) explains the model and the reasons behind these rules.
 
 ## documentation
 
-user documentation starts from the question a reader needs answered, then
-explains the mechanism. when a change adds, removes, or changes a claim, update
-[questions divinate answers](docs/questions.md): the question in plain words,
-the sources it needs, what each result means, and what it never establishes.
-keep the [agent skill](skills/divinate/SKILL.md) consistent with it.
+when a change adds or changes what is read, what a statement says, or what a
+process definition can ask, update the pages under [docs/](docs/) and
+[DESIGN.md](DESIGN.md) in the same change, and keep the
+[agent skill](skills/divinate/SKILL.md) consistent with them. show output from
+a real run.

@@ -1,172 +1,105 @@
-# command reference
+# commands
 
-commands use `.evidence` by default and read project intent from
-`divinate.yaml` in the repository root. pass `--state <path>` to select another
-state directory and `--repository-path <checkout>` where supported. timestamps
-use rfc 3339.
+divinate has five commands. `collect` is the only one that talks to a
+platform. the other four work on what `collect` stored, so they run offline.
 
-## normal commands
+all of them use the directory `evidence/` in the current directory. pass
+`--state <path>` to use another one.
 
-### `divinate init`
-
-```text
-divinate init [--branch <branch>] [--repository-path <checkout>]
-  [--state <path>] [--json]
-```
-
-creates a minimal `divinate.yaml` and initializes local evidence state.
-repository identity comes from the normalized Git `origin`; branch defaults to
-the current symbolic branch. GitHub and Azure DevOps origins are supported. an
-existing YAML file is validated, not replaced.
-
-### `divinate collect`
+## `divinate collect`
 
 ```text
-divinate collect [--release <tag>] [--base-release <tag>]
-  [--from <timestamp>] [--until <timestamp>] [--at <timestamp>]
-  [--repository-path <checkout>] [--force] [--state <path>] [--json]
+divinate collect <scope> [--from <time>] [--until <time>]
 ```
 
-strictly validates `divinate.yaml`, creates `.evidence/` when necessary, and
-runs every declared source in deterministic source-id order. required source
-failures abort before the prepared increment is persisted. optional source
-failures remain visible and their pack evaluators are skipped for that cycle.
-valid evidence is merged into state, current assertions are evaluated, and the
-current dossier is written.
+reads a repository or an organisation and stores the result as a new
+collection. `<scope>` is something like `github:acme/shop`, and
+[sources](sources.md) lists what else you can write there.
 
-when a source requests release context, the target release defaults to the only
-tag at `HEAD`. the base defaults to the unique nearest ancestor, preferring
-releases represented in retained state. explicit release options override this
-shared context for all relevant sources; they do not select one source.
+`--from` and `--until` set the period for tickets, pull requests, findings,
+and branch updates. times look like `2026-01-01T00:00:00Z`. without them you
+get the last 90 days. when you collect an organisation, only settings are
+read and the period doesn’t matter.
 
-a release evaluation starts at the base release commit time. a
-repository-scoped evaluation starts at the unique root commit; histories with
-multiple roots require `--from`. every collection re-evaluates that whole
-interval over all retained evidence, so a later evaluation never covers only
-the time since the previous one. `until` defaults to collection start, while
-automatic evaluation occurs after source executions complete. divinate rejects
-empty or ambiguous intervals. it also rejects an `--until` later than the
-collection start. `review` pairs claims by type and subject, not by the
-interval end, which advances with every collection.
+when it’s done it prints how many rows it recorded, how many of them are
+gaps, and the id of the collection:
 
-normal output contains source results, claim counts, and the dossier path. it
-omits forensic identifiers. `--json` prints the product summary as JSON.
+```console
+$ divinate collect github:cyberwitchery/divinate
+collected github:cyberwitchery/divinate: 179 records, 0 gaps
+col_6005c5db32e5a3a13363
+```
 
-### `divinate status`
+something divinate can’t read becomes a gap in the collection, and the command
+still succeeds. it only fails when it doesn’t understand the scope or can’t
+find a token.
+
+## `divinate show`
 
 ```text
-divinate status [--repository-path <checkout>] [--state <path>] [--json]
+divinate show [<collection>]
 ```
 
-validates the project configuration and summarizes saved repository identity,
-collection and evaluation times, claim outcomes, evidence producers, unresolved
-gaps, and changes from `previous` to `current`. configured sources are reported
-as current, stale, incomplete, failed, or never collected. sources removed from
-YAML remain visible as historical. status does not collect or reevaluate.
+prints one collection: a block for the repository and one for each branch,
+with a row per thing divinate read. without an argument you get the latest
+collection. rows that changed since the collection before are marked `▣`.
+[reading the record](record.md) explains the rows.
 
-### `divinate review`
+## `divinate ledger`
 
 ```text
-divinate review [--since <label>] [--current <label>]
-  [--output <label>] [--state <path>] [--json]
+divinate ledger [--scope <scope>] [--last <n>]
 ```
 
-without labels, compares the explicit `previous` and `current` snapshots managed
-by normal collection. if no predecessor exists, it requires `--since`. writes
-`.evidence/views/<label>.json` and `.md`.
+prints several collections of the same repository next to each other, one
+column per collection and oldest first, so you can see when a setting changed.
+it shows the last eight collections of the repository you collected most
+recently. `--last` changes how many, and `--scope` picks another repository.
 
-## pack inspection
+a repository that was renamed keeps its history, since divinate goes by the
+platform’s id for it.
+
+## `divinate check`
 
 ```text
-divinate packs [--repository-path <checkout>]
-divinate pack [--repository-path <checkout>] <pack-id>
+divinate check <definition> [--collection <id>] [--json]
+divinate check <definition> --last <n> [--scope <scope>] [--json]
+divinate check <definition> --all [--json]
 ```
 
-reads pack declarations from `divinate.yaml`, executes `describe`, and verifies
-that each executable reports the configured pack identity and protocol version.
-these commands do not mutate configuration.
+checks the rules in a [process definition](processes.md) against a collection.
 
-## advanced collection and evaluation
+| option | what you get |
+|---|---|
+| none | the latest collection in full: a result per item and step, a count per step, and the reason for everything that isn’t `kept` |
+| `--collection` | the same for the collection with this id |
+| `--last` | a summary for each of the last collections of one repository, oldest first |
+| `--all` | a summary for the latest collection of every repository in `evidence/` |
+| `--json` | the same results as json |
 
-### `divinate collect pack`
+`check` doesn’t store anything, so you can run it as often as you like and
+with as many definitions as you like.
+
+## `divinate verify`
 
 ```text
-divinate collect pack [--repository-path <checkout>] [--state <path>]
-  <pack-id> <collector> [--context <json-file>]
+divinate verify
 ```
 
-invokes one collector from a pack declared in YAML. core validates its plan,
-executes its local command or supported provider-aware acquisition, normalizes
-the result, and stores the observation. omitted context is JSON `null`; remote
-collectors therefore normally run through configured `collect`, which supplies
-verified repository context. this command does not evaluate automatically.
+checks that `evidence/` is complete and unchanged. run it after you copied the
+directory somewhere, before you rely on an old one, or when someone hands you
+theirs.
 
-### `divinate collect manifest`
-
-```text
-divinate collect manifest [--state <path>] <manifest.json>
-  [--acquisition <transcript.json>]...
+```console
+$ divinate verify
+verified 1 collections and 215 transcripts
 ```
 
-imports sources through built-in adapters. named acquisition and execution
-links must already resolve. this command does not evaluate automatically.
+divinate stores every response it got from the platform. `verify` checks each
+of them against its checksum, then works out every collection again from the
+stored responses and compares the result with what’s in the file. it stops at
+the first difference and tells you which file it is.
 
-### `divinate evaluate`
-
-```text
-divinate evaluate --from <timestamp> --until <timestamp>
-  [--label <name>] [--contracts <registry.json>]
-  [--repository <identity>] [--branch <branch>] [--release <release>]
-  [--at <timestamp>] [--repository-path <checkout>] [--state <path>]
-```
-
-verifies provenance, selects evidence available at `at`, derives core and pack
-assertions, and writes assertion and dossier files. repository and branch
-default to YAML. omit `--release` for repository-scoped analysis; release-only
-assertions are then not evaluated. an alternate contracts registry supports
-historical reproduction.
-
-### `divinate run`
-
-```text
-divinate run --tool <name> [--tool-version <version>]
-  [--input <name>=<path>]... [--output <name>=<path>]...
-  [--environment <name>=<value>]...
-  [--working-directory <path>] [--stdout <path>] [--state <path>]
-  <executable> [-- <argument>...]
-```
-
-runs a local command with an empty environment plus explicitly supplied values.
-named inputs and outputs and exact streams are retained. credential-like
-arguments and environment names are refused.
-
-## forensic commands
-
-```text
-divinate verify [--state <path>]
-divinate provenance [--evaluation <label>] [--state <path>] <assertion-id>
-divinate extract [--state <path>] <execution-id>
-  [--stream stdout|stderr] --output <path>
-```
-
-`verify` checks retained provenance offline. a corpus is optional: projectless
-`run` state verifies its execution transcripts and blobs directly, while state
-with a corpus still receives full graph verification. `provenance` prints one
-assertion's evidence graph as JSON. `extract` verifies an execution and writes
-its exact retained stream.
-
-## migration from imperative setup
-
-`source add`, `source configure`, `source enable`, `pack add`, and `pack
-configure` have been removed. declare packs and sources in `divinate.yaml`
-instead. historical evidence formats remain verifiable.
-
-the former scanner-specific `collect release` compatibility command has also
-been removed. declare `release-sbom` in YAML and use `collect --release` for an
-explicit release context.
-
-## exit behavior
-
-successful commands exit zero. failures print `error: <message>` to stderr and
-exit one. a recorded tool's non-zero exit remains part of its transcript; the
-workflow decides whether that result is acceptable.
+a collection written by a different version of divinate may have been worked
+out differently. `verify` still checks its files and lists it as `derived by
+other rules`.

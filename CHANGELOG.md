@@ -2,141 +2,20 @@
 
 ## unreleased
 
-- publish a schema for every pack protocol message: `pack-protocol.schema.json`
-  types each operation's `input`, and `pack-response.schema.json` describes the
-  response and each operation's result
-- count branch configuration only through a collection run with
-  `branch_configuration` authority. a branch-protection snapshot or branch-policy
-  history without one, such as a manifest entry with no `collection_run`, no
-  longer supports or contradicts `configured_independent_review`, the github
-  pack's required status checks, or `release_review_operation`
-- remove `divinate export dd`, the `DdResponse` view and the `dd-response`
-  schema. the dossier is the answer document to hand over, and a named
-  evaluation writes its own, `.evidence/dossiers/<label>.md`
-- remove the core `configured_review_requirement` claim, which tested one fixed
-  two-approval policy and named `main` whatever the branch; approval thresholds
-  belong in packs, and `configured_independent_review` answers whether approval
-  is required
-- record the pull request, author, merge time, and each qualifying approver and
-  approval time behind every `every_main_change_reviewed` judgement, as `review`
-  on its evidence, and show them in the dossier; packs cannot supply them
-- document that configured-intent answers are point-in-time and never cover a
-  period
-- describe divinate by the compliance questions it answers, for whoever has to
-  answer them
-- document every question divinate answers, what each result means, and what
-  it never establishes, in `docs/questions.md`, and how to read and hand over an
-  answer in `docs/answers.md`
-- add an agent skill, `skills/divinate`, for setting up divinate, collecting
-  evidence, and reporting answers without overstating them
-- give every visible cli option a help line
-- add configuration-driven collection with automatic current evaluation
-- add saved-state status and parameterless review
-- keep explicit collection, historical evaluation, and provenance commands as
-  advanced operations
-- make `divinate.yaml` the strict, reviewable project configuration and keep
-  `.evidence/` for observed and derived state
-- let collection initialize local state from committed configuration without
-  imperative source or pack setup
-- retain content-addressed configuration snapshots and collection-cycle links
-- run release sbom evidence through the same configured-source interface as
-  external collectors
-- dogfood committed configuration with a repository-scoped Cargo.lock source
-- collect authenticated GitHub branch protection, check runs, and commit
-  statuses through credential-safe core acquisition
-- verify projectless execution state without inventing a corpus or repository
-- support canonical Azure DevOps repository identity and current branch-policy
-  evidence through credential-safe core acquisition
-- keep typed branch-policy evaluators scoped to their observation schema
-- render shared governance claims without duplicate provider-specific rows or gaps
-- remove the scanner-specific `collect release` compatibility command
-- allow repository-scoped evaluation without inventing a release
-- run each pack in its own working directory, removed when the run ends
-- never credit a collection run with coverage at or after its own start; remote
-  acquisitions observe only up to their capture time
-- reject a `collect --until` later than the collection time
-- parse git origins with `gix-url`, accepting every url form git does, including
-  the empty-port form `insteadOf` rewrites produce
-- declare a mirror with `repository.mirror_of`, withdrawing its authority for
-  integration, review, branch configuration, and ci propositions, whether the
-  evidence was collected or imported
-- reject pack support or contradictions drawn from a failed, denied, or
-  unattempted collection run, or from a declared mirror
-- stop the github pack from contradicting required status checks it never observed
-- name the actual reason when branch-protection evidence is not authoritative
-- follow github history pagination onto `/repositories/{id}` links, proven
-  equivalent by a retained repository lookup
-- re-evaluate the whole interval on every collection instead of only the time
-  since the previous evaluation, and pair review claims without the interval end
-- report the transport error when a github or azure devops request fails before
-  a response
-- verify that a stored acquisition transcript holds every request its collector
-  plans, unfiltered: a trimmed or filtered transcript, or one relabelled as
-  truncated, no longer counts as complete or authoritative coverage
-- keep a github or azure devops error response whose body is not json, such as
-  an empty 500 or an html sign-in page, as its classified http failure instead
-  of aborting collection
-- derive one repository identity from every origin form: a `*.visualstudio.com`
-  origin keeps its organization's case as the `dev.azure.com` and ssh forms do,
-  github's `ssh.github.com` ssh origin is accepted, and a github origin whose
-  owner or repository name github would not allow yields no identity
-- reject an acquisition transcript linked to a collection run about another kind
-  of subject or other qualifiers, such as another branch, or recorded for a
-  branch other than the one the run requested
-- read github and azure devops history by each response's exact api route, so an
-  owner, repository, organization, or project named like a route segment, such
-  as `activity`, `pulls`, or `PullRequests`, no longer fails normalization or
-  loses a merge's pull request
-- refuse github check-run, commit-status, and commit pagination onto another
-  repository or revision, following only `/repositories/{id}` links that a
-  retained repository lookup proves equivalent
-- count the commit-status pages github links through
-  `/repositories/{id}/status/{sha}`, so a build-validation history whose
-  statuses for a revision span more than one page no longer fails assessment
-- verify a long github or azure devops history in time linear in its exchanges
-  instead of quadratic
-- leave the repository lookup that opens a github repository-mutation,
-  pull-request-review, or build-validation history out of the pages and items
-  its collection run and dossier report, as check runs, commit statuses, and
-  commits already do
-- report a wrong or expired azure devops credential as permission denied, with
-  azure's own `TF400813` message, instead of as a failed collection citing a
-  refused redirect to azure's sign-in page
-- report a github secondary rate limit as rate limited instead of as
-  permission denied or a failed collection
-- decide `every_main_change_reviewed` the same in every observation order when
-  several retained records cover one pull request: an incomplete review history
-  no longer overrides a complete one, and records that reach different
-  conclusions leave the claim with insufficient evidence instead of the
-  last-sorted record deciding
-- refuse credential-like `run --environment` names, and count api key, private
-  key, and cookie names as credential-like in arguments and configuration keys
-- stop refusing a command argument that is exactly a declared input or output
-  path, so collection works in a checkout whose path contains a credential-like
-  word such as `token`
-- name a refused credential-like argument by its position and, for a
-  `--name=value` option, its name, instead of printing the argument with its
-  value
-- count `AZURE_DEVOPS_EXT_PAT`, the azure devops credential divinate reads, as
-  credential-like
-- reject a collection run in `verify` whose recorded outcome or observed scope
-  is not what its acquisition transcript supports
-- keep a regressed claim whole in the technical-controls review instead of
-  cutting it at its first `: `
-- leave a release review count with insufficient evidence, not a
-  contradiction, when approvals without a usable submission time could make up
-  the shortfall
-- remove the hidden commands (`query`, `tools`, `source-bytes`, `assertions`,
-  `explain`, `collections`, `coverage`, `capture-github`,
-  `capture-branch-protection`, `acquisition-source`, `replay-acquisition`,
-  `compare-acquisitions`, `dossier`, `state-record`) and `init`'s conversion of
-  a legacy `.evidence/config.json`; dossiers no longer carry a `drill_down`
-  hint, and a pack assertion response that carries `id` or `derivation` is
-  refused
-- verify the whole evidence graph before `collect` writes any of an increment,
-  so a failed `collect manifest` no longer leaves transcripts or a new state
-  directory behind
-- check every evidence link in `provenance`
-- leave no pack invocations or blobs behind when `evaluate`, or the evaluation
-  that ends `collect`, refuses a pack assertion that its invocation does not
-  bind
+divinate was rebuilt before its first release. it now keeps a record and holds
+no verdicts.
+
+- read github, gitlab, and azure devops: organisations, groups, and projects
+  with their repositories and default branch settings, and single repositories
+  or projects with their tickets, changes, checks, and branch updates
+- read github code, dependency, and secret scanning findings
+- record every statement as a value or as a gap with its reason, and keep every
+  source response as a transcript addressed by its digest
+- `collect`, `show`, and `ledger` to add to the record and read it
+- `verify` to check the record offline: digests, and every statement derived
+  again from the transcripts
+- `check` to read a collection against a process definition: steps on work
+  items, rules on branches, summaries across collections and scopes, and json
+  output
+- remove claims and their five results, the dossier, the pack protocol, the
+  manifest import, and the release workflow

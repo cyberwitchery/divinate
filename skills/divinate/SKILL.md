@@ -1,226 +1,221 @@
 ---
 name: divinate
-description: Answer technical compliance, audit, and security-questionnaire questions about a git repository's controls with verifiable evidence, using the divinate CLI. Use when asked whether changes to a branch are reviewed or approved before merge, whether review or CI is required by branch protection or branch policy, whether CI passed, which dependencies a release changed or whether they passed policy, or when setting up, running, or reading divinate (divinate.yaml, .evidence/, dossiers, `divinate collect`). Covers GitHub and Azure DevOps repositories.
+description: Read how a team develops and releases software from GitHub, GitLab, or Azure DevOps into a dated, verifiable record, and check a written process against it, using the divinate CLI. Use when asked whether changes are reviewed or validated before merge, whether a branch requires review or checks, whether anyone pushed to a branch directly, whether tickets or scanner findings were handled in time, what changed in repository settings between two dates, or when setting up, running, or reading divinate (`divinate collect`, `divinate check`, the `evidence/` directory, process definitions).
 ---
 
-# answering compliance questions with divinate
+# checking a development process with divinate
 
-divinate answers narrow technical questions about a repository, such as "did
-every change to `main` get an approving review before it was merged?", from the
-provider's own records. every answer has one of five results, its reasons, and
-evidence that someone else can verify offline.
+divinate copies facts about a repository out of github, gitlab, or azure
+devops into a local directory: branch settings, tickets, pull requests,
+reviews, ci results, branch updates, and scanner alerts. you then write the
+user’s rule as a small yaml file, and `divinate check` says for every ticket
+or pull request whether the rule held.
 
-your job is to get the evidence collected, read the answers, and report them
-**exactly as strong as they are**. the people relying on your report may repeat
-it to an auditor.
+the user will often pass your answer on to someone else, such as an auditor
+or a customer. so the most important part of this job is to report what
+divinate found and nothing beyond it. the next section says how.
 
-## the reporting rules
+## how to report results
 
-these matter more than anything else in this skill.
+divinate gives every step one of five results. report each of them as what it
+is:
 
-1. **report the result divinate gave, never a stronger one.**
-   - `supported`: yes, for the stated subject and period only.
-   - `contradicted`: no. list every counterexample.
-   - `insufficient_evidence`: *could not be established*. it is not "yes", not
-     "no issues found", and not "probably fine". state the gap.
-   - `stale`: the evidence is too old. collect again before answering.
-   - `not_automatable`: the question needs a person. say so and name what they
-     need to judge.
-2. **never call anything "compliant".** divinate answers technical
-   sub-questions. whether those satisfy a framework or policy is the user's or
-   auditor's decision.
-3. **keep configured and operating apart.** "review is required by branch
-   protection" (configured) does not mean "every change was reviewed"
-   (operating), and the reverse does not hold either. report each from its own
-   answer.
-4. **always give the scope**: repository, branch, and for history questions the
-   period, with `until` excluded. an answer says nothing outside it.
-5. **carry the limitations.** every `supported` answer lists what it does not
-   establish. include them.
-6. **cite the answer id** (`asrt_…`) so the user can run `divinate provenance`.
+| result | what it means | what to tell the user |
+|---|---|---|
+| `kept` | the rule held | say so, with the repository and the period it was checked for |
+| `broken` | it didn’t happen, or happened too late | list every item with its reason |
+| `pending` | it can still happen | give the deadline |
+| `cannot tell` | divinate couldn’t read what it needed | say that this could not be established, what’s missing, and how to get it. don’t round it to “no problems found” |
+| `n/a` | the step doesn’t apply to this item | say why |
 
-never try to change a result. do not edit anything in `.evidence/`, do not
-make a required source optional or remove it, do not change the repository
-identity, and do not stretch or shrink the period to avoid a gap. if a gap can
-be closed legitimately, for example by adding a missing source or granting a
-permission, propose it to the user and explain why.
+some more things to keep in mind:
 
-## step 1: map the question
+- a row in `divinate show` that starts with `⬚` is something divinate
+  couldn’t read, and a `note:` line means the row is only part of the
+  picture. mention both when your answer relies on that row.
+- divinate checks the rule the user wrote. whether that rule satisfies iso
+  27001 or a customer’s contract is for the user or their auditor to decide,
+  so leave words like “compliant” to them.
+- “the branch requires one approval” is a setting at the time of the
+  collection. “every merged pull request was approved” is about what happened
+  in the period. they’re different questions with different rows, so report
+  them separately.
+- always name the repository, the time of the collection, and the period.
+- the definition is the user’s rule. if a check comes out `broken`, report
+  that. if you think the definition doesn’t say what the user meant, ask them
+  before you change a deadline, a label, or a step.
+- leave the files in `evidence/` alone. when something is missing, fix the
+  cause (usually the token) and collect again.
 
-compliance questions are broader than any single answer. split the user's
-question into the claims below, and say which part no claim covers.
+## step 1: find out what the user is asking
 
-| question | claim id | sources (collectors) | GitHub | Azure DevOps |
-|---|---|---|---|---|
-| is approval required before merging? | `configured_independent_review` | `branch-protection` / `branch-policy` | yes | yes |
-| did every change get an approving review before merge? | `every_main_change_reviewed` | `repository-mutations` and `pull-request-reviews` | yes | yes |
-| were reviews adequate or security-focused? | `adequate_human_security_review` | always `not_automatable` | — | — |
-| does the branch require named status checks? | `github_required_status_checks_configured` | `branch-protection` | yes | — |
-| did ci pass for the current commit? | `github_current_revision_checks_passed` | `check-runs` and `commit-statuses` | yes | — |
-| does the branch have blocking build validation? | `azure_devops_blocking_build_validation_configured` | `branch-policy` | — | yes |
-| does the branch have any blocking policy? | `azure_devops_blocking_branch_policy_configured` | `branch-policy` | — | yes |
-| which dependencies did this release change? | `dependency_change_visibility` | built-in `release-sbom` | any | any |
-| did this release's dependency changes pass policy? | `release_supply_chain_policy` | built-in `release-sbom` | any | any |
+| question | where the answer is |
+|---|---|
+| does the branch require review? how many approvals? | the `review policy` row, or a `branches` rule with `approvals` |
+| does the branch require ci checks? | the `required checks` row, or a rule with `checks` |
+| did anyone push to the branch directly? | a rule with `without: [push, force push]` |
+| was every pull request into the default branch approved by someone else before the merge? | steps on `kind: change`, `when: merged`, `into: default branch` |
+| were there as many approvers as the branch requires? | the same step with `at least: required`, or a number |
+| was the approval given after the last commit? | the same step with `after: commit` |
+| did every required check pass before the merge? | `event: check passed`, `of: required checks`, `before: merge` |
+| were tickets with a label answered or closed in time? | steps on `kind: ticket` with `label` and `within` |
+| was the fix for a ticket reviewed? | a step with `linked: change` |
+| were scanner alerts handled in time? | steps on `kind: finding` (github only) |
+| what changed in the settings since last time? | `divinate ledger`, rows marked `▣` |
 
-notes:
-
-- `every_main_change_reviewed` counts an approval only from someone other than
-  the pull request's author, recorded before the merge. it does not check the
-  required number of approvals, stale-review dismissal, or vote resets.
-- history questions are about a period. ask for it if the user did not give
-  one, for example the audit period or the last quarter.
-- configuration questions are answered from the settings at collection time.
-  divinate cannot read what the settings were in the past. settings read by
-  earlier collections are samples; never present them as proof that a setting
-  held across a period.
-- the `release-sbom` claims need a release context: release tags and a
-  CycloneDX sbom per release.
-- packs can add claims beyond this table. read the `claim` text of any unknown
-  `assertion_type`, and report it with the same rules.
+if a part of the question isn’t in this table, tell the user that divinate
+doesn’t cover it. whether a review was thorough, for example, is something a
+person has to judge.
 
 ## step 2: check the setup
 
 ```sh
-divinate --help                     # installed? if not: cargo install --path <divinate checkout>
-cat divinate.yaml                   # which sources exist?
-divinate status                     # validates config; shows sources and last collection
-gh auth status                      # GitHub credential, or GITHUB_TOKEN
-az account show                     # Azure DevOps credential, or AZURE_DEVOPS_EXT_PAT
+divinate --help        # installed? if not: cargo install --path <divinate checkout>
+gh auth status         # github, or GITHUB_TOKEN
+glab auth status       # gitlab, or GITLAB_TOKEN
+az account show        # azure devops, or AZURE_DEVOPS_EXT_PAT
 ```
 
-run these from the repository's checkout, or pass `--repository-path`.
-
-if `divinate.yaml` is missing, `divinate init` creates one from the git origin.
-add the sources the question needs. a GitHub example covering review and ci:
-
-```yaml
-repository:
-  identity: github:OWNER/NAME
-  branch: main
-
-packs:
-  cyberwitchery.github:
-    executable: divinate-pack-github
-
-sources:
-  branch-protection:
-    provider: {pack: cyberwitchery.github, collector: branch-protection}
-  branch-changes:
-    provider: {pack: cyberwitchery.github, collector: repository-mutations}
-  reviews:
-    provider: {pack: cyberwitchery.github, collector: pull-request-reviews}
-  check-runs:
-    provider: {pack: cyberwitchery.github, collector: check-runs}
-  commit-statuses:
-    provider: {pack: cyberwitchery.github, collector: commit-statuses}
-```
-
-for Azure DevOps, use `identity: azure-devops:ORG/PROJECT/REPO`, the pack
-`cyberwitchery.azure-devops` with `executable: divinate-pack-azure-devops`, and
-the collectors `branch-policy`, `repository-mutations`, and
-`pull-request-reviews`.
-
-`divinate.yaml` is meant to be committed and reviewed. tell the user what you
-added and why. never put a token, password, or other credential in it: divinate
-rejects credential-like keys and keeps an exact copy of the file.
+read access is enough. divinate never changes anything on the platform.
 
 ## step 3: collect
 
 ```sh
-divinate collect                                                     # everything since the first commit
-divinate collect --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z   # an audit period
+divinate collect github:OWNER/REPOSITORY
+divinate collect gitlab:GROUP/PROJECT --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
+divinate collect azure:ORGANISATION/PROJECT
 ```
 
-- times are rfc 3339. `--until` cannot be in the future.
-- GitHub keeps about one year of activity. a default period on an older
-  repository leaves the older part uncovered, so prefer the period the question
-  is actually about.
-- if a required source fails, the whole collection stops and **nothing is
-  saved**. read the error, fix the cause, and run it again.
-- the output lists each source and the count of each result. collection
-  replaces `current` answers; the previous ones become `previous`.
+- collect a single repository when the question is about tickets or pull
+  requests. `github:OWNER` alone only reads the branch settings of every
+  repository.
+- the period is the last 90 days unless you pass `--from` and `--until`. use
+  the period the user asked about. tickets opened before it aren’t read.
+- the command succeeds even when parts couldn’t be read. it prints the number
+  of gaps, and `divinate show` lists them.
+- a busy repository can take a few minutes. on gitlab you may see `rate
+  limited; waiting N seconds`, which is normal.
+- everything goes to `evidence/` in the current directory, or to `--state
+  <path>`. each run adds a collection.
 
-## step 4: read the answers
+## step 4: write the definition
 
-prefer the structured answers over the markdown views. this skill includes a
-reader that prints every answer with the fields the reporting rules need:
+ask the user for their written process first. if they don’t have one, propose
+a definition and let them confirm it, since it’s their rule that gets checked.
+
+```yaml
+process: change governance
+items:
+  kind: change
+  when: merged
+  into: default branch
+steps:
+  - name: reviewed
+    event: approval
+    by: someone else
+    before: merge
+  - name: validated
+    event: check passed
+    before: merge
+branches:
+  - name: review required
+    approvals: 1
+  - name: checks required
+    checks: 1
+  - name: no direct updates
+    without: [push, force push]
+```
+
+- `items.kind` is `ticket`, `change`, or `finding`. `label` narrows it down.
+  `when` is `opened` (the default) or `merged`. `into` keeps only pull
+  requests into one branch, given by name or as `default branch`.
+- a step needs a `name` and an `event`. the events are `comment`, `closed`,
+  `reopened`, `dismissed`, `approval`, `changes requested`, `merge`, `check
+  passed`, and `check failed`. a list means any one of them.
+- `by: someone else` excludes the author of the item.
+- `at least: 2` asks for two events by different people, and `at least:
+  required` for as many as the branch requires.
+- `after: commit` only counts events after the last commit.
+- `of: required checks` asks for one event per check the branch requires.
+- `within: 7d` (or `12h`) counts from when the item was opened.
+- `before: merge` says the event has to come before the merge.
+- `linked: change` looks at the pull requests that close a ticket.
+- a branch rule has exactly one of `approvals`, `checks`, and `without`.
+
+`docs/processes.md` in the divinate repository has the full reference.
+
+## step 5: check
 
 ```sh
-python3 <this skill>/scripts/answers.py .evidence
-python3 <this skill>/scripts/answers.py .evidence --claim every_main_change_reviewed
+divinate show                             # every row of the latest collection
+divinate check definition.yaml            # every item and branch, with reasons
+divinate check definition.yaml --all      # a summary per repository
+divinate check definition.yaml --last 8   # one repository over its last collections
+divinate check definition.yaml --json     # the same results as json
+divinate ledger                           # settings over time
 ```
 
-without it, read `.evidence/assertions/current.json` directly. each element is
-one answer:
+the full check prints a table with one line per item, a count per step, and
+under `not kept` the reason for every result other than `kept`. read the
+reasons, since they tell you which pull request or which missing permission
+is behind a result.
 
-| field | use |
-|---|---|
-| `assertion_type` | the claim id from the table above |
-| `claim` | the exact claim, with branch and period. quote it. |
-| `outcome` | the result |
-| `subject` | repository, branch, release, and `from`/`until` |
-| `support` / `contradictions` | evidence for it / counterexamples, each with a `reason` |
-| `missing` | gaps, each with a `requirement` and a `reason` |
-| `coverage` | whether each needed population was completely read, with `uncovered_intervals` |
-| `limitations` | what the claim does not establish even when supported |
-| `id` | the answer id for `divinate provenance` |
+## step 6: answer
 
-other views, all generated from the same json:
-
-- `divinate status` (add `--json`): result counts, source health, open gaps.
-- `.evidence/dossiers/current.md`: full reasoning for each answer.
-- `divinate review`: what changed since the previous collection.
-
-## step 5: write the response
-
-for each part of the user's question:
+for each part of the user’s question, give:
 
 ```text
-<question in plain words>
-result: <supported | contradicted | could not be established | stale | needs human judgement>
-claim: "<exact claim text>"  (<answer id>)
-scope: <repository>, branch <branch>, <from> to <until> (until excluded)
-<for contradicted>  counterexamples: <each one>
-<for insufficient>  gap: <each missing reason>; to close it: <legitimate next step>
-<for supported>     does not establish: <each limitation>
+<the question in plain words>
+result: <kept | broken | pending | could not be established | not applicable>
+checked: <the step or rule, in the definition's words>
+where: <repository>, collected <time>, period <from> to <until>
+<for broken>       items: <each one, with its reason>
+<for pending>      due: <each deadline>
+<for cannot tell>  missing: <the reason>, and what would fix it
+notes: <anything from the list below that affects this answer>
 ```
 
-then list the parts of the original question that no claim covers, and who
-should judge them.
+things that can affect an answer:
 
-## step 6: let the user hand it over
+- `by: someone else` compares accounts, so a person with two accounts counts
+  as two people.
+- deadlines count from when the item was opened, even if its label was added
+  later.
+- an approval that was taken back, or followed by a request for changes,
+  doesn’t count. an approval given before a later commit does count, unless
+  the step says `after: commit`.
+- `required` uses the branch settings from the first collection after the
+  merge. with a single collection, that means today’s settings.
+- without `into`, `when: merged` covers pull requests merged into any branch.
+
+finish with the parts of the question divinate doesn’t cover, if there are
+any.
+
+## step 7: handing the directory over
 
 ```sh
-divinate verify                         # offline recheck of every answer against its records
-divinate provenance <answer-id>         # the evidence behind one answer, as json
+divinate verify      # offline: checks that evidence/ is complete and unchanged
 ```
 
-`.evidence/` contains provider responses byte for byte, including pull request
-titles, descriptions, and review comments. do not commit, upload, or share it
-without the user's explicit agreement. it is copied as one directory; a partial
-copy breaks verification.
+`evidence/` contains what the platform returned: ticket and pull request
+texts, comments, account names (email addresses on azure devops), and scanner
+alerts. ask the user before you commit, upload, or share it, and always copy
+the whole directory.
 
-to keep a period's answers under their own name, so the next collection does
-not replace them:
+`verify` shows that the directory is intact. the directory isn’t signed, so
+if the user wants to give it to someone who has no reason to trust them,
+suggest that this person runs `divinate collect` themselves with read access.
 
-```sh
-divinate evaluate --label 2026-q3 --from 2026-07-01T00:00:00Z --until 2026-10-01T00:00:00Z
-```
+## when something goes wrong
 
-the period's dossier is `.evidence/dossiers/2026-q3.md`.
-
-## when something fails
-
-| symptom | cause and fix |
+| what you see | what to do |
 |---|---|
-| `divinate: command not found` or a pack executable not found | install with `cargo install --path <divinate checkout>`; packs must be on `PATH` |
-| repository identity mismatch | `divinate.yaml` names a different repository than the git origin. use the right checkout; do not edit the identity to get past the check |
-| permission denied, unauthenticated, rate limited | a credential problem, recorded as a gap. fix the credential (`gh auth login`, `az login`) and collect again |
-| `invalid peer certificate: UnknownIssuer` | the network intercepts TLS (a corporate or sandbox proxy). divinate trusts only its built-in public roots, so it cannot reach the provider from here. tell the user; collection must run from a network with direct access |
-| `cannot determine previous release` | pass `--release <tag> --base-release <tag>` |
-| review asks for `--since` | there is no previous collection yet. collect twice, or name the evaluations |
-| an answer is `insufficient_evidence` | read its `missing` and `coverage`; it is usually a correct answer, and the gap says what would close it |
-
-never run a command that prints secrets through `divinate run`: its output is
-stored byte for byte. local tools and packs get an empty environment, so pass
-non-secret values with `--environment name=value`.
+| `divinate: command not found` | `cargo install --path <divinate checkout>` |
+| `cannot read "…"; a scope is one of: …` | the scope is misspelled, or the platform isn’t supported |
+| `no credential found` | log in with `gh`, `glab`, or `az`, or set the variable |
+| rows with `gap: permission denied` or `gap: not authenticated` | the token can’t read them. collect with one that can, or report the gap |
+| `rate limited; waiting N seconds` | normal on gitlab. let it run |
+| a check says `cannot tell` | the reason names what’s missing |
+| a check finds nothing to check | the label doesn’t match exactly, or the items are outside the period |
+| `invalid peer certificate: UnknownIssuer` | a proxy on the network intercepts tls. collect from a network with direct access |
+| `verify` fails | a file in `evidence/` was changed or is missing. restore the directory from a copy |
