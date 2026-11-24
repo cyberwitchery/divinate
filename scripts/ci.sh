@@ -46,26 +46,6 @@ RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
 echo "==> package"
 CARGO_TARGET_DIR=target/package-check cargo package --allow-dirty
 
-echo "==> verify the shipped corpus"
-DIVINATE_DOGFOOD_TARGET=target/dogfood
-CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
-
-echo "==> dogfood configured collection"
-CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo build --quiet --bins
-export PATH="$PWD/$DIVINATE_DOGFOOD_TARGET/debug:$PATH"
-CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- collect
-CARGO_TARGET_DIR="$DIVINATE_DOGFOOD_TARGET" cargo run --quiet --bin divinate -- verify
-
-echo "==> schemas"
-if python3 -c "import jsonschema" >/dev/null 2>&1; then
-    captures="$(mktemp -d)"
-    DIVINATE_PACK_PROTOCOL_CAPTURE="$captures" cargo test --quiet --test pack pack_protocol_messages
-    python3 scripts/validate-schemas.py "$captures"
-    rm -rf "$captures"
-else
-    skip "schemas" "pip install jsonschema"
-fi
-
 echo "==> deny"
 if command -v cargo-deny >/dev/null 2>&1; then
     cargo deny check

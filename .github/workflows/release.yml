@@ -84,8 +84,6 @@ jobs:
           mkdir -p "${stage_dir}"
           cp "target/${{ matrix.target }}/release/divinate${{ matrix.bin_ext }}" "${stage_dir}/"
           cp README.md LICENSE "${stage_dir}/"
-          # ship the schemas needed to validate an evidence directory.
-          cp -R schema "${stage_dir}/"
           tar -czf "${dist_root}/${archive_base}.tar.gz" -C "${dist_root}" "${archive_base}"
 
       - name: attest packaged binaries
