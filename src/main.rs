@@ -4,11 +4,11 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use divinate::acquisition::{self, AcquisitionTranscript, ContractRegistry};
-use divinate::assertions::{self, DerivedAssertion};
+use divinate::assertions::{DerivedAssertion, Outcome};
 use divinate::error::{Error, Result};
 use divinate::execution::{self, ExecutionRequest, NamedPath};
 use divinate::model::{CollectionOutcome, Corpus, Observation};
-use divinate::{collect, load_corpus, parse_timestamp, read_json, write_json};
+use divinate::{collect, format_timestamp, load_corpus, parse_timestamp, read_json, write_json};
 
 #[derive(Parser)]
 #[command(about = "answer technical compliance questions with evidence anyone can verify")]
@@ -289,7 +289,8 @@ struct ProductCollectionReport {
     release: Option<String>,
     sources: Vec<SourceReport>,
     new_observations: usize,
-    outcomes: BTreeMap<String, usize>,
+    #[serde(serialize_with = "serialize_outcome_counts")]
+    outcomes: Vec<(Outcome, usize)>,
     dossier: String,
 }
 
@@ -299,7 +300,8 @@ struct StatusReport {
     branch: String,
     last_collected: Option<String>,
     last_evaluated: Option<String>,
-    outcomes: BTreeMap<String, usize>,
+    #[serde(serialize_with = "serialize_outcome_counts")]
+    outcomes: Vec<(Outcome, usize)>,
     evidence_sources: BTreeMap<String, usize>,
     configured_sources: Vec<ConfiguredSourceStatus>,
     degraded_collections: Vec<DegradedCollection>,
@@ -900,12 +902,6 @@ fn empty_corpus() -> Corpus {
     }
 }
 
-fn format_timestamp(value: time::OffsetDateTime) -> Result<String> {
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))
-}
-
 fn load_evaluation(state: &std::path::Path, label: &str) -> Result<Vec<DerivedAssertion>> {
     read_json(&state.join("assertions").join(format!("{label}.json")))
 }
@@ -952,30 +948,39 @@ fn promote_current_evaluation(state: &std::path::Path, next: &str) -> Result<()>
     Ok(())
 }
 
-fn outcome_counts(assertions: &[DerivedAssertion]) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::from([
-        ("contradicted".into(), 0),
-        ("insufficient evidence".into(), 0),
-        ("not automatable".into(), 0),
-        ("stale".into(), 0),
-        ("supported".into(), 0),
-    ]);
-    for assertion in assertions {
-        *counts
-            .entry(outcome_label(assertion.outcome).into())
-            .or_default() += 1;
-    }
-    counts
+/// claim outcomes in the order `collect` and `status` print them.
+const CLAIM_OUTCOMES: [Outcome; 5] = [
+    Outcome::Supported,
+    Outcome::InsufficientEvidence,
+    Outcome::Contradicted,
+    Outcome::Stale,
+    Outcome::NotAutomatable,
+];
+
+fn outcome_counts(assertions: &[DerivedAssertion]) -> Vec<(Outcome, usize)> {
+    CLAIM_OUTCOMES
+        .into_iter()
+        .map(|outcome| {
+            let count = assertions
+                .iter()
+                .filter(|assertion| assertion.outcome == outcome)
+                .count();
+            (outcome, count)
+        })
+        .collect()
 }
 
-const fn outcome_label(outcome: assertions::Outcome) -> &'static str {
-    match outcome {
-        assertions::Outcome::Supported => "supported",
-        assertions::Outcome::Contradicted => "contradicted",
-        assertions::Outcome::InsufficientEvidence => "insufficient evidence",
-        assertions::Outcome::Stale => "stale",
-        assertions::Outcome::NotAutomatable => "not automatable",
-    }
+/// json keeps the counts as a map from label to count, in label order.
+fn serialize_outcome_counts<S: serde::Serializer>(
+    counts: &[(Outcome, usize)],
+    serializer: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    serializer.collect_map(
+        counts
+            .iter()
+            .map(|(outcome, count)| (outcome.to_string(), count))
+            .collect::<BTreeMap<_, _>>(),
+    )
 }
 
 fn render_collection_report(report: &ProductCollectionReport) -> Result<()> {
@@ -990,19 +995,8 @@ fn render_collection_report(report: &ProductCollectionReport) -> Result<()> {
         .map_err(stdout_error)?;
     }
     writeln!(out, "\nEvaluation").map_err(stdout_error)?;
-    for name in [
-        "supported",
-        "insufficient evidence",
-        "contradicted",
-        "stale",
-        "not automatable",
-    ] {
-        writeln!(
-            out,
-            "  {name:<24} {}",
-            report.outcomes.get(name).copied().unwrap_or_default()
-        )
-        .map_err(stdout_error)?;
+    for (outcome, count) in &report.outcomes {
+        writeln!(out, "  {outcome:<24} {count}").map_err(stdout_error)?;
     }
     writeln!(out, "\ndossier: {}", report.dossier).map_err(stdout_error)
 }
@@ -1785,7 +1779,7 @@ fn state_status(
         .filter(|run| run.outcome != CollectionOutcome::Complete)
         .map(|run| DegradedCollection {
             collector: format!("{} / {}", run.collector.name, run.collector.collector),
-            outcome: collection_outcome_label(run.outcome).into(),
+            outcome: run.outcome.to_string(),
             limitations: run
                 .limitations
                 .iter()
@@ -1856,18 +1850,6 @@ fn latest_timestamp(values: &[&str]) -> Result<Option<String>> {
     Ok(latest.map(|(_, value)| value))
 }
 
-const fn collection_outcome_label(outcome: CollectionOutcome) -> &'static str {
-    match outcome {
-        CollectionOutcome::Complete => "complete",
-        CollectionOutcome::Partial => "partial",
-        CollectionOutcome::PermissionDenied => "permission denied",
-        CollectionOutcome::RetentionLimited => "retention limited",
-        CollectionOutcome::Interrupted => "interrupted",
-        CollectionOutcome::Failed => "failed",
-        CollectionOutcome::NotAttempted => "not attempted",
-    }
-}
-
 fn render_status(report: &StatusReport) -> Result<()> {
     let mut out = io::stdout().lock();
     writeln!(out, "Repository      {}", report.repository).map_err(stdout_error)?;
@@ -1914,19 +1896,8 @@ fn render_status(report: &StatusReport) -> Result<()> {
         }
     }
     writeln!(out, "\nClaims").map_err(stdout_error)?;
-    for name in [
-        "supported",
-        "insufficient evidence",
-        "contradicted",
-        "stale",
-        "not automatable",
-    ] {
-        writeln!(
-            out,
-            "  {name:<24} {}",
-            report.outcomes.get(name).copied().unwrap_or_default()
-        )
-        .map_err(stdout_error)?;
+    for (outcome, count) in &report.outcomes {
+        writeln!(out, "  {outcome:<24} {count}").map_err(stdout_error)?;
     }
     writeln!(out, "\nEvidence").map_err(stdout_error)?;
     if report.evidence_sources.is_empty() {
@@ -2395,5 +2366,15 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("2026-09-04T10:00:00Z"));
+    }
+
+    #[test]
+    fn outcome_counts_print_as_a_map_by_label() {
+        let mut json = serde_json::Serializer::new(Vec::new());
+        serialize_outcome_counts(&outcome_counts(&[]), &mut json).unwrap();
+        assert_eq!(
+            String::from_utf8(json.into_inner()).unwrap(),
+            r#"{"contradicted":0,"insufficient evidence":0,"not automatable":0,"stale":0,"supported":0}"#
+        );
     }
 }

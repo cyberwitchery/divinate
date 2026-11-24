@@ -55,22 +55,26 @@ pub fn isms_update(previous: &[DerivedAssertion], current: &[DerivedAssertion]) 
         .iter()
         .map(|assertion| (review_key(assertion), assertion))
         .collect::<BTreeMap<_, _>>();
-    let changes = current_by_type
+    let changed_claims = current_by_type
         .iter()
         .filter_map(|(id, current)| {
             let previous = previous_by_type.get(id)?;
-            (previous.outcome != current.outcome).then(|| AssertionChange {
-                assertion_type: current.assertion_type.clone(),
-                claim: current.claim.clone(),
-                previous: outcome_name(previous.outcome).into(),
-                current: outcome_name(current.outcome).into(),
-                reason: current.reasoning.last().map_or_else(
-                    || "no structured reason recorded".into(),
-                    |step| step.conclusion.clone(),
-                ),
-            })
+            (previous.outcome != current.outcome).then_some((*previous, *current))
         })
         .collect::<Vec<_>>();
+    let changes = changed_claims
+        .iter()
+        .map(|(previous, current)| AssertionChange {
+            assertion_type: current.assertion_type.clone(),
+            claim: current.claim.clone(),
+            previous: previous.outcome.to_string(),
+            current: current.outcome.to_string(),
+            reason: current.reasoning.last().map_or_else(
+                || "no structured reason recorded".into(),
+                |step| step.conclusion.clone(),
+            ),
+        })
+        .collect();
     let previous_gaps = gaps(&previous);
     let current_gaps = gaps(&current);
     let new_gaps = current_gaps
@@ -78,12 +82,10 @@ pub fn isms_update(previous: &[DerivedAssertion], current: &[DerivedAssertion]) 
         .filter(|(identity, _)| !previous_gaps.contains_key(*identity))
         .map(|(_, description)| description.clone())
         .collect();
-    let coverage_regressions = changes
+    let coverage_regressions = changed_claims
         .iter()
-        .filter(|change| {
-            change.current == "insufficient evidence" && change.previous != "insufficient evidence"
-        })
-        .map(|change| change.claim.clone())
+        .filter(|(_, current)| current.outcome == Outcome::InsufficientEvidence)
+        .map(|(_, current)| current.claim.clone())
         .collect();
     let previous_sources = source_ids(&previous);
     let current_sources = source_ids(&current);
@@ -163,13 +165,7 @@ fn review_assertions(assertions: &[DerivedAssertion]) -> Vec<DerivedAssertion> {
 pub fn render_isms(update: &IsmsUpdate) -> String {
     let mut out = String::from("# technical controls update\n\n## current state\n\n");
     for assertion in &update.current {
-        writeln!(
-            out,
-            "- **{}**: {}",
-            outcome_name(assertion.outcome),
-            assertion.claim
-        )
-        .unwrap();
+        writeln!(out, "- **{}**: {}", assertion.outcome, assertion.claim).unwrap();
         if !assertion.support.is_empty() {
             writeln!(
                 out,
@@ -246,14 +242,4 @@ fn source_ids(assertions: &[DerivedAssertion]) -> BTreeSet<String> {
         .flat_map(|assertion| assertion.support.iter().chain(&assertion.contradictions))
         .map(|evidence| evidence.source_id.clone())
         .collect()
-}
-
-const fn outcome_name(outcome: Outcome) -> &'static str {
-    match outcome {
-        Outcome::Supported => "supported",
-        Outcome::Contradicted => "contradicted",
-        Outcome::InsufficientEvidence => "insufficient evidence",
-        Outcome::Stale => "stale",
-        Outcome::NotAutomatable => "not automatable",
-    }
 }

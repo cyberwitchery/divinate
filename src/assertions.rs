@@ -21,7 +21,7 @@ use crate::model::{
     Corpus, EvidenceClass, Observation, ObservationKind, Proposition, Status, TimeRange,
 };
 use crate::provenance::mirror_gap;
-use crate::{hex_digest, parse_timestamp};
+use crate::{format_timestamp, hex_digest, parse_timestamp, serde_name};
 
 const RELEASE_REVIEWS_VERSION: &str = "release-reviews/v1";
 const SUPPLY_CHAIN_VERSION: &str = "release-supply-chain/v1";
@@ -146,6 +146,18 @@ pub enum Outcome {
     InsufficientEvidence,
     Stale,
     NotAutomatable,
+}
+
+impl std::fmt::Display for Outcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(match self {
+            Self::Supported => "supported",
+            Self::Contradicted => "contradicted",
+            Self::InsufficientEvidence => "insufficient evidence",
+            Self::Stale => "stale",
+            Self::NotAutomatable => "not automatable",
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -356,8 +368,8 @@ pub fn evaluate_configured_independent_review(
         return Ok(assertion);
     };
     let data: BranchProtectionData = payload(latest)?;
-    assertion.validity.at = Some(format_time(at)?);
-    assertion.validity.fresh_until = Some(format_time(
+    assertion.validity.at = Some(format_timestamp(at)?);
+    assertion.validity.fresh_until = Some(format_timestamp(
         observed_at + Duration::days(CONFIG_FRESHNESS_DAYS),
     )?);
     if data.required_approving_review_count >= 1 {
@@ -598,7 +610,7 @@ pub fn evaluate_release_reviews(
         at,
         &mut assertion,
     )?;
-    assertion.validity.from = first_merge.map(format_time).transpose()?;
+    assertion.validity.from = first_merge.map(format_timestamp).transpose()?;
     assertion.outcome = if !assertion.contradictions.is_empty() {
         Outcome::Contradicted
     } else if !assertion.missing.is_empty() {
@@ -1318,7 +1330,7 @@ fn add_coverage_gap(assertion: &mut DerivedAssertion, decision: &CoverageDecisio
     assertion.missing.push(MissingEvidence {
         requirement: format!(
             "complete_authoritative_{}_coverage",
-            proposition_name(decision.requirement.proposition)
+            serde_name(&decision.requirement.proposition)
         ),
         subject: format!(
             "{}#{} {} .. {}",
@@ -1339,20 +1351,6 @@ fn add_coverage_gap(assertion: &mut DerivedAssertion, decision: &CoverageDecisio
             format!("{reasons}; uncovered intervals: {intervals}")
         },
     });
-}
-
-const fn proposition_name(proposition: Proposition) -> &'static str {
-    match proposition {
-        Proposition::PullRequestPopulation => "pull_request_population",
-        Proposition::PullRequestReviews => "pull_request_reviews",
-        Proposition::RepositoryMutations => "repository_mutations",
-        Proposition::CommitAncestry => "commit_ancestry",
-        Proposition::BranchConfiguration => "branch_configuration",
-        Proposition::RevisionChecks => "revision_checks",
-        Proposition::BuildValidationResults => "build_validation_results",
-        Proposition::SupplyChainPolicyDecision => "supply_chain_policy_decision",
-        Proposition::DeclaredDependencies => "declared_dependencies",
-    }
 }
 
 fn branch_configurations<'a>(
@@ -1466,7 +1464,7 @@ fn base_assertion(
         claim: claim.into(),
         subject,
         outcome: Outcome::InsufficientEvidence,
-        evaluated_at: format_time(at)?,
+        evaluated_at: format_timestamp(at)?,
         validity: Validity {
             basis,
             at: None,
@@ -1582,12 +1580,6 @@ fn join(left: &Observation, right: &Observation, fields: &[(&str, &str)]) -> Ide
             .map(|(field, value)| (field.to_string(), (*value).to_string()))
             .collect(),
     }
-}
-
-fn format_time(value: OffsetDateTime) -> Result<String> {
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))
 }
 
 #[derive(Deserialize)]

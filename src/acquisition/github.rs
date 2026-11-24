@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use time::OffsetDateTime;
 
-use super::http::{build_exchange, format_time, next_link, percent_encode, sanitize_diagnostic};
+use super::http::{build_exchange, next_link, percent_encode, sanitize_diagnostic};
 use super::transcript::{
     seal_transcript, AcquisitionTermination, AcquisitionTranscript, HttpExchange, HttpRequest,
     TranscriptContents, GITHUB_BRANCH_PROTECTION_CONTRACT,
@@ -13,6 +13,7 @@ use super::transcript::{
     GITHUB_REPOSITORY_MUTATIONS_CONTRACT,
 };
 use crate::error::{Error, Result};
+use crate::format_timestamp;
 use crate::model::{Proposition, Subject, TimeRange};
 
 pub(super) const GITHUB_API_ORIGIN: &str = "https://api.github.com";
@@ -81,7 +82,7 @@ where
     ) {
         return capture_github_revision_with(options, &mut fetch);
     }
-    let captured_at = format_time(options.captured_at)?;
+    let captured_at = format_timestamp(options.captured_at)?;
     let (contract, proposition, initial_url) = github_remote_request(options);
     let mut exchanges = Vec::new();
     let mut url = initial_url.clone();
@@ -191,7 +192,7 @@ fn capture_github_revision_with<F>(
 where
     F: FnMut(&str) -> Result<HttpExchange>,
 {
-    let captured_at = format_time(options.captured_at)?;
+    let captured_at = format_timestamp(options.captured_at)?;
     let (contract, proposition, url) = github_remote_request(options);
     let initial_url = format!("{GITHUB_API_ORIGIN}/repos/{}", options.repository);
     let mut exchanges = Vec::new();
@@ -224,7 +225,7 @@ fn capture_github_history_with<F>(
 where
     F: FnMut(&str) -> Result<HttpExchange>,
 {
-    let captured_at = format_time(options.captured_at)?;
+    let captured_at = format_timestamp(options.captured_at)?;
     let initial_url = format!("{GITHUB_API_ORIGIN}/repos/{}", options.repository);
     let mut exchanges = Vec::new();
     let (mut termination, alias) =

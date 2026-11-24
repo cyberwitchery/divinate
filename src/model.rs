@@ -233,6 +233,20 @@ pub enum CollectionOutcome {
     NotAttempted,
 }
 
+impl std::fmt::Display for CollectionOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(match self {
+            Self::Complete => "complete",
+            Self::Partial => "partial",
+            Self::PermissionDenied => "permission denied",
+            Self::RetentionLimited => "retention limited",
+            Self::Interrupted => "interrupted",
+            Self::Failed => "failed",
+            Self::NotAttempted => "not attempted",
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// a specific reason a collection did not cover its requested scope.
 pub struct CollectionLimitation {
@@ -267,4 +281,20 @@ pub enum Proposition {
     BuildValidationResults,
     SupplyChainPolicyDecision,
     DeclaredDependencies,
+}
+
+impl std::fmt::Display for Proposition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(match self {
+            Self::PullRequestPopulation => "the pull request population",
+            Self::PullRequestReviews => "pull request reviews",
+            Self::RepositoryMutations => "repository mutations",
+            Self::CommitAncestry => "commit ancestry",
+            Self::BranchConfiguration => "branch configuration",
+            Self::RevisionChecks => "revision checks",
+            Self::BuildValidationResults => "build validation results",
+            Self::SupplyChainPolicyDecision => "supply-chain policy decisions",
+            Self::DeclaredDependencies => "declared dependencies",
+        })
+    }
 }

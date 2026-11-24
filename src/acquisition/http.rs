@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 
-use time::OffsetDateTime;
-
 use super::transcript::{HttpExchange, HttpRequest, HttpResponse};
 use crate::error::{Error, Result};
 use crate::hex_digest;
@@ -87,12 +85,6 @@ pub(super) fn next_link(headers: &BTreeMap<String, String>) -> Option<String> {
 
 pub(super) fn sanitize_diagnostic(value: &str) -> String {
     value.trim().chars().take(500).collect()
-}
-
-pub(super) fn format_time(value: OffsetDateTime) -> Result<String> {
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))
 }
 
 #[cfg(test)]

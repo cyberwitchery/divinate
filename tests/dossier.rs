@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use divinate::assertions::{self, AssertionType, EvaluationTarget, Outcome};
+use divinate::assertions::{self, AssertionType, EvaluationTarget};
 use divinate::dossier::{self, Dossier};
 use divinate::{collect, parse_timestamp, source_bytes};
 
@@ -51,14 +51,7 @@ fn dossier_states_are_the_derived_assertion_states() {
             .iter()
             .find(|assertion| assertion.id == control.assertion_id)
             .unwrap();
-        let expected = match assertion.outcome {
-            Outcome::Supported => "supported",
-            Outcome::Contradicted => "contradicted",
-            Outcome::InsufficientEvidence => "insufficient evidence",
-            Outcome::Stale => "stale",
-            Outcome::NotAutomatable => "not automatable",
-        };
-        assert_eq!(control.state, expected);
+        assert_eq!(control.state, assertion.outcome.to_string());
     }
 }
 

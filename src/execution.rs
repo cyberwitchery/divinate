@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::{Error, Result};
-use crate::{credential_like, hex_digest, parse_timestamp};
+use crate::{credential_like, format_timestamp, hex_digest, parse_timestamp};
 
 /// the execution transcript format version this build reads and writes.
 pub const TRANSCRIPT_SCHEMA_VERSION: &str = "0.1.0";
@@ -165,7 +165,7 @@ pub fn capture(request: &ExecutionRequest) -> Result<ExecutionCapture> {
     let mut blobs = BTreeMap::from([(executable.sha256.clone(), executable_bytes)]);
     let inputs = read_named_blobs(&request.inputs, &mut blobs)?;
 
-    let started_at = format_time(OffsetDateTime::now_utc())?;
+    let started_at = format_timestamp(OffsetDateTime::now_utc())?;
     let mut command = Command::new(&request.executable);
     command
         .args(&request.argv)
@@ -178,7 +178,7 @@ pub fn capture(request: &ExecutionRequest) -> Result<ExecutionCapture> {
         path: request.executable.clone(),
         source,
     })?;
-    let completed_at = format_time(OffsetDateTime::now_utc())?;
+    let completed_at = format_timestamp(OffsetDateTime::now_utc())?;
     let outputs = read_named_blobs(&request.outputs, &mut blobs)?;
     let contents = ExecutionContents {
         tool: ToolIdentity {
@@ -491,10 +491,4 @@ fn hex_nibble(byte: u8) -> Result<u8> {
         b'A'..=b'F' => Ok(byte - b'A' + 10),
         _ => Err(Error::Invalid("invalid hexadecimal byte encoding".into())),
     }
-}
-
-fn format_time(value: OffsetDateTime) -> Result<String> {
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| Error::Invalid(format!("cannot format execution timestamp: {error}")))
 }

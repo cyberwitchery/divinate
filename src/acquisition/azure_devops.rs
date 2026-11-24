@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use time::OffsetDateTime;
 
-use super::http::{build_exchange, format_time, percent_encode, sanitize_diagnostic};
+use super::http::{build_exchange, percent_encode, sanitize_diagnostic};
 use super::transcript::{
     seal_transcript, AcquisitionTermination, AcquisitionTranscript, HttpExchange, HttpRequest,
     TranscriptContents, AZURE_DEVOPS_BRANCH_POLICY_CONTRACT,
@@ -12,6 +12,7 @@ use super::transcript::{
     AZURE_DEVOPS_REPOSITORY_MUTATIONS_CONTRACT,
 };
 use crate::error::{Error, Result};
+use crate::format_timestamp;
 use crate::model::{Proposition, Subject, TimeRange};
 
 pub(super) const AZURE_DEVOPS_API_ORIGIN: &str = "https://dev.azure.com";
@@ -78,7 +79,7 @@ where
     F: FnMut(&str) -> Result<HttpExchange>,
 {
     validate_azure_devops_remote(options)?;
-    let captured_at = format_time(options.captured_at)?;
+    let captured_at = format_timestamp(options.captured_at)?;
     let initial_url = format!(
         "{AZURE_DEVOPS_API_ORIGIN}/{}/{}/_apis/git/repositories/{}?api-version=7.1",
         percent_encode(&options.organization),
@@ -160,7 +161,7 @@ where
     F: FnMut(&str) -> Result<HttpExchange>,
 {
     validate_azure_devops_remote(options)?;
-    let captured_at = format_time(options.captured_at)?;
+    let captured_at = format_timestamp(options.captured_at)?;
     let initial_url = azure_devops_repository_url(options);
     let repository_exchange = fetch_azure_exchange(&initial_url, options, fetch)?;
     let (contract, proposition) = match options.resource {

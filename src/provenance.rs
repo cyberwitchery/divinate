@@ -413,20 +413,6 @@ pub fn with_declared_mirror(corpus: &Corpus, repository: &str, upstream: &str) -
     current
 }
 
-const fn proposition_label(proposition: Proposition) -> &'static str {
-    match proposition {
-        Proposition::PullRequestPopulation => "the pull request population",
-        Proposition::PullRequestReviews => "pull request reviews",
-        Proposition::RepositoryMutations => "repository mutations",
-        Proposition::CommitAncestry => "commit ancestry",
-        Proposition::BranchConfiguration => "branch configuration",
-        Proposition::RevisionChecks => "revision checks",
-        Proposition::BuildValidationResults => "build validation results",
-        Proposition::SupplyChainPolicyDecision => "supply-chain policy decisions",
-        Proposition::DeclaredDependencies => "declared dependencies",
-    }
-}
-
 /// why a run-less observation has no authority on a declared mirror, if it has none.
 ///
 /// observations collected through a run are handled by [`with_declared_mirror`].
@@ -471,8 +457,7 @@ const fn mirror_withholds(proposition: Proposition) -> bool {
 
 fn mirror_detail(repository: &str, upstream: &str, proposition: Proposition) -> String {
     format!(
-        "{repository} is declared a mirror of {upstream}; it is not the system of record for {}",
-        proposition_label(proposition)
+        "{repository} is declared a mirror of {upstream}; it is not the system of record for {proposition}"
     )
 }
 

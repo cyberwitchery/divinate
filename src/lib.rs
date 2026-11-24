@@ -299,6 +299,26 @@ pub fn parse_timestamp(value: &str) -> Result<time::OffsetDateTime> {
     )
 }
 
+/// format a timestamp as rfc 3339.
+///
+/// # Errors
+///
+/// returns an error when the timestamp has no rfc 3339 form, such as a year
+/// outside 0 to 9999.
+pub fn format_timestamp(value: time::OffsetDateTime) -> Result<String> {
+    value
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))
+}
+
+/// the `snake_case` id a value's serde derive gives it.
+pub(crate) fn serde_name<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
 /// return a lowercase sha-256 digest.
 #[must_use]
 pub fn hex_digest(bytes: &[u8]) -> String {

@@ -1240,3 +1240,81 @@ fn embedded_source_is_byte_exact_and_hash_verified() {
         .unwrap();
     assert_eq!(source.sha256, hex_digest(&raw));
 }
+
+#[test]
+fn outcome_labels() {
+    let labels = [
+        Outcome::Supported,
+        Outcome::Contradicted,
+        Outcome::InsufficientEvidence,
+        Outcome::Stale,
+        Outcome::NotAutomatable,
+    ]
+    .map(|outcome| outcome.to_string());
+    assert_eq!(
+        labels,
+        [
+            "supported",
+            "contradicted",
+            "insufficient evidence",
+            "stale",
+            "not automatable",
+        ]
+    );
+}
+
+#[test]
+fn collection_outcome_labels() {
+    let labels = [
+        CollectionOutcome::Complete,
+        CollectionOutcome::Partial,
+        CollectionOutcome::PermissionDenied,
+        CollectionOutcome::RetentionLimited,
+        CollectionOutcome::Interrupted,
+        CollectionOutcome::Failed,
+        CollectionOutcome::NotAttempted,
+    ]
+    .map(|outcome| outcome.to_string());
+    assert_eq!(
+        labels,
+        [
+            "complete",
+            "partial",
+            "permission denied",
+            "retention limited",
+            "interrupted",
+            "failed",
+            "not attempted",
+        ]
+    );
+}
+
+#[test]
+fn proposition_labels() {
+    let labels = [
+        Proposition::PullRequestPopulation,
+        Proposition::PullRequestReviews,
+        Proposition::RepositoryMutations,
+        Proposition::CommitAncestry,
+        Proposition::BranchConfiguration,
+        Proposition::RevisionChecks,
+        Proposition::BuildValidationResults,
+        Proposition::SupplyChainPolicyDecision,
+        Proposition::DeclaredDependencies,
+    ]
+    .map(|proposition| proposition.to_string());
+    assert_eq!(
+        labels,
+        [
+            "the pull request population",
+            "pull request reviews",
+            "repository mutations",
+            "commit ancestry",
+            "branch configuration",
+            "revision checks",
+            "build validation results",
+            "supply-chain policy decisions",
+            "declared dependencies",
+        ]
+    );
+}

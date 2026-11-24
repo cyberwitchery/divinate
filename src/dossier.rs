@@ -12,15 +12,12 @@ use time::OffsetDateTime;
 
 use crate::acquisition::{self, AcquisitionTranscript, ContractRegistry, ContractStatus};
 use crate::assertions::{
-    AssertionType, DerivedAssertion, EvaluationTarget, EvidenceUse, IntegrationReview, Outcome,
+    AssertionType, DerivedAssertion, EvaluationTarget, EvidenceUse, IntegrationReview,
 };
-use crate::coverage::{CoverageOutcome, RunDisposition};
 use crate::error::{Error, Result};
-use crate::model::{
-    CollectionOutcome, CollectionRun, Corpus, Observation, ObservationKind, Proposition,
-};
+use crate::model::{CollectionRun, Corpus, Observation, ObservationKind};
 use crate::provenance;
-use crate::{hex_digest, source_bytes};
+use crate::{format_timestamp, hex_digest, serde_name, source_bytes};
 
 /// the dossier format version this build writes.
 pub const DOSSIER_SCHEMA_VERSION: &str = "0.1.0";
@@ -219,9 +216,7 @@ pub fn build_with_registry(
             .map(|assertion| control_entry(corpus, assertion))
             .collect::<Result<Vec<_>>>()?,
     );
-    let evaluated_at = evaluated_at
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| Error::Invalid(format!("cannot format timestamp: {error}")))?;
+    let evaluated_at = format_timestamp(evaluated_at)?;
     let corpus_bytes = serde_json::to_vec(corpus).map_err(Error::Serialize)?;
     let contents = DossierContents {
         repository: target.repository.clone(),
@@ -287,7 +282,7 @@ fn control_entry(corpus: &Corpus, assertion: &DerivedAssertion) -> Result<Contro
         assertion_id: assertion.id.clone(),
         title: control_title(assertion),
         semantics: control_semantics(&assertion.assertion_type).into(),
-        state: outcome_name(assertion.outcome).into(),
+        state: assertion.outcome.to_string(),
         why: assertion
             .reasoning
             .iter()
@@ -302,8 +297,8 @@ fn control_entry(corpus: &Corpus, assertion: &DerivedAssertion) -> Result<Contro
             .coverage
             .iter()
             .map(|decision| DossierCoverage {
-                proposition: proposition_name(decision.requirement.proposition).into(),
-                outcome: coverage_outcome_name(decision.outcome).into(),
+                proposition: serde_name(&decision.requirement.proposition),
+                outcome: serde_name(&decision.outcome),
                 interval: format!(
                     "{} to {}",
                     decision.requirement.interval.from, decision.requirement.interval.until
@@ -315,7 +310,7 @@ fn control_entry(corpus: &Corpus, assertion: &DerivedAssertion) -> Result<Contro
                         format!(
                             "{}: {}: {}",
                             run.collection_run_id,
-                            run_disposition_name(run.disposition),
+                            serde_name(&run.disposition),
                             run.reason
                         )
                     })
@@ -415,18 +410,14 @@ fn acquisition_summary(
         contract: transcript.contents.collector_contract.clone(),
         contract_status: contract_status_name(&assessment.contract),
         subject: transcript.contents.subject.id.clone(),
-        proposition: proposition_name(transcript.contents.proposition).into(),
+        proposition: serde_name(&transcript.contents.proposition),
         requested_scope: format!(
             "{} to {}",
             transcript.contents.requested_scope.from, transcript.contents.requested_scope.until
         ),
         integrity: serde_name(&assessment.integrity),
         enumeration: serde_name(&assessment.enumeration),
-        authority: assessment
-            .authority
-            .iter()
-            .map(|item| proposition_name(*item).into())
-            .collect(),
+        authority: assessment.authority.iter().map(serde_name).collect(),
         pages: assessment.pages,
         items: assessment.items,
         reasons: assessment.reasons,
@@ -438,17 +429,13 @@ fn collection_summary(run: &CollectionRun) -> CollectionSummary {
         id: run.id.clone(),
         acquisition_transcript_ids: run.acquisition_transcript_ids.clone(),
         subject: run.subject.id.clone(),
-        proposition: proposition_name(run.requested_scope.proposition).into(),
+        proposition: serde_name(&run.requested_scope.proposition),
         requested_scope: format!(
             "{} to {}",
             run.requested_scope.interval.from, run.requested_scope.interval.until
         ),
-        outcome: collection_outcome_name(run.outcome).into(),
-        authority: run
-            .authority
-            .iter()
-            .map(|item| proposition_name(*item).into())
-            .collect(),
+        outcome: serde_name(&run.outcome),
+        authority: run.authority.iter().map(serde_name).collect(),
         limitations: run
             .limitations
             .iter()
@@ -714,16 +701,6 @@ const fn control_semantics(kind: &AssertionType) -> &'static str {
     }
 }
 
-const fn outcome_name(outcome: Outcome) -> &'static str {
-    match outcome {
-        Outcome::Supported => "supported",
-        Outcome::Contradicted => "contradicted",
-        Outcome::InsufficientEvidence => "insufficient evidence",
-        Outcome::Stale => "stale",
-        Outcome::NotAutomatable => "not automatable",
-    }
-}
-
 fn manual_work(kind: &AssertionType) -> Vec<String> {
     let items: &[&str] = match kind {
         AssertionType::ConfiguredIndependentReview => &[
@@ -749,13 +726,6 @@ fn manual_work(kind: &AssertionType) -> Vec<String> {
     items.iter().map(|item| (*item).into()).collect()
 }
 
-fn serde_name<T: Serialize>(value: &T) -> String {
-    serde_json::to_value(value)
-        .ok()
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .unwrap_or_else(|| "unknown".into())
-}
-
 fn contract_status_name(value: &ContractStatus) -> String {
     match value {
         ContractStatus::Accepted => "accepted".into(),
@@ -766,52 +736,5 @@ fn contract_status_name(value: &ContractStatus) -> String {
         } => {
             format!("invalidated at {discovered_at}: {reason}")
         }
-    }
-}
-
-const fn proposition_name(value: Proposition) -> &'static str {
-    match value {
-        Proposition::PullRequestPopulation => "pull_request_population",
-        Proposition::PullRequestReviews => "pull_request_reviews",
-        Proposition::RepositoryMutations => "repository_mutations",
-        Proposition::CommitAncestry => "commit_ancestry",
-        Proposition::BranchConfiguration => "branch_configuration",
-        Proposition::RevisionChecks => "revision_checks",
-        Proposition::BuildValidationResults => "build_validation_results",
-        Proposition::SupplyChainPolicyDecision => "supply_chain_policy_decision",
-        Proposition::DeclaredDependencies => "declared_dependencies",
-    }
-}
-
-const fn collection_outcome_name(value: CollectionOutcome) -> &'static str {
-    match value {
-        CollectionOutcome::Complete => "complete",
-        CollectionOutcome::Partial => "partial",
-        CollectionOutcome::PermissionDenied => "permission_denied",
-        CollectionOutcome::RetentionLimited => "retention_limited",
-        CollectionOutcome::Interrupted => "interrupted",
-        CollectionOutcome::Failed => "failed",
-        CollectionOutcome::NotAttempted => "not_attempted",
-    }
-}
-
-const fn coverage_outcome_name(value: CoverageOutcome) -> &'static str {
-    match value {
-        CoverageOutcome::Complete => "complete",
-        CoverageOutcome::Incomplete => "incomplete",
-    }
-}
-
-const fn run_disposition_name(value: RunDisposition) -> &'static str {
-    match value {
-        RunDisposition::Used => "used",
-        RunDisposition::ScopeMismatch => "scope_mismatch",
-        RunDisposition::NotAuthoritative => "not_authoritative",
-        RunDisposition::PaginationIncomplete => "pagination_incomplete",
-        RunDisposition::PermissionDenied => "permission_denied",
-        RunDisposition::RetentionLimited => "retention_limited",
-        RunDisposition::Interrupted => "interrupted",
-        RunDisposition::Failed => "failed",
-        RunDisposition::NotAttempted => "not_attempted",
     }
 }

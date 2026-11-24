@@ -10,7 +10,7 @@ use time::OffsetDateTime;
 
 use crate::error::Result;
 use crate::model::{CollectionOutcome, CollectionRun, Corpus, Proposition, TimeRange};
-use crate::parse_timestamp;
+use crate::{format_timestamp, parse_timestamp};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// the population a claim needs covered: a proposition, a subject, and an interval.
@@ -280,15 +280,9 @@ fn parsed_range(range: &TimeRange) -> Result<Interval> {
 
 fn serialized_range(range: Interval) -> Result<TimeRange> {
     Ok(TimeRange {
-        from: format_time(range.from)?,
-        until: format_time(range.until)?,
+        from: format_timestamp(range.from)?,
+        until: format_timestamp(range.until)?,
     })
-}
-
-fn format_time(value: OffsetDateTime) -> Result<String> {
-    value
-        .format(&time::format_description::well_known::Rfc3339)
-        .map_err(|error| crate::error::Error::Invalid(format!("cannot format timestamp: {error}")))
 }
 
 fn intersection(left: Interval, right: Interval) -> Option<Interval> {
