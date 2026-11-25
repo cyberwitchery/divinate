@@ -1,0 +1,11 @@
+# the packs in this directory. run divinate from here, or pass this file
+# with `--config`.
+packs:
+  osv:
+    command: ./divinate-pack-osv
+    # the token is used to read the releases and their attached files. a
+    # public repository can be read without one, more slowly.
+    inherit: [GITHUB_TOKEN]
+    timeout_seconds: 900
+    setup:
+      sbom: '*.cdx.json'

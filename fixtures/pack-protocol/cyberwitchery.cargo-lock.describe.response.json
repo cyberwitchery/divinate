@@ -1,1 +1,0 @@
-{"ok":true,"result":{"id":"cyberwitchery.cargo-lock","version":"0.1.0","protocol_version":1,"collectors":["lockfile"],"evaluators":["lockfile-captured"],"evaluator_inputs":{"lockfile-captured":["cargo:dependency-lock"]},"evaluator_propositions":{"lockfile-captured":[]},"source_contracts":[],"configuration_schema":{}}}

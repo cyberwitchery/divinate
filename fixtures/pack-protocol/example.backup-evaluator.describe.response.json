@@ -1,1 +1,0 @@
-{"ok":true,"result":{"id":"example.backup-evaluator","version":"0.1.0","protocol_version":1,"collectors":[],"evaluators":["backup-encryption"],"evaluator_inputs":{"backup-encryption":["internal:backup-encryption"]},"evaluator_propositions":{"backup-encryption":[]},"source_contracts":[],"configuration_schema":{}}}

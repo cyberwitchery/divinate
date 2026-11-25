@@ -1,188 +1,209 @@
-# configuration, state, and formats
+# state and formats
 
-divinate separates declared project intent from observed state:
+everything divinate knows is in one directory, `evidence/` by default. this
+page describes the files in it, for when you want to read them with your own
+tools or just want to know what you’re handing to someone.
 
 ```text
-divinate.yaml
-  current repository, pack, and source configuration
-
-.evidence/
-  repository.json
-  contracts.json
-  corpus.json
-  project-configs/
-  collection-cycles/
-  acquisitions/
-  assertions/
-  blobs/
-  dossiers/
-  executions/
-  pack-invocations/
-  views/
+evidence/
+  collections/
+    col_<id>.json     one run of `divinate collect`
+  transcripts/
+    acq_<id>.json     one thing divinate asked the platform, and the answer
 ```
 
-`divinate.yaml` is intended to be committed and reviewed. `.evidence/` records
-what happened and may need a different commit, retention, and access policy.
+files are only ever added. a collection points to the transcripts it was built
+from, so always copy the directory as a whole.
 
-historical review acquisition retains a composite transcript: the population
-pages, mutation-to-PR metadata, and review pages are one immutable acquisition
-graph. its canonical JSON is the normalizer's source document; verification
-recomputes that digest from the linked transcript. exact individual response
-bodies remain available inside it. completed collection windows accumulate and
-can be reevaluated offline without consulting current provider configuration.
+everything is json. the formats can still change between versions.
 
-## project configuration
+## a collection
 
-the canonical configuration is strict YAML at the repository root:
-
-```yaml
-repository:
-  identity: github:example/acme
-  branch: main
-
-packs:
-  example.github:
-    executable: divinate-pack-github
-    config: {}
-    timeout_seconds: 30
-
-sources:
-  release-sbom:
-    provider:
-      builtin: release-sbom
-    required: true
-    config:
-      executable: sbom-diff
-      sbom_path: dist/{release}.cdx.json
-
-  github:
-    provider:
-      pack: example.github
-      collector: repository
-    required: false
+```json
+{
+  "id": "col_6005c5db32e5a3a13363",
+  "contents": {
+    "tool": "divinate/0.0.1",
+    "derivation": "6",
+    "scope": "github:cyberwitchery/divinate",
+    "started_at": "2026-11-24T17:21:38Z",
+    "completed_at": "2026-11-24T17:23:42Z",
+    "transcripts": ["acq_331acd61b8e91d794a93"],
+    "entities": [],
+    "statements": [],
+    "relations": []
+  }
+}
 ```
 
-source IDs are stable, repository-owned names. a provider is either one named
-built-in source or one collector from a declared pack. source and pack settings
-are mappings under `config`. presence means enabled; `required` defaults to
-true. `context` defaults to `repository` and may be `release` for external
-collectors. the built-in release source always receives release context.
+the id is a checksum of the contents. a collection that a
+[pack](packs.md) read also has `"pack": {"name": "osv", "version": "0.1.0"}`.
+`derivation` is the version of the code that turned the responses into the
+three lists below. `divinate verify` can
+rebuild a collection when its own version is the same.
 
-unknown fields, malformed provider shapes, missing collectors, unknown built-in
-providers, unresolved executables, pack identity mismatches, and credential-like
-configuration keys fail validation. plain executable names resolve through
-`PATH`; absolute and repository-relative paths are accepted.
+### entities
 
-repository identity is explicit in YAML because it is security-relevant intent.
-init infers it from Git once, and later commands verify it against the checkout.
-`.evidence/repository.json` binds local historical state to the same identity.
-supported canonical forms are `github:owner/repository` and
-`azure-devops:organization/project/repository`.
+an entity is a thing divinate knows about: a repository, a branch, a person,
+a ticket, a pull request, or something that happened.
 
-a repository that only mirrors another system of record declares it:
-
-```yaml
-repository:
-  identity: github:example/acme
-  branch: main
-  mirror_of: the vendor's internal gitlab
+```json
+{
+  "uid": "github.com/event/check-run/111808187362",
+  "class": "event",
+  "kind": "check passed",
+  "native_kind": "check passed",
+  "name": "Analyze (actions)",
+  "parent": "github.com/change/5706323831",
+  "occurred_at": "2026-10-05T14:18:51Z"
+}
 ```
 
-`mirror_of` names the upstream in free text, because the upstream is usually
-something divinate cannot reach. divinate cannot detect a mirror from the
-mirror itself, so this is declared, reviewable intent. evaluation then
-withdraws the repository's authority for the pull request population, pull
-request reviews, repository mutations, branch configuration, revision checks,
-and build validation results, and records why on each affected collection run.
-claims that need those propositions become insufficient evidence that names the
-mirror, instead of being supported or contradicted by the mirror's own pushes.
-commit ancestry, declared dependencies, and supply-chain decisions keep their
-authority, since a mirror reproduces content. evidence imported without a
-collection run follows the same rule by observation kind: configuration,
-mutation, review, release-membership, and validation records from the mirror
-lose authority; change sets and policy checks keep it. packs receive the
-declaration as `target.mirror_of`, and core rejects pack assertions that use
-withheld evidence.
+| field | meaning |
+|---|---|
+| `uid` | the host, the kind, and the platform’s own id. it stays the same when the thing is renamed, so use it to join |
+| `class` | `scope`, `actor`, `work_item`, `event`, `product`, or `rule` |
+| `kind` | divinate’s word, the same on every platform: `ticket`, `change`, `approval`, ... |
+| `native_kind` | the platform’s word, such as `code scanning alert` |
+| `name` | what `show` prints |
+| `parent` | the entity it belongs to. for an event, the ticket or pull request it happened on |
+| `occurred_at` | for events, when it happened |
 
-there is no `divinate.local.yaml` in this version. PATH covers the current need
-for machine-local executable selection without allowing an unreviewed file to
-change evidence semantics.
+### statements
 
-## evidence files
+a statement is one fact about one entity. every row of `divinate show` is a
+statement.
 
-- `repository.json` binds the state directory to its repository identity.
-- `contracts.json` records source-contract invalidations used in evaluation.
-- `corpus.json` contains collection runs, observations, and normalized source
-  documents. it is absent from projectless execution-only state.
-- `project-configs/` contains exact content-addressed snapshots of YAML used by
-  collection and evaluation.
-- `collection-cycles/` links one configuration digest and source results to the
-  collection runs, observations, executions, and pack invocations produced by
-  the cycle.
-- `acquisitions/` contains remote acquisition transcripts.
-- `executions/` contains local execution transcripts.
-- `pack-invocations/` contains pack requests, responses, and executable identity.
-- `blobs/` contains content-addressed executable, input, output, stdout, and
-  stderr bytes.
-- `assertions/` contains saved evaluations, contract registries, and each
-  evaluation's configuration reference.
-- `dossiers/` contains JSON dossiers and their Markdown rendering.
-- `views/` contains JSON and Markdown reviews.
+```json
+{
+  "about": "github.com/repository/1373627563",
+  "aspect": "repository",
+  "reading": "recorded",
+  "value": {"archived": false, "default_branch": "main", "fork": false, "visibility": "public"},
+  "digest": "3653a87eae5542572d8b108847d755770893fee44f26589722be4575741948b9",
+  "transcripts": ["acq_331acd61b8e91d794a93"]
+}
+```
 
-`verify` checks every immutable object present. without `corpus.json`, it checks
-execution and acquisition transcript integrity, blobs, pack invocations, and
-their direct references. with a corpus, it additionally verifies the complete
-observation, collection, configuration, and evaluation graph. verification does
-not create missing project objects.
+`aspect` is the name of the row, `value` is what the platform said, and
+`transcripts` lists the responses the value was taken from. a
+[gap](record.md#gaps) has `"reading": "gap"` and a `reason` where the value
+would be. a `note` appears when the value is only part of the picture.
 
-## configuration provenance
+lists are statements too. they have a `population` that says what is listed
+and for which period, and the value holds the `uid` of each member:
 
-normal collection hashes and stores the exact `divinate.yaml` bytes before
-recording its collection cycle. the cycle names that digest, source outcome,
-collection-run IDs, observation IDs, execution transcript IDs, and pack
-invocation IDs. evaluations
-store their own configuration-digest reference. pack invocations retain their
-normalized source configuration, reported identity and version, executable
-digest, protocol version, and source contract metadata.
+```json
+{
+  "about": "github.com/repository/1373627563",
+  "aspect": "tickets",
+  "population": {
+    "of": "ticket",
+    "interval": {"from": "2026-08-26T17:21:38Z", "until": "2026-11-24T17:21:38Z"}
+  },
+  "reading": "recorded",
+  "value": {"members": ["github.com/ticket/5479864619"]}
+}
+```
 
-changing YAML affects the next collection only. existing corpus objects,
-transcripts, invocations, cycles, and configuration snapshots remain immutable.
-status reports current evidence as stale when its cycle used a different YAML
-digest. a source removed from YAML remains visible as historical and its evidence
-still verifies.
+each ticket, pull request, finding, and release has two statements of its
+own. the first has the aspect `ticket`, `change`, `finding`, or `release`, and
+holds its state. for a pull request:
 
-the digest covers the exact file, so a formatting-only edit conservatively marks
-the previous collection stale. it does not create a security assertion by
-itself.
+```json
+{
+  "closed_at": "2026-10-13T07:26:57Z",
+  "labels": [],
+  "merged_at": "2026-10-13T07:26:57Z",
+  "number": 10,
+  "opened_at": "2026-10-13T06:55:06Z",
+  "state": "merged",
+  "target_branch": "main",
+  "targets_default_branch": true,
+  "title": "replace serde_yaml_ng with serde-saphyr to drop unmaintained unsafe-libyaml",
+  "description": "...",
+  "paths": ["Cargo.lock", "Cargo.toml", "src/error.rs", "src/project.rs"]
+}
+```
 
-## persistence rules
+`paths` are the files a pull request touches (the example leaves some out).
+it is `null` when divinate couldn’t read them. a release has the aspect
+`release` and looks like this:
 
-acquisition transcripts, execution transcripts, pack invocations, configuration
-snapshots, collection cycles, and blobs are immutable. accumulation reuses equal
-content-addressed objects and rejects different content under an existing ID.
-corpus objects are merged by stable ID with deterministic ordering.
+```json
+{
+  "tag": "v0.10.0",
+  "title": "v0.10.0",
+  "prerelease": false,
+  "published_at": "2026-11-04T20:39:05Z",
+  "assets": [
+    {
+      "name": "sbom-v0.10.0-sbom-diff.cdx.json",
+      "size": 147812,
+      "digest": "sha256:6a233713fdc1c4ccc87ed3db481e6b4c625732ce80664bb29015a9f7cfa6249a"
+    }
+  ]
+}
+```
 
-assertions, dossiers, and views are named outputs. normal collection publishes
-`current` and preserves the former current result as `previous`. rewriting a
-derived label does not alter retained evidence.
+the second has the aspect `events` and lists the events that happened to it.
+when a part of them couldn’t be read (say the ci results, while the reviews
+could), its value has an `unread` entry with the kinds of event that are
+missing and the reason.
 
-copy or archive `.evidence/` as one unit. moving it does not break internal
-links. partial copies can leave provenance incomplete.
+### relations
 
-## schemas
+a relation connects two entities.
 
-the `schema/` directory publishes draft 2020-12 schemas for project
-configuration, configuration provenance, evidence corpora, transcripts,
-contract registries, assertions, dossiers, pack protocol requests and
-responses, and views. `project-config.schema.json` describes the YAML data
-model.
+```json
+{
+  "from": "github.com/change/5822381209",
+  "kind": "refers to",
+  "to": "github.com/change/5789551915",
+  "basis": "mention",
+  "transcripts": ["acq_a2946f468470297bd499"]
+}
+```
 
-schema validity is not semantic verification. `divinate verify` also checks
-identities, content digests, retained bytes, and cross-object links.
+| kind | meaning |
+|---|---|
+| `by` | who did it: the author of a ticket, the person behind an approval |
+| `into` | the branch a pull request goes into |
+| `refers to` | one item names another. `basis` says how: `closing keyword in the description`, `recorded by the source`, or `mention` |
 
-## backup and retention
+## a transcript
 
-state can be large because streams and declared files are retained exactly, with
-content deduplication by SHA-256. establish retention and access rules before
-collecting confidential material. divinate does not encrypt state or provide
-remote storage.
+a transcript is one question to the platform with everything that came back.
+
+```json
+{
+  "id": "acq_331acd61b8e91d794a93",
+  "contents": {
+    "resource": "github/repository/v1",
+    "subject": "github:cyberwitchery/divinate",
+    "captured_at": "2026-11-24T17:21:39Z",
+    "exchanges": [
+      {
+        "request": {"method": "GET", "url": "https://api.github.com/repos/cyberwitchery/divinate"},
+        "response": {"status": 200, "headers": {}, "body": "...", "body_sha256": "..."}
+      }
+    ],
+    "termination": {"kind": "exhausted"}
+  }
+}
+```
+
+`resource` names what was asked for, and `parameters` (when there are any)
+narrow it down to a branch, a pull request, or a period. there is one exchange
+per request, so a long list that came in ten pages has ten of them. the body
+is stored exactly as it arrived, together with its checksum. a request that
+was sent with a body, which some packs do, has it as `body` next to the url.
+
+`termination` says how it ended. `exhausted` means divinate got everything.
+the others are `truncated`, `unauthenticated`, `permission_denied`,
+`not_found`, `rate_limited`, `unsafe_redirect`, `failed`, and `not_attempted`,
+and each of them turns into a gap.
+
+of the response headers, divinate keeps a fixed selection, such as the date
+and the rate limit counters. it never stores request headers, which is where
+your token is.

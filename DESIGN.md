@@ -1,257 +1,218 @@
 # design
 
-## data flow
+this document is for people who want to work on divinate or want to know how
+it works inside. if you want to use it, start with the
+[readme](README.md) and the pages in [docs/](docs/).
 
-```text
-source systems and local tools
-  → acquisition and execution transcripts
-  → collection coverage
-  → observations
-  → assertions
-  → views
+## the idea
+
+a security review or an audit keeps asking the same kind of question: do you
+work the way you say you do? are changes reviewed, are findings handled in
+time, is the main branch protected? the answers are in the platforms the team
+uses every day, but they’re spread over issues, pull requests, ci runs, and
+settings pages, and the settings only show what’s true today.
+
+divinate does two things about that. it copies the relevant facts out of the
+platform into a directory, with a timestamp, so that you build up a history.
+and it lets you write a rule in a small yaml file and check it against those
+facts.
+
+the two are kept apart on purpose. the directory only holds what the platform
+said. rules and their results aren’t stored in it. that way one collection can
+be checked against any number of rules, by you today and by an auditor with
+their own rules next year.
+
+## how a run works
+
+```
+platform ──requests──▶ transcripts ──derive──▶ entities, statements, relations
+                            │                              │
+                            └────────── one collection ────┘
+                                            │
+                       show · ledger · verify · check
 ```
 
-remote reads produce acquisition transcripts. local commands produce execution
-transcripts. both use content-addressed storage, but retain different provenance.
-remote evidence includes request scope, pagination, and source-contract identity.
-local evidence includes executable identity, argv, inputs, exit status, and output.
+1. `collect` asks the platform for everything it needs about one repository
+   or organisation. each answer is stored as it arrived, in a transcript.
+2. the code for that platform goes through the transcripts and derives a
+   common model from them: entities, statements, and relations.
+3. the transcripts and the model are stored together as one collection.
+   collections are only added, never changed.
+4. the other commands only read collections. `show` and `ledger` print them,
+   `check` applies rules to one, and `verify` repeats step 2 and compares.
+   `check` can hand items to a pack, which is a program outside this crate.
 
-collection runs record attempts to enumerate a population. observations interpret
-retained source bytes. assertions derive claims from observations and coverage.
-views select saved assertions without reading raw evidence.
+step 2 is a pure function. it makes no requests and doesn’t look at the clock,
+so it gives the same result every time it runs on the same transcripts. this
+is what makes `verify` possible, and it’s the main thing to protect when you
+change the code: anything a statement says has to come out of a transcript.
+when a change makes the same transcripts produce a different model, bump
+`DERIVATION` in `src/record.rs`, so `verify` knows that older collections were
+built differently.
 
-the product command surface composes this flow without changing its ownership:
+## transcripts
 
-```text
-collect configured sources and packs
-  → validate and persist evidence
-  → evaluate current assertions
-  → publish current and previous derived snapshots
-```
+a transcript is one question to the platform, such as “the reviews of pull
+request 12”, with every request it took and every response that came back.
+bodies are kept byte for byte with a checksum. of the headers, a fixed
+selection of response headers is kept and no request headers at all, so the
+token can’t end up on disk.
 
-`status` reads those saved structures. `review` compares saved assertion sets.
-neither command adds evidence or assertion semantics. the explicit collection,
-execution, evaluation, and provenance commands remain available for inspection
-and historical reproduction.
+a transcript also says how the question ended. `exhausted` means everything
+was read. the other endings (`truncated`, `unauthenticated`,
+`permission_denied`, `not_found`, `rate_limited`, `unsafe_redirect`, `failed`,
+`not_attempted`) mean something is missing, and they’re where gaps come from.
 
-## project intent and observed state
+the reader retries server errors and waits out short rate limits. when a rate
+limit is too long to wait for, the rest of the run is marked `not_attempted`
+and the collection is stored with what it has.
 
-`divinate.yaml` is the authoritative declaration of repository, pack, and source
-intent. `.evidence/` is observed and derived state. normal collection can create
-missing local state from an existing YAML file, but it cannot reconstruct source
-intent from command history.
+## the model
 
-repository identity is explicit in YAML and verified against Git. executable
-names resolve through `PATH`; there is no machine-local override layer. source
-presence means enabled, required or optional behavior is declarative, and
-source-specific values remain nested under that source.
+every platform is translated into the same model, so that `show`, `ledger`,
+and `check` don’t need to know which platform they’re looking at.
 
-repository identity remains a canonical string with provider-specific parsing.
-core currently accepts `github:owner/repository` and
-`azure-devops:organization/project/repository`; this is not a claim of generic
-Git-host support.
+an **entity** is a thing. there are six classes:
 
-each collection stores the exact YAML under its content digest and links that
-snapshot to the collection cycle. evaluations name the same configuration
-digest. current configuration can therefore change without rewriting or
-reinterpreting historical evidence.
+| class | what it is | examples |
+|---|---|---|
+| scope | a place where things live. scopes nest | organisation, project, repository, branch |
+| actor | someone who does things | user, bot, group |
+| work item | something that gets opened and eventually closed | ticket, change, finding |
+| event | something that happened at a point in time | comment, approval, merge, push, check passed |
+| product | something the process puts out | release |
+| rule | a requirement that has an identity of its own on the platform | |
 
-## ownership
+the platforms in core fill the first five classes. `rule` is there for
+sources that give a requirement its own id. on the three platforms a
+requirement is recorded as the state of its branch.
 
-core owns:
+an entity’s id is made of the host, its kind, and the id the platform itself
+uses, so it survives a rename. it has a kind in divinate’s words (`change`)
+and one in the platform’s (`merge request`).
 
-- portable schemas and local state
-- strict project configuration loading and configuration provenance
-- repository and release identity, including git checkout validation, tag and
-  revision resolution, predecessor selection, and evaluation intervals
-- provider-aware authenticated acquisition and local execution
-- evidence identity and immutable persistence
-- collection coverage
-- built-in source normalizers and evaluators
-- provenance verification
-- views
+a **statement** is one fact about one entity: the review policy of a branch,
+the state of a ticket, or a list such as the pull requests merged in a
+repository during the period. a statement is either a recorded value or a gap
+with a reason. it can carry a note when the value is only part of the picture.
 
-packs may provide:
+a **relation** connects two entities, such as a pull request and the ticket it
+closes, and says how divinate knows: the platform says so, there’s a closing
+keyword in the description, or it’s only a mention.
 
-- collectors
-- source contracts
-- normalizers
-- evaluators
+## decisions worth knowing
 
-pack output passes through core validation and persistence. packs do not write
-evidence state.
+these are the choices that shape the code. most of them exist because the
+model has to be honest about what it doesn’t know.
 
-repository and release identity are core context. evidence-production semantics
-belong to configured sources and packs. a source may receive core-resolved
-repository, branch, release, revision, predecessor, and interval values, but it
-does not independently redefine them.
+**a list is only recorded when it was read to the end.** if page three of the
+pull requests fails, divinate could store the first two pages, but then “no
+pull request was merged without review” would be checked against a part of
+them and come out wrong. so the whole list becomes a gap, and rules about it
+answer `cannot tell`.
 
-repository-scoped evaluation does not require or infer a release. core evaluates
-release assertions only when explicit or source-required release context exists.
-the first repository interval begins at the unique Git root commit; ambiguous
-multiple-root histories require an explicit start.
+**partial answers get a note.** github has two mechanisms for branch
+protection, and one of them can only be read by admins. when only the other
+is readable, divinate records what it requires and adds a note that there may
+be more. a rule that’s already satisfied by the readable part is kept, and one
+that isn’t answers `cannot tell`.
 
-the release sbom integration is a built-in source registered through the same
-configuration and collection surface as external collectors. it remains compiled
-in because it records a diff and a policy gate as separate executions and proves
-their output bytes agree. pack protocol version 1 exposes one planned command per
-collector invocation, so moving that workflow behind one pack process would
-weaken its execution provenance.
+**“the platform has none” is an answer.** a scanner that’s switched off
+returns an error on github. that’s recorded as an empty list with a note,
+since the platform did answer the question.
 
-## provenance
+**events of one item can be partly unread.** reviews and ci results come from
+different requests. when the ci results fail, the reviews are still recorded,
+and only rules about checks answer `cannot tell` for that item.
 
-an acquisition transcript stores sanitized request metadata, exact response bodies,
-pagination data, termination, and a source-contract version. a collection run names
-the transcripts behind its coverage statement.
+**branch settings are samples.** platforms don’t keep a history of their
+settings, so each collection has the settings as of its own time. a rule that
+needs the settings at the time of a merge uses the first collection after the
+merge. when the collection before the merge differs, the settings changed
+somewhere in between and the rule answers `cannot tell`.
 
-an execution transcript stores the executable sha-256 and size, reported version,
-argv, an optional working-directory label, explicit environment values, named
-inputs and outputs, timestamps, exit status, and exact stdout and stderr. blobs are
-stored once by sha-256.
+**times are compared as times.** platforms write timestamps with different
+precision and offsets, so they’re parsed before they’re compared.
 
-offline verification checks transcript identity, blob digests, retained streams,
-scope, pagination, source contracts, and links from observations to their source
-bytes. it also checks immutable collection-cycle identities, exact project
-configuration digests, evaluation configuration references, and their evidence
-links.
+## platforms
 
-immutable execution, acquisition, and pack objects can exist without a corpus.
-verification checks those objects and their direct links independently, then
-checks corpus and configuration graph links only when those higher-level objects
-exist. it never creates an empty corpus or repository identity to make
-projectless state appear complete.
+each platform implements the `Source` trait in `src/source/`. a source does
+three things: it finds a token, it says which questions to ask for a scope,
+and it derives the model from the transcripts.
 
-local commands receive an empty environment plus explicit values. credential-like
-argv and environment names are rejected. stdout and stderr are stored without
-redaction.
+a source never makes a request itself. all requests go through one reader in
+`src/source/reading.rs`, which stores the transcripts, follows pages only on
+the platform’s own host, doesn’t follow redirects, and refuses a response
+that contains the token. keeping this in one place means a new source can’t
+get it wrong.
 
-## invariants
+for the model, every source uses the same two builders: `source/build.rs` for
+scopes and their settings, and `source/work.rs` for tickets, changes,
+findings, and their events. a new source that uses them produces the same
+shapes as the existing ones, and everything downstream works without changes.
+[docs/sources.md](docs/sources.md) lists what each platform’s terms map to.
 
-- a universal or absence claim requires complete coverage of its required
-  population.
-- authority is scoped to a proposition, subject, and interval.
-- acquisitions, executions, blobs, observations, and collection runs are
-  immutable.
-- project configuration is mutable intent; retained configuration snapshots and
-  collection cycles are immutable history.
-- evidence becomes available when all supporting transcripts have been captured.
-- withdrawing current source-contract authority does not alter historical
-  transcripts.
-- configured intent, observed operation, and observed state do not substitute for
-  one another.
-- views consume assertions and contain no independent assertion logic.
-- supported, contradicted, insufficient evidence, stale, and not automatable are
-  separate outcomes.
+## checking
 
-## trust boundaries
+a process definition has `items` and `steps` for rules about tickets, pull
+requests, and findings, and `branches` for rules about settings.
+[docs/processes.md](docs/processes.md) is the reference.
 
-content addressing detects changes after capture. it does not establish source
-truth, executable behavior, host-clock accuracy, hermetic execution, or remote
-attestation. executable digests identify retained bytes. reported versions are
-descriptive.
+`check` is a function of a definition and a collection (plus the earlier
+collections, for the branch settings over time). it stores nothing. a summary
+over several collections is the same check run on each of them.
 
-source contracts define the propositions and scopes a remote collector can
-establish. normalizers define the meaning of retained tool output. evaluators define
-claim semantics.
-
-provider-specific observations may derive provider-neutral assertions when the
-predicate is genuinely shared. the assertion keeps its stable semantic identity;
-provider details remain in its evidence, reasoning, and derivation provenance.
-
-GitHub packs select branch protection, revision checks, review history, or
-historical build-validation inputs. Azure DevOps packs select branch policy,
-review history, or policy-evaluation history. core
-derives provider URLs from verified repository context, obtains a local
-credential, performs HTTPS, captures pagination, and strips credential-bearing
-metadata before persistence. packs receive exact retained response bytes, never
-credentials.
+each step of each item gets one of five results: `kept`, `broken`, `pending`,
+`cannot tell`, or `n/a`. the code is in `src/process/check.rs`. when the
+events a step asks for aren’t there, it matters whether the collection could
+have contained them: if a gap or a note says it couldn’t, the answer is
+`cannot tell`, and `broken` is kept for the cases where the collection is
+complete for that question.
 
 ## packs
 
-The public pack protocol is also the OSS/commercial boundary. Commercial packs
-may maintain control definitions, compatibility promises, mappings, and exports,
-but receive no privileged state, credential, or acquisition access. Core remains
-responsible for exact evidence, provenance, coverage, validation, persistence,
-and offline verification. See `docs/commercial-packs.md`.
+a pack is a program declared in `divinate.yaml`. it gets one json request on
+standard input and answers with one json document.
+[docs/packs.md](docs/packs.md) describes the protocol, and the code is in
+`src/pack.rs` and `src/pack/source.rs`.
 
-```text
-pack collector
-  → core execution
-  → core evidence
-  → pack normalization
-  → pack evaluation
-  → core assertions and views
-```
+packs exist because a rule language that could express everything would be a
+programming language. the definition format stays small, and anything that
+needs real logic (parsing a description, a calculation over many items) goes
+into a pack, in whatever language its author likes.
 
-protocol version 1 has four operations: `describe`, `collect`, `normalize`,
-and `evaluate`.
+a pack can judge items in a `check`, and it can be a source. a few choices
+keep either from weakening the rest:
 
-`collect` returns either a command plan or one narrow provider-aware acquisition
-plan. core executes it and binds the resulting execution or acquisition
-transcript to the pack invocation. `normalize` receives retained source bytes
-and returns typed observation fields. core assigns observation identity and
-provenance.
+- a check pack is shown derived items, never transcripts, so it works on the
+  same model on every platform. nothing it answers is stored, and a report
+  names the packs that took part and their versions.
+- a source pack makes its own requests. this is the one place where core
+  doesn’t do the reading, because a pack that had to describe every request
+  in advance couldn’t read much. in exchange it hands back every response,
+  and core seals them as transcripts, so they’re covered by `verify` like any
+  others.
+- a source pack derives in a separate request that gets the transcripts and
+  nothing else. that keeps the property the built-in sources have: the model
+  is a function of the transcripts and can be worked out again later. the
+  collection records the pack and its version, and `verify` asks that
+  version again when it’s configured.
+- what a source pack derives is checked before it’s stored: ids stay in the
+  pack’s own namespace, and every statement names transcripts that exist.
+- a pack is started with an almost empty environment and gets the variables
+  its entry names. a reading that repeats one of those values is refused.
 
-`evaluate` receives the observations and collection runs declared by the pack's
-metadata. core assigns assertion and evaluator identity, validates evidence
-references, and recomputes each coverage decision. a supported coverage-backed
-assertion requires an interval and complete coverage for every proposition declared
-by its evaluator.
+a pack can also ship process definitions, which is how a set of rules for a
+framework or a company policy can be handed around as one thing.
 
-a pack defines which propositions its claims require. core can verify declared
-coverage but cannot detect an omitted requirement.
+## verifying
 
-each invocation stores the pack id and version, executable digest, protocol version,
-operation, exact request, canonical response, and content digests. collection
-invocations also name the execution or acquisition transcripts. observation
-provenance names its pack invocations, and pack assertions name the evaluation
-invocation.
+`verify` needs no network and no token. for every collection it recomputes
+the id of each transcript and the checksum of each body, runs the derivation
+again, and compares the result with the stored collection. a collection with
+a different `DERIVATION` has its files checked and is reported as derived by
+other rules.
 
-collection plans bind directly to execution transcripts. observations name the
-execution references needed to verify their retained source bytes.
-
-packs run as the current user. divinate clears their environment, creates a
-temporary working directory, omits the state path, drains both output streams, and
-applies a configurable timeout.
-
-saved pack assertions remain verifiable without executing the pack. reevaluation
-uses the currently configured executable. reproducing an old derivation requires
-configuring the corresponding old executable.
-
-protocol version 1 plans local commands and named provider-aware acquisitions:
-six GitHub resources and four Azure DevOps resources, listed in
-`docs/packs.md`. it does not expose arbitrary authenticated HTTP or
-secret-bearing headers.
-
-the repository dogfoods this boundary with in-tree Cargo.lock and GitHub packs
-declared in root `divinate.yaml`. the GitHub pack owns endpoint interpretation;
-core alone owns its credential and network acquisition.
-
-## distribution
-
-packs are separate executables configured by path. they may use a different source
-tree and license from core. their derived evidence remains in the portable core
-formats.
-
-unknown protocol versions and operations fail. there is no capability fallback or
-protocol negotiation.
-
-## product scope
-
-the review-control reference capability separates current configuration from
-historical recorded approval. provider-specific activity/push, PR association,
-and review contracts feed one provider-neutral historical assertion. support
-requires complete branch mutation and associated review populations; complete
-PR enumeration is not substituted for mutation visibility. one authoritative
-direct integration or completely enumerated unapproved PR is a counterexample.
-current policy is never used as historical evidence. recorded approval before
-integration does not establish all historical stale-review/reset rules. the
-GitHub and Azure DevOps reference packs are separate Rust executables; core
-retains and verifies their sanitized composite acquisition transcripts.
-
-divinate provides repository-local evidence storage, collection and execution
-provenance, coverage assessment, typed assertions, historical evaluation, and
-file-based views.
-
-it has no hosted backend, ui, account model, compliance catalog, pack registry,
-policy language, confidence score, scanner framework, or llm interpretation.
+this shows that the directory is intact and consistent with itself. the
+directory isn’t signed, so it doesn’t show where it came from.
+[docs/security.md](docs/security.md) describes what that means in practice.

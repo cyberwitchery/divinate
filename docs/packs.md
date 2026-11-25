@@ -1,293 +1,429 @@
-# external packs
+# packs
 
-a pack adds questions divinate can answer, and the evidence sources to answer
-them. a pack's answers appear alongside the built-in ones, with the same five
-results, coverage rules, and provenance.
+a pack adds to what divinate can do. it’s a small program that you (or
+someone you trust) write in any language. a pack can do three things: judge
+things that a process definition can’t express on its own, ship ready-made
+process definitions, and read a system that divinate doesn’t know.
 
-technically, a pack is an executable that supplies collectors, normalizers, or
-evaluators without writing divinate state. core still executes commands, assigns identity,
-checks provenance and coverage, and persists the result.
+a typical reason to write one: your policy says that every pull request has a
+checklist in its description and that all boxes are ticked. divinate has the
+description, but no step that reads task lists. a pack can read it.
 
-## declarative collection configuration
+## using a pack
 
-declare the pack and a source backed by one of its collectors in
-`divinate.yaml`:
+packs are declared in `divinate.yaml`, which divinate looks for in the
+directory you run it in (`--config <file>` names another one):
 
 ```yaml
 packs:
-  example.backup-control:
-    executable: divinate-pack-backup-control
-    config:
-      repository: github:cyberwitchery/example
-
-sources:
-  backup-encryption:
-    provider:
-      pack: example.backup-control
-      collector: backup-encryption
-    required: true
+  checklist:
+    command: ./divinate-pack-checklist
 ```
 
-`divinate collect` invokes enabled sources sequentially in deterministic source-id
-order and then evaluates the current state. sources receive repository context by
-default. set `context: release` on the source when the collector needs
-core-resolved release and revision identities. sources are required by default;
-presence in the map means enabled.
+the name under `packs` is how definitions and commands refer to the pack.
+these are the keys of an entry:
 
-a required failure aborts the prepared collection increment. an optional failure
-is shown as `failed (optional)` and the unavailable pack's evaluators are skipped
-for that cycle. permission failures, protocol errors, and collector error details
-remain visible in the report.
+| key | meaning |
+|---|---|
+| `command` | the program. a path is taken relative to the configuration file, and a bare name is looked up on your `PATH` |
+| `args` | arguments for the program |
+| `working_dir` | the directory the pack runs in. the directory of the configuration file by default |
+| `inherit` | names of environment variables the pack gets from your environment, such as a token it needs |
+| `env` | environment variables set for the pack, written out here. don’t put secrets in this one |
+| `timeout_seconds` | how long a request to the pack may take. 300 by default |
+| `setup` | settings for the pack, handed to it with every request. what goes here is up to the pack |
 
-explicit pack operations remain available:
+a pack starts with an almost empty environment. it only sees a token when its
+entry lists the variable under `inherit`.
 
-```sh
-divinate packs
-divinate pack example.backup-control
-divinate collect pack example.backup-control backup-encryption
+this repository has an example in [examples/](../examples/divinate.yaml):
+
+```console
+$ cd examples
+$ divinate pack checklist
+checklist 0.1.0
+checks the task list in the description of a ticket or change
+
+checks
+  checklist/completed  for a step. every box is checked
+  checklist/share  for a measure. the share of items with every box checked
+
+process definitions
+  checklist:merged  merged changes have a completed checklist
 ```
 
-pack and source are separate concepts. the pack is the executable distribution
-unit. a source selects one collector from that pack, gives it recurring
-configuration and context, and controls whether it is enabled or required.
+the definitions a pack ships can be checked right away, by writing
+`<pack>:<name>` where the file would go:
 
-## built-in sources
+```console
+$ divinate check checklist:merged
+checklists · github:cyberwitchery/divinate · as of 2026-11-24T23:59:25Z
+changes merged 2026-08-26T23:57:02Z to 2026-11-24T23:57:02Z: 41 read
 
-built-in integrations use the same source configuration and collection loop.
-the release sbom integration remains built in because its current workflow
-retains two independently executed commands and requires their output bytes to
-match. protocol version 1 describes one collector command per invocation, so
-hiding the second command inside a pack would lose direct execution provenance.
+item                              checklist completed
+github:cyberwitchery/divinate#6   broken
+github:cyberwitchery/divinate#7   broken
+...
 
-this is a distribution choice, not a second product workflow:
+checklist completed  41 broken
+
+completed share  0% (0 of 41 items)
+
+not kept
+  github:cyberwitchery/divinate#6 · checklist completed: broken, the description has no checklist
+  ...
+
+packs: checklist 0.1.0
+```
+
+the last line names the packs that took part, with their versions, so a result
+can be traced to the code that produced it.
+
+you can also use a pack’s checks in your own definitions. a check goes in one
+of three places, depending on what it answers:
 
 ```yaml
-sources:
-  release-sbom:
-    provider:
-      builtin: release-sbom
-    required: true
-    config:
-      executable: sbom-diff
-      sbom_path: dist/{release}.cdx.json
+process: merge requests
+items:
+  kind: change
+  when: merged
+steps:
+  - name: reviewed
+    event: approval
+    by: someone else
+    before: merge
+  - name: checklist completed
+    uses: checklist/completed        # a result for each item
+overall:
+  - name: enough reviewers
+    uses: acme/reviewer-spread       # one result for all items together
+    with:
+      minimum: 3
+measures:
+  - name: completed share
+    uses: checklist/share            # a number
 ```
 
-repository and release identity are core context. locating sboms, invoking the
-configured executable, applying the gate, and interpreting its output belong to
-the built-in source.
+`divinate check checklist:` (with nothing after the colon) checks every
+definition the pack ships in one run.
 
-## protocol
+`with` passes settings to the check. what they are is up to the pack.
+`divinate pack <name>` tells you which of the three places each check is for.
+steps that use a pack sit next to ordinary steps and get the same five
+results. a step with `uses` can also have `linked`, which hands the pack the
+pull requests that close a ticket instead of the ticket.
 
-Commercial packs use this same protocol and may declare maintained compatibility
-metadata. See [commercial packs](commercial-packs.md) for the public boundary and
-the historical build-validation acquisition resources.
+## a pack as a source
 
-protocol version 1 has four operations:
+a pack can also read a system and add collections of its own. the pack in
+[packs/](../packs/divinate-pack-osv) does that: for every release of a github
+repository it reads the sboms attached to it, and asks [osv.dev](https://osv.dev)
+which known vulnerabilities their components have.
 
-- `describe` returns metadata, collectors, evaluators, source contracts,
-  evaluator inputs, coverage propositions, and configuration shape.
-- `collect` returns either a local command plan or one supported provider-aware
-  remote acquisition plan for core to execute and retain.
-- `normalize` converts retained command output into typed observation fields.
-- `evaluate` derives structured assertion fields from selected saved state.
+```yaml
+packs:
+  osv:
+    command: ./divinate-pack-osv
+    inherit: [GITHUB_TOKEN]
+    timeout_seconds: 900
+    setup:
+      sbom: '*.cdx.json'
+```
 
-core writes one json request to the pack's stdin and reads one json response
-from its stdout.
-[`schema/pack-protocol.schema.json`](../schema/pack-protocol.schema.json)
-describes the request, with `input` typed by `operation`.
-[`schema/pack-response.schema.json`](../schema/pack-response.schema.json)
-describes the response, and its `$defs/describe`, `collect`, `normalize`, and
-`evaluate` type each operation's result. where core refuses unknown members, the
-schemas do too.
+```console
+$ divinate collect osv:cyberwitchery/sbom-diff
+collected osv:cyberwitchery/sbom-diff: 14 records, 0 gaps
+col_6ea5e976003a755e4ab7
+$ divinate show
+osv:cyberwitchery/sbom-diff · collected 2026-11-25T08:46:51Z · col_6ea5e976003a755e4ab7
+14 records, 0 gaps
 
-| operation | `input` | `result` |
-| --- | --- | --- |
-| `describe` | `null` | pack metadata |
-| `collect` | `collector`, `context` | one collection plan |
-| `normalize` | `adapter`, `source` (`content`, `sha256`), `subject` | one observation's fields |
-| `evaluate` | `evaluator`, `corpus`, `target`, `evaluated_at`, `coverage` | an array of assertions |
+osv:cyberwitchery/sbom-diff
+  ■ findings  1 finding
+  ■ releases  5 releases
+```
 
-`configuration` is the pack's `config` from `divinate.yaml`, `{}` when it sets
-none:
+the name before the colon picks the pack. the result is an ordinary
+collection: `show` and `ledger` print it, and rules work on it. every known
+vulnerability is a finding that is opened when it’s first known of a release
+and closed by the next release that no longer has it, so this definition asks
+whether vulnerable dependencies get replaced within a month:
+
+```yaml
+process: known vulnerabilities
+items:
+  kind: finding
+steps:
+  - name: fixed in a release
+    event: closed
+    within: 30d
+```
+
+```console
+$ divinate check known-vulnerabilities.yaml
+known vulnerabilities · osv:cyberwitchery/sbom-diff · as of 2026-11-25T08:47:36Z
+findings opened 2026-08-27T08:46:51Z to 2026-11-25T08:46:51Z: 1 read
+
+item                                           fixed in a release
+osv:cyberwitchery/sbom-diff RUSTSEC-2026-0543  broken
+
+fixed in a release  1 broken
+
+not kept
+  osv:cyberwitchery/sbom-diff RUSTSEC-2026-0543 · fixed in a release: broken, no closed within 30d
+```
+
+(that one is “chrono is unmaintained”, and all five releases of the period
+have it.)
+
+a finding’s label is its severity: the word the database gives (`high`), the
+band of its cvss 3 score, or for a notice that isn’t a vulnerability the kind
+of notice (`unmaintained`). `items.label` selects by it.
+
+a source pack makes its own requests, and hands divinate every response it
+got. divinate stores them the same way it stores its own, so `verify` covers
+them. `verify` also asks the pack to work out the collection again from the
+stored responses, as long as the same version of the pack is configured. on a
+machine without the pack, `verify` still checks the files and says which pack
+it would need for the rest:
+
+```
+col_…: derived by the pack osv 0.1.0, which is not configured here; bytes checked, statements not recomputed
+```
+
+## writing a pack
+
+divinate starts the pack, writes one json request to its standard input, and
+reads one json answer from its standard output. every request has
+`"protocol": 1`, a `"request"` that says what is asked, and the `"setup"`
+from the configuration. a pack answers `describe`, and then `check` if it has
+checks, or `collect` and `derive` if it is a source.
+
+### describe
 
 ```json
-{"configuration":{},"input":null,"operation":"describe","protocol_version":1}
+{"protocol": 1, "request": "describe", "setup": null}
 ```
 
-a configured source's collector receives `repository`, `branch`, `revision`,
-`repository_path`, `interval`, `observed_at`, the source's `configuration`, and
-`release` as its `context`. `release` is null unless the source sets
-`context: release`. `divinate collect pack` passes its `--context` file instead,
-or null without one.
-
-a pack answers `{"ok":true,"result":...}` with the operation's result, or
-`{"ok":false,"error":"..."}` and exit zero for a semantic failure. a non-zero
-exit, invalid json, trailing stdout, a missing or null result, timeout, or
-incompatible protocol version fails the operation.
-
-the cargo-lock pack answers `describe` with:
+the pack answers with what it offers:
 
 ```json
-{"ok":true,"result":{
-  "id":"cyberwitchery.cargo-lock",
-  "version":"0.1.0",
-  "protocol_version":1,
-  "collectors":["lockfile"],
-  "evaluators":["lockfile-captured"],
-  "evaluator_inputs":{"lockfile-captured":["cargo:dependency-lock"]},
-  "evaluator_propositions":{"lockfile-captured":[]},
-  "source_contracts":[],
-  "configuration_schema":{}
-}}
+{
+  "protocol": 1,
+  "name": "checklist",
+  "version": "0.1.0",
+  "description": "checks the task list in the description of a ticket or change",
+  "checks": [
+    {"name": "completed", "answers": "each_item", "description": "every box is checked"},
+    {"name": "share", "answers": "number", "description": "the share of items with every box checked"}
+  ],
+  "processes": [
+    {"name": "merged", "description": "merged changes have a completed checklist", "definition": "process: checklists\n..."}
+  ]
+}
 ```
 
-`evaluator_inputs` limits an evaluator to declared claim keys.
-`evaluator_propositions` limits the collection runs it receives and defines the
-coverage requirements core enforces. relevant zero-result collection runs remain
-available to evaluators.
+a pack can also declare `"frameworks"`, in the same form as in a
+[process definition](processes.md#frameworks). the definitions it ships can
+then map to them without repeating the list of requirements, which is how a
+pack carries the mapping of a whole set of rules to a standard.
 
-the examples under [`packs/`](../packs) include an sbom collector, a
-configuration collector, the in-tree GitHub and Azure DevOps sources, and a
-separately distributed evaluator. [`fixtures/pack-protocol`](../fixtures/pack-protocol)
-holds requests core sent them for every operation and each pack's exact stdout,
-captured with
-`DIVINATE_PACK_PROTOCOL_CAPTURE=fixtures/pack-protocol cargo test --test pack pack_protocol_messages`.
-ci validates them, and a fresh capture, against the schemas.
+`name` has to match the name in `divinate.yaml`. a source also has
+`"collects": {"scopes": "osv:<owner>/<repository>", "description": "..."}`.
+`answers` is `each_item` for a check used in
+a step, `all_items` for one used under `overall`, and `number` for a measure.
+a `definition` is the text of a [process definition](processes.md), and it can
+use the pack’s own checks.
 
-a collection plan names its `adapter`, `subject`, and `observed_at`, and exactly
-one of `command`, a local command for core to execute, or `acquisition`, a
-remote read. remote plans are provider-aware and deliberately narrow. the GitHub
-pack plans `branch-protection` as:
+### check
 
 ```json
-{"ok":true,"result":{
-  "acquisition":{"max_pages":10,"per_page":100,"provider":"github","resource":"branch_protection"},
-  "adapter":"github-branch-protection/v1",
-  "observed_at":"2026-11-23T08:32:44.419494Z",
-  "subject":{"branch":"main","id":"github:cyberwitchery/example","kind":"repository","repository":"github:cyberwitchery/example","revision":"166b402faf0b2ff15eba2dff6f07af02c9c9dbcc"}
-}}
+{
+  "protocol": 1,
+  "request": "check",
+  "check": "completed",
+  "setup": null,
+  "with": {},
+  "collection": {
+    "scope": "github:cyberwitchery/divinate",
+    "as_of": "2026-11-24T23:59:25Z",
+    "interval": {"from": "2026-08-26T23:57:02Z", "until": "2026-11-24T23:57:02Z"}
+  },
+  "items": [
+    {
+      "id": "github.com/ticket/6136000333",
+      "kind": "ticket",
+      "name": "github:cyberwitchery/divinate#27",
+      "author": "github:hellerve",
+      "state": {
+        "number": 27,
+        "title": "configured_review_requirement tests a fixed two-approval policy and always names main",
+        "description": "## problem\n\n...",
+        "labels": ["bug"],
+        "state": "closed",
+        "opened_at": "2026-10-31T14:33:40Z",
+        "closed_at": "2026-11-20T21:16:12Z",
+        "merged_at": null
+      },
+      "events": [
+        {"kind": "opened", "at": "2026-10-31T14:33:40Z", "by": "github:hellerve", "name": null},
+        {"kind": "closed", "at": "2026-11-20T21:16:13Z", "by": "github:hellerve", "name": null}
+      ],
+      "unread": null,
+      "closed_by": [
+        {"id": "github.com/change/6519720155", "kind": "change", "name": "github:cyberwitchery/divinate#64", "...": "..."}
+      ]
+    }
+  ]
+}
 ```
 
-an Azure DevOps acquisition takes no `per_page`:
-`{"max_pages":10,"provider":"azure_devops","resource":"branch_policy"}`.
+`items` are the items the definition picked. each one has:
 
-GitHub resources are `branch_protection`, `check_runs`, `commit_statuses`,
-`repository_mutations`, `pull_request_reviews`, and `build_validation_history`.
-Azure DevOps exposes `branch_policy` and the same three historical resource
-names. the build-validation history resources are described in
-[commercial packs](commercial-packs.md#historical-build-validation). the pack
-supplies no URL, headers, or credential. core derives each API URL from verified repository context,
-scopes authentication to the provider host, disables redirects, and captures
-pagination.
+| field | meaning |
+|---|---|
+| `id` | the id to answer with |
+| `state` | what the item is. a pull request also has `target_branch` and `paths`, and a release has `tag` and `assets`. [state and formats](state.md) shows them |
+| `events` | everything that happened to it, oldest first. the `name` of a check event is the name of the check |
+| `unread` | which events are missing and why, when a part of them couldn’t be read. `events` is `null` when none of them could |
+| `closed_by` | the pull requests that close it, each with its own state and events |
 
-the commit-status resource uses GitHub's combined-status endpoint. it returns
-the latest status for each context rather than the raw status history. Divinate
-still follows pagination and requires `total_count` to match the retained
-statuses before treating that mechanism as complete.
+what the pack answers depends on the kind of check. for `each_item`, a result
+per item:
 
-the Azure DevOps branch-policy resource first resolves the configured repository
-name to Azure's repository ID, then calls the Git policy-configurations endpoint
-for the fully qualified branch ref. both responses and every continuation page
-are retained. its contract establishes the current configuration Azure DevOps
-reported for that repository branch at acquisition time. it does not establish
-historical review or build enforcement.
+```json
+{"results": [
+  {"item": "github.com/ticket/6136000333", "outcome": "broken", "reason": "the description has no checklist"}
+]}
+```
 
-### historical approving review
+for `all_items`, one result:
 
-both Rust reference packs expose `repository-mutations` and
-`pull-request-reviews` collectors. enable both to evaluate the provider-neutral
-`every_main_change_reviewed` assertion over `collect --from ... --until ...`.
-intervals are half-open: `from <= integration_time < until`.
+```json
+{"outcome": "kept"}
+```
 
-the proposition is: every branch ref mutation in the interval was attributable
-to a PR with at least one recorded approval by someone other than its author
-before integration. this is not a claim that the then-applicable approval policy
-was satisfied. current policy never supplies historical review evidence.
+and for `number`:
 
-GitHub core enumerates repository activity for the branch, follows pagination,
-and retains commit-to-PR associations and each associated PR's reviews. activity
-explicitly identified as a push or force push is a counterexample. PR merges
-require a unique association whose `merge_commit_sha` matches the resulting
-branch revision. GitHub defines that field for merge, squash, and rebase merges
-in its [PR API documentation](https://docs.github.com/en/rest/pulls/pulls).
-unsupported or ambiguous associations leave a gap. the activity resource is
-queried with `time_period=year`; older requested scope is retention-limited.
+```json
+{"value": 0, "unit": "percent", "basis": "0 of 41 items"}
+```
 
-Azure core enumerates branch pushes for the exact interval and completed PRs
-targeting the branch. mutation association enumerates all completed PRs rather
-than applying the push interval to PR closure timestamps. each unique resulting
-revision is joined to `lastMergeCommit.commitId`. vote-update threads provide
-reviewer identity, vote, and time; final reviewer votes alone do not establish
-chronology. votes `10` and `5` record approval, `-10` and `-5` do not; zero and
-unrecognized values remain unresolved. see the
-[thread API](https://learn.microsoft.com/en-us/rest/api/azure/devops/git/pull-request-threads/list?view=azure-devops-rest-7.1).
+an `outcome` is one of `kept`, `broken`, `pending`, `cannot_tell`, and
+`not_applicable`, and every outcome but `kept` needs a `reason`, which is
+what the person reading the output sees. an item the pack returns no result
+for is shown as `cannot tell`.
 
-support requires complete authoritative mutation and review coverage, complete
-PR associations, and a qualifying approval for every integration. an
-authoritative direct integration or a complete PR review record without a
-pre-integration approval contradicts. incomplete enumeration, missing mapping,
-unknown states, and retention gaps remain insufficient. dismissed GitHub
-reviews cannot reconstruct their former state and remain unresolved when no
-other approval establishes the predicate. recorded approval does not prove
-stale-review or vote-reset policy satisfaction.
+a good pack is as careful as divinate itself about what it doesn’t know: when
+`events` is `null`, or `unread` names the kind of event the check needs, the
+right answer is `cannot_tell`.
 
-the versioned contracts remain provider-specific:
-`github-repository-mutations/v1`, `github-pull-request-reviews/v1`,
-`azure-devops-repository-mutations/v1`, and
-`azure-devops-pull-request-reviews/v1`. core retains a composite acquisition
-transcript containing every request, exact body, pagination link, and termination.
-the normalizer receives that sanitized transcript, not credentials or network
-access. offline verification binds the normalized source to its canonical
-transcript bytes. adjacent complete windows compose; an uncovered interval does
-not disappear merely because later evidence exists.
+if something goes wrong, the pack should write a message to its standard
+error and exit with a status other than zero. divinate prints the message and
+stops.
 
-## execution and retained configuration
+### collect
 
-pack processes receive the request document, an empty environment, and a
-temporary working directory. they do not receive the state path. operations time
-out after 30 seconds unless `timeout_seconds` changes the limit.
+```json
+{
+  "protocol": 1,
+  "request": "collect",
+  "setup": {"sbom": "*.cdx.json"},
+  "path": "acme/shop",
+  "period": {"from": "2026-08-26T00:00:00Z", "until": "2026-11-24T00:00:00Z"}
+}
+```
 
-configuration is read from committed YAML and retained in the invocation. each
-normal collection also names a content-addressed snapshot of the complete YAML.
-credential-like configuration keys are refused. authenticated sources require a
-core-owned acquisition path that keeps credentials out of retained protocol
-data.
+`path` is what came after the colon. the pack reads what it needs and answers
+with a list of readings. a reading is one question to the system, with every
+request it took:
 
-## evaluation
+```json
+{"readings": [
+  {
+    "resource": "osv/query/v1",
+    "subject": "osv:acme/shop",
+    "parameters": {"release": "v1.2.0", "asset": "shop.cdx.json", "part": "0"},
+    "captured_at": "2026-11-24T10:00:03Z",
+    "exchanges": [
+      {
+        "request": {"method": "POST", "url": "https://api.osv.dev/v1/querybatch", "body": "{\"queries\":[...]}"},
+        "response": {"status": 200, "headers": {"date": "..."}, "body": "{\"results\":[...]}"}
+      }
+    ],
+    "termination": {"kind": "exhausted"}
+  }
+]}
+```
 
-an evaluator receives only:
+- `resource` names the kind of question and starts with the pack’s name.
+- bodies go in as they arrived, as text. leave out request headers, since
+  that’s where tokens are, and only keep the response headers you need.
+- `termination` says how it ended: `exhausted` when everything was read, or
+  one of the kinds in [state and formats](state.md#a-transcript) with a
+  `diagnostic`. a reading that failed is still a reading. hand it back with
+  what happened, and say in `derive` what is missing because of it.
 
-- observations matching its declared claim keys;
-- collection runs matching its declared propositions;
-- source documents referenced by those observations; and
-- the evaluation target.
+divinate refuses the whole answer if a reading contains the value of a
+variable the pack got through `inherit`.
 
-the response supplies assertion type, claim, subject, outcome, evaluation time,
-validity, evidence uses, gaps, identity joins, reasoning, limitations, and
-coverage. core computes assertion and derivation identity; a response that
-carries `id` or `derivation` is refused.
+### derive
 
-each coverage decision must name a declared proposition and equal core's own
-assessment. a supported coverage-backed assertion requires a non-empty interval
-and complete coverage for every declared proposition. point-in-time support may
-instead resolve to a complete authoritative acquisition run. core validates
-declared requirements but cannot detect a proposition the pack failed to declare.
+```json
+{"protocol": 1, "request": "derive", "transcripts": [{"id": "acq_…", "contents": {"...": "..."}}]}
+```
 
-## provenance and security
+the transcripts are the readings from `collect`, each with the id divinate
+gave it. the pack answers with what they mean, in the model that
+[state and formats](state.md) describes:
 
-installing a pack grants it the invoking user's filesystem and network
-permissions. divinate does not sandbox packs.
+```json
+{
+  "entities": [
+    {"uid": "osv/repository/github.com/acme/shop", "class": "scope", "kind": "repository", "native_kind": "repository", "name": "osv:acme/shop"}
+  ],
+  "statements": [
+    {
+      "about": "osv/repository/github.com/acme/shop",
+      "aspect": "findings",
+      "population": {"of": "finding", "interval": {"from": "...", "until": "..."}},
+      "value": {"members": []},
+      "transcripts": ["acq_…"]
+    }
+  ],
+  "relations": []
+}
+```
 
-each invocation retains executable digest, pack id and version, protocol version,
-operation, request, response, and content digests. collection invocations also
-retain the resulting execution id or acquisition transcript ids.
+a statement has a `value`, or a `gap` with the reason when it couldn’t be
+read, and can have a `note`. to work with the built-in rules, use the same
+kinds, aspects, and events as divinate does: a `finding` has a state with
+`title`, `state`, `labels`, `opened_at`, and `closed_at`, and an `events`
+statement that lists its event entities.
 
-packs cannot persist corpus files directly. core validates identities, references,
-coverage, and collisions before writing state. saved invocations and assertions
-verify without the pack. reevaluation executes the currently configured binary;
-reproducing an older derivation requires that older executable.
+four rules make sure a pack’s collection can be trusted like any other:
 
-protocol version 1 accepts only the named provider-aware GitHub and Azure DevOps
-acquisition plans above. it is not arbitrary authenticated HTTP. unknown
-providers, resources, versions, and operations fail; there is no capability
-fallback.
+- the pack’s `version` changes whenever `derive` would say something
+  different about the same transcripts. `verify` only asks a pack of the
+  version that made the collection, and a pack that changed its mind without
+  changing its version makes `verify` fail.
+- `derive` gets no `setup` and must not read anything else. the answer has to
+  follow from the transcripts alone, since `verify` asks again later.
+- every `uid` starts with the pack’s name and a `/`.
+- every statement is about an entity in the answer and names transcripts from
+  the request.
+
+divinate refuses an answer that breaks one of them.
+
+### what a pack can rely on
+
+- a pack gets one request per start.
+- it runs with an almost empty environment: `PATH`, `HOME`, `LANG`, `TMPDIR`,
+  and what its entry lists under `inherit` and `env`.
+- a check only gets the items of the request, and nothing it answers is
+  stored.
+- `protocol` is `1`. divinate refuses a pack that names another version.
+
+the [checklist pack](../examples/divinate-pack-checklist) is about 70 lines
+of python and a good place to start for checks. the
+[osv pack](../packs/divinate-pack-osv) is a complete source.

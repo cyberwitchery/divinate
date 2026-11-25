@@ -1,0 +1,5 @@
+# the packs in this directory. run divinate from here, or pass this file
+# with `--config`.
+packs:
+  checklist:
+    command: ./divinate-pack-checklist

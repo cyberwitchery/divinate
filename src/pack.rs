@@ -1,1794 +1,458 @@
-//! external pack protocol.
+//! packs: checks and process definitions that live outside this crate.
 //!
-//! packs implement `describe`, `collect`, `normalize`, and `evaluate` through
-//! one json request and response. core executes command plans, assigns evidence
-//! identity, persists state, and verifies declared coverage.
+//! a pack is a program that `divinate.yaml` declares. it is given one json
+//! request on its standard input and answers with one json document on its
+//! standard output. a pack can judge the items of a process check, ship
+//! process definitions, and be a source: it reads a system itself and hands
+//! back the responses, which are kept as transcripts like any other.
 //!
-//! [`PackInvocation`] retains executable identity and exact protocol data. packs
-//! define source-specific semantics and run unsandboxed with a cleared environment,
-//! temporary working directory, omitted state path, and timeout.
+//! a pack is run with an almost empty environment. it gets the variables its
+//! configuration names, and nothing else of the environment of divinate.
+
+pub mod source;
 
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::{ErrorKind, Read, Write};
-use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH};
+use std::io::{Read as _, Write as _};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::assertions::{
-    AssertionSubject, AssertionType, Derivation, DerivedAssertion, EvaluationTarget, EvidenceUse,
-    IdentityJoin, MissingEvidence, Outcome, ReasonStep, Validity,
-};
-use crate::coverage::{self, CoverageDecision, CoverageOutcome};
 use crate::error::{Error, Result};
-use crate::execution::{BlobRef, ExecutionRequest, NamedPath};
-use crate::model::{EvidenceClass, ObservationKind, Proposition, Severity, Status, Subject};
-use crate::{canonical_json, credential_like, hex_digest};
 
-/// the pack protocol version this build speaks.
-///
-/// breaking changes use a new integer version.
-pub const PROTOCOL_VERSION: u8 = 1;
-/// the pack invocation format version this build writes.
-pub const TRANSCRIPT_SCHEMA_VERSION: &str = "0.1.0";
-const DEFAULT_TIMEOUT_SECONDS: u64 = 30;
+/// the version of the requests and answers in this module.
+pub const PROTOCOL: u64 = 1;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-/// where a pack executable lives, its configuration, and its timeout.
-pub struct PackConfig {
-    pub executable: PathBuf,
-    #[serde(default)]
-    pub configuration: Value,
-    #[serde(default = "default_timeout_seconds")]
-    /// how long one operation may run before it is terminated.
-    pub timeout_seconds: u64,
-}
-
-const fn default_timeout_seconds() -> u64 {
-    DEFAULT_TIMEOUT_SECONDS
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-/// what a pack says it provides.
-///
-/// evaluator input and coverage declarations.
-pub struct PackMetadata {
-    pub id: String,
-    pub version: String,
-    pub protocol_version: u8,
-    #[serde(default)]
-    pub collectors: Vec<String>,
-    #[serde(default)]
-    pub evaluators: Vec<String>,
-    #[serde(default)]
-    /// claim keys visible to each evaluator.
-    pub evaluator_inputs: BTreeMap<String, Vec<String>>,
-    #[serde(default)]
-    /// propositions visible to and required from each evaluator.
-    pub evaluator_propositions: BTreeMap<String, Vec<Proposition>>,
-    #[serde(default)]
-    pub source_contracts: Vec<String>,
-    #[serde(default)]
-    pub configuration_schema: Value,
-    #[serde(default)]
-    pub compatibility: Option<PackCompatibility>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-/// independently maintained compatibility and semantic-version metadata.
-pub struct PackCompatibility {
-    pub core: String,
-    pub control_definition_version: String,
-    #[serde(default)]
-    pub providers: Vec<String>,
-    #[serde(default)]
-    pub source_contracts: Vec<String>,
-    #[serde(default)]
-    pub control_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-struct Request {
-    protocol_version: u8,
-    operation: String,
-    configuration: Value,
-    input: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Response {
-    ok: bool,
-    #[serde(default)]
-    result: Option<Value>,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// one retained pack call, addressed by the digest of its contents.
-pub struct PackInvocation {
-    pub id: String,
-    pub schema_version: String,
-    pub contents: PackInvocationContents,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// the pack identity, executable digest, and the exact request and response.
-pub struct PackInvocationContents {
-    pub pack_id: String,
-    pub pack_version: String,
-    pub protocol_version: u8,
-    pub operation: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    /// for a collection, the execution core ran on the pack's behalf.
-    pub execution_transcript_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    /// for a remote collection, the acquisitions core performed for the pack.
-    pub acquisition_transcript_ids: Vec<String>,
-    pub executable: BlobRef,
-    pub request_sha256: String,
-    pub response_sha256: String,
-    pub request: String,
-    pub response: String,
-}
-
-#[derive(Debug, Clone)]
-/// a sealed invocation, the executable bytes behind it, and the parsed result.
-pub struct PackCapture {
-    pub invocation: PackInvocation,
-    pub executable_bytes: Vec<u8>,
-    pub result: Value,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-/// what a pack asks core to run, and how to interpret the result.
-pub struct CollectionPlan {
-    pub adapter: String,
-    pub subject: Subject,
-    pub observed_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<CommandPlan>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acquisition: Option<RemoteAcquisitionPlan>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-/// the core-owned work requested by one collector invocation.
-pub enum CollectionAction {
-    Local { command: CommandPlan },
-    Remote { acquisition: RemoteAcquisitionPlan },
-}
-
-impl CollectionPlan {
-    /// return the one core-owned action selected by this plan.
+/// what runs a pack: the executables on this machine, or a stand-in.
+pub trait Packs {
+    /// send one request to a pack and return its answer.
     ///
     /// # Errors
     ///
-    /// returns an error unless exactly one local or remote action is present.
-    pub fn action(&self) -> Result<CollectionAction> {
-        match (&self.command, &self.acquisition) {
-            (Some(command), None) => Ok(CollectionAction::Local {
-                command: command.clone(),
-            }),
-            (None, Some(acquisition)) => Ok(CollectionAction::Remote {
-                acquisition: acquisition.clone(),
-            }),
-            _ => Err(Error::Invalid(
-                "pack collection plan must select exactly one command or acquisition".into(),
-            )),
-        }
+    /// returns an error when the pack cannot be found or run, or does not
+    /// answer with json.
+    fn call(&self, pack: &str, request: &Value) -> Result<Value>;
+
+    /// the values a pack was handed that must not end up in the record,
+    /// such as a token it was given to read its source.
+    fn secrets(&self, _pack: &str) -> Vec<String> {
+        Vec::new()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
-/// one provider-aware remote acquisition that core can authenticate safely.
-pub enum RemoteAcquisitionPlan {
-    Github {
-        resource: GithubResource,
-        #[serde(default = "default_per_page")]
-        per_page: u16,
-        #[serde(default = "default_max_pages")]
-        max_pages: u16,
-    },
-    AzureDevops {
-        resource: AzureDevopsResource,
-        #[serde(default = "default_max_pages")]
-        max_pages: u16,
-    },
-}
+/// no packs at all. a definition that uses one cannot be checked.
+pub struct NoPacks;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-/// the narrow github resources supported by the first remote collector.
-pub enum GithubResource {
-    BranchProtection,
-    CheckRuns,
-    CommitStatuses,
-    RepositoryMutations,
-    PullRequestReviews,
-    BuildValidationHistory,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-/// the narrow azure devops resources core can acquire for packs.
-pub enum AzureDevopsResource {
-    BranchPolicy,
-    RepositoryMutations,
-    PullRequestReviews,
-    BuildValidationHistory,
-}
-
-const fn default_per_page() -> u16 {
-    100
-}
-
-const fn default_max_pages() -> u16 {
-    10
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-/// the command a pack asks core to execute on its behalf.
-pub struct CommandPlan {
-    pub tool_name: String,
-    #[serde(default)]
-    pub reported_version: Option<String>,
-    pub executable: PathBuf,
-    #[serde(default)]
-    pub argv: Vec<String>,
-    #[serde(default)]
-    pub inputs: BTreeMap<String, PathBuf>,
-}
-
-impl CommandPlan {
-    /// convert this plan into a core execution request.
-    #[must_use]
-    pub fn execution_request(&self) -> ExecutionRequest {
-        ExecutionRequest {
-            tool_name: self.tool_name.clone(),
-            reported_version: self.reported_version.clone(),
-            executable: self.executable.clone(),
-            argv: self.argv.clone(),
-            working_directory: None,
-            environment: BTreeMap::new(),
-            inputs: self
-                .inputs
-                .iter()
-                .map(|(name, path)| NamedPath {
-                    name: name.clone(),
-                    path: path.clone(),
-                })
-                .collect(),
-            outputs: vec![],
-        }
+impl Packs for NoPacks {
+    fn call(&self, pack: &str, _: &Value) -> Result<Value> {
+        Err(Error::Pack(format!(
+            "the pack {pack:?} is needed, and no packs are available here"
+        )))
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// typed observation fields returned by a pack, before core assigns identity.
-pub struct NormalizedObservation {
-    pub claim_key: String,
-    pub data: Value,
-    pub evidence_class: EvidenceClass,
-    pub kind: ObservationKind,
+/// the configuration file, `divinate.yaml`.
+pub struct Config {
     #[serde(default)]
-    pub severity: Option<Severity>,
-    #[serde(default)]
-    pub status: Option<Status>,
+    /// the packs that can be used, by name.
+    pub packs: BTreeMap<String, Entry>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct PackAssertion {
-    assertion_type: AssertionType,
-    claim: String,
-    subject: AssertionSubject,
-    outcome: Outcome,
-    evaluated_at: String,
-    validity: Validity,
-    support: Vec<EvidenceUse>,
-    contradictions: Vec<EvidenceUse>,
-    considered: Vec<EvidenceUse>,
-    missing: Vec<MissingEvidence>,
-    identity_joins: Vec<IdentityJoin>,
-    reasoning: Vec<ReasonStep>,
-    limitations: Vec<String>,
-    coverage: Vec<CoverageDecision>,
+/// how one pack is run.
+pub struct Entry {
+    /// the program. a path with a `/` in it is taken from the directory of
+    /// the configuration file, and a bare name is looked up on `PATH`.
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    /// the directory the pack runs in. the directory of the configuration
+    /// file when not given.
+    pub working_dir: Option<PathBuf>,
+    #[serde(default)]
+    /// the names of the environment variables the pack is given from the
+    /// environment of divinate, such as a token it needs to read its source.
+    pub inherit: Vec<String>,
+    #[serde(default)]
+    /// environment variables set for the pack, as written here.
+    pub env: BTreeMap<String, String>,
+    #[serde(default = "default_timeout")]
+    /// how long one request to the pack may take.
+    pub timeout_seconds: u64,
+    #[serde(default)]
+    /// what the pack is told with every request, as the pack defines it.
+    pub setup: Option<Value>,
 }
 
-/// inspect an external pack and retain the exchange.
-///
-/// # Errors
-///
-/// returns an error when execution, protocol parsing, or metadata validation fails.
-pub fn describe(config: &PackConfig) -> Result<(PackMetadata, PackCapture)> {
-    let capture = invoke(config, None, "describe", Value::Null)?;
-    let metadata: PackMetadata = serde_json::from_value(capture.result.clone())
-        .map_err(|error| Error::Invalid(format!("invalid pack metadata: {error}")))?;
-    validate_metadata(&metadata)?;
-    let capture = reseal(capture, &metadata)?;
-    Ok((metadata, capture))
+fn default_timeout() -> u64 {
+    300
 }
 
-/// ask a named collector for a core-executable command plan.
-///
-/// # Errors
-///
-/// returns an error when the collector is absent or its plan is invalid.
-pub fn plan(
-    config: &PackConfig,
-    metadata: &PackMetadata,
-    collector: &str,
-    context: &Value,
-) -> Result<(CollectionPlan, PackCapture)> {
-    if !metadata.collectors.iter().any(|item| item == collector) {
-        return Err(Error::Invalid(format!(
-            "pack {} does not provide collector {collector}",
-            metadata.id
-        )));
-    }
-    let capture = invoke(
-        config,
-        Some(metadata),
-        "collect",
-        serde_json::json!({"collector": collector, "context": context}),
-    )?;
-    let plan = serde_json::from_value(capture.result.clone())
-        .map_err(|error| Error::Invalid(format!("invalid pack collection plan: {error}")))?;
-    Ok((plan, capture))
+/// the packs a configuration file declares.
+pub struct Configured {
+    config: Config,
+    /// the directory of the configuration file.
+    home: PathBuf,
+    /// where the configuration was looked for, for a message.
+    origin: PathBuf,
 }
 
-/// bind a core execution transcript to the collection plan that caused it.
-///
-/// # Errors
-///
-/// returns an error when the captured execution does not match the plan.
-pub fn bind_execution(
-    mut capture: PackCapture,
-    transcript: &crate::execution::ExecutionTranscript,
-) -> Result<PackCapture> {
-    if capture.invocation.contents.operation != "collect" {
-        return Err(Error::Invalid(
-            "only a collect invocation can bind an execution".into(),
-        ));
-    }
-    let plan: CollectionPlan = serde_json::from_value(capture.result.clone())
-        .map_err(|error| Error::Invalid(format!("invalid retained collection plan: {error}")))?;
-    let CollectionAction::Local { command } = plan.action()? else {
-        return Err(Error::Invalid(
-            "remote collection plans cannot bind an execution".into(),
-        ));
-    };
-    validate_captured_execution(&command, transcript)?;
-    capture.invocation.contents.execution_transcript_id = Some(transcript.id.clone());
-    capture.invocation = seal(capture.invocation.contents)?;
-    Ok(capture)
-}
-
-/// bind core-owned acquisition transcripts to the collection plan that requested them.
-///
-/// # Errors
-///
-/// returns an error when the invocation is not a remote collection or no
-/// acquisition was recorded.
-pub fn bind_acquisitions(
-    mut capture: PackCapture,
-    transcript_ids: &[String],
-) -> Result<PackCapture> {
-    if capture.invocation.contents.operation != "collect" {
-        return Err(Error::Invalid(
-            "only a collect invocation can bind acquisitions".into(),
-        ));
-    }
-    let plan: CollectionPlan = serde_json::from_value(capture.result.clone())
-        .map_err(|error| Error::Invalid(format!("invalid retained collection plan: {error}")))?;
-    if !matches!(plan.action()?, CollectionAction::Remote { .. }) {
-        return Err(Error::Invalid(
-            "local collection plans cannot bind acquisitions".into(),
-        ));
-    }
-    if transcript_ids.is_empty() {
-        return Err(Error::Invalid(
-            "remote collection produced no acquisition transcript".into(),
-        ));
-    }
-    capture.invocation.contents.acquisition_transcript_ids = transcript_ids.to_vec();
-    capture.invocation = seal(capture.invocation.contents)?;
-    Ok(capture)
-}
-
-/// ask a pack to normalize exact retained source bytes.
-///
-/// # Errors
-///
-/// returns an error when invocation or typed response validation fails.
-pub fn normalize(
-    config: &PackConfig,
-    metadata: &PackMetadata,
-    adapter: &str,
-    source: &[u8],
-    source_sha256: &str,
-    subject: &Subject,
-) -> Result<(NormalizedObservation, PackCapture)> {
-    let content = String::from_utf8(source.to_vec())
-        .map_err(|_| Error::Invalid("pack source is not utf-8".into()))?;
-    let capture = invoke(
-        config,
-        Some(metadata),
-        "normalize",
-        serde_json::json!({
-            "adapter": adapter,
-            "source": {"content": content, "sha256": source_sha256},
-            "subject": subject,
-        }),
-    )?;
-    let observation = serde_json::from_value(capture.result.clone())
-        .map_err(|error| Error::Invalid(format!("invalid pack observation: {error}")))?;
-    Ok((observation, capture))
-}
-
-/// run one named pack evaluator over an explicit corpus and target.
-///
-/// # Errors
-///
-/// returns an error when invocation or assertion reference validation fails.
-pub fn evaluate(
-    config: &PackConfig,
-    metadata: &PackMetadata,
-    evaluator: &str,
-    corpus: &crate::model::Corpus,
-    target: &EvaluationTarget,
-    evaluated_at: &str,
-) -> Result<(Vec<DerivedAssertion>, PackCapture)> {
-    if !metadata.evaluators.iter().any(|item| item == evaluator) {
-        return Err(Error::Invalid(format!(
-            "pack {} does not provide evaluator {evaluator}",
-            metadata.id
-        )));
-    }
-    let claim_keys = metadata.evaluator_inputs.get(evaluator).ok_or_else(|| {
-        Error::Invalid(format!(
-            "pack {} does not declare inputs for evaluator {evaluator}",
-            metadata.id
-        ))
-    })?;
-    let propositions = metadata
-        .evaluator_propositions
-        .get(evaluator)
-        .ok_or_else(|| {
-            Error::Invalid(format!(
-                "pack {} does not declare coverage propositions for evaluator {evaluator}",
-                metadata.id
-            ))
+impl Configured {
+    /// read the configuration: the file given, or `divinate.yaml` in the
+    /// current directory. without a file there are no packs.
+    ///
+    /// # Errors
+    ///
+    /// returns an error when a file was given and cannot be read, or the
+    /// file is not a configuration.
+    pub fn load(given: Option<&Path>) -> Result<Self> {
+        let origin = given.map_or_else(|| PathBuf::from("divinate.yaml"), Path::to_path_buf);
+        let home = origin
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+        let text = match std::fs::read_to_string(&origin) {
+            Ok(text) => text,
+            Err(error) if given.is_none() && error.kind() == std::io::ErrorKind::NotFound => {
+                String::new()
+            }
+            Err(source) => {
+                return Err(Error::Io {
+                    path: origin,
+                    source,
+                })
+            }
+        };
+        let config = if text.trim().is_empty() {
+            Config::default()
+        } else {
+            serde_saphyr::from_str(&text).map_err(|source| Error::Yaml {
+                path: origin.clone(),
+                source: Box::new(source),
+            })?
+        };
+        // a pack is started in a directory of its own, so where it lives
+        // must not depend on where divinate was started.
+        let home = std::path::absolute(&home).map_err(|source| Error::Io {
+            path: home.clone(),
+            source,
         })?;
-    let mut scoped = corpus.clone();
-    let coverage_run_ids = scoped
-        .collections
-        .iter()
-        .filter(|run| propositions.contains(&run.requested_scope.proposition))
-        .map(|run| run.id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    scoped.observations.retain(|item| {
-        claim_keys.iter().any(|key| key == &item.claim_key)
-            || item
-                .collection_run_id
-                .as_deref()
-                .is_some_and(|id| coverage_run_ids.contains(id))
-    });
-    let source_ids = scoped
-        .observations
-        .iter()
-        .map(|item| item.provenance.source_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    scoped
-        .sources
-        .retain(|source| source_ids.contains(source.id.as_str()));
-    let observation_ids = scoped
-        .observations
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    scoped.collections.retain(|run| {
-        propositions.contains(&run.requested_scope.proposition)
-            || run
-                .observation_ids
-                .iter()
-                .any(|id| observation_ids.contains(id.as_str()))
-    });
-    let coverage = evaluator_coverage(corpus, target, propositions, evaluated_at)?;
-    let capture = invoke(
-        config,
-        Some(metadata),
-        "evaluate",
-        serde_json::json!({
-            "evaluator": evaluator,
-            "corpus": scoped,
-            "target": {
-                "repository": target.repository,
-                "branch": target.branch,
-                "release": target.release,
-                "from": target.from,
-                "until": target.until,
-                "mirror_of": target.mirror_of,
-            },
-            "evaluated_at": evaluated_at,
-            "coverage": coverage,
-        }),
-    )?;
-    let returned: Vec<PackAssertion> = serde_json::from_value(capture.result.clone())
-        .map_err(|error| Error::Invalid(format!("invalid pack assertions: {error}")))?;
-    let mut assertions = returned
-        .into_iter()
-        .map(|assertion| derived_assertion(assertion, &metadata.id, &metadata.version, evaluator))
-        .collect::<Result<Vec<_>>>()?;
-    validate_assertions(
-        &assertions,
-        corpus,
-        target,
-        metadata,
-        evaluator,
-        evaluated_at,
-    )?;
-    for assertion in &mut assertions {
-        assertion.derivation.pack_invocation_id = Some(capture.invocation.id.clone());
+        Ok(Self {
+            config,
+            home,
+            origin,
+        })
     }
-    Ok((assertions, capture))
+
+    /// whether a pack of this name is configured.
+    #[must_use]
+    pub fn has(&self, pack: &str) -> bool {
+        self.config.packs.contains_key(pack)
+    }
+
+    fn entry(&self, pack: &str) -> Result<&Entry> {
+        self.config.packs.get(pack).ok_or_else(|| {
+            Error::Pack(format!(
+                "the pack {pack:?} is not configured: {} has no `packs.{pack}`",
+                self.origin.display()
+            ))
+        })
+    }
 }
 
-fn evaluator_coverage(
-    corpus: &crate::model::Corpus,
-    target: &EvaluationTarget,
-    propositions: &[Proposition],
-    evaluated_at: &str,
-) -> Result<Vec<coverage::CoverageDecision>> {
-    let evaluated_at = crate::parse_timestamp(evaluated_at)?;
-    propositions
-        .iter()
-        .map(|proposition| {
-            coverage::assess(
-                corpus,
-                coverage::CoverageRequirement {
-                    proposition: *proposition,
-                    repository: target.repository.clone(),
-                    branch: Some(target.branch.clone()),
-                    interval: crate::model::TimeRange {
-                        from: target.from.clone(),
-                        until: target.until.clone(),
-                    },
-                },
-                evaluated_at,
+impl Packs for Configured {
+    fn call(&self, pack: &str, request: &Value) -> Result<Value> {
+        let entry = self.entry(pack)?;
+        let failed = |what: &str| Error::Pack(format!("the pack {pack:?} {what}"));
+        let program = if entry.command.contains('/') {
+            self.home.join(&entry.command)
+        } else {
+            PathBuf::from(&entry.command)
+        };
+        let mut command = Command::new(&program);
+        command
+            .args(&entry.args)
+            .current_dir(
+                entry
+                    .working_dir
+                    .as_ref()
+                    .map_or_else(|| self.home.clone(), |directory| self.home.join(directory)),
             )
-        })
-        .collect()
-}
-
-fn derived_assertion(
-    assertion: PackAssertion,
-    pack_id: &str,
-    pack_version: &str,
-    evaluator: &str,
-) -> Result<DerivedAssertion> {
-    let stable = serde_json::to_vec(&(&assertion.assertion_type, &assertion.subject))
-        .map_err(Error::Serialize)?;
-    Ok(DerivedAssertion {
-        id: format!("asrt_{}", &hex_digest(&stable)[..20]),
-        assertion_type: assertion.assertion_type,
-        claim: assertion.claim,
-        subject: assertion.subject,
-        outcome: assertion.outcome,
-        evaluated_at: assertion.evaluated_at,
-        validity: assertion.validity,
-        derivation: Derivation {
-            evaluator: format!("pack:{pack_id}/{evaluator}"),
-            version: pack_version.into(),
-            pack_invocation_id: None,
-        },
-        support: assertion.support,
-        contradictions: assertion.contradictions,
-        considered: assertion.considered,
-        missing: assertion.missing,
-        identity_joins: assertion.identity_joins,
-        reasoning: assertion.reasoning,
-        limitations: assertion.limitations,
-        coverage: assertion.coverage,
-    })
-}
-
-/// bind normalized pack output to a core-owned observation.
-///
-/// # Errors
-///
-/// returns an error when its timestamp or deterministic identity is invalid.
-pub fn observation(
-    normalized: NormalizedObservation,
-    metadata: &PackMetadata,
-    invocation: &PackInvocation,
-    source: &crate::model::SourceDocument,
-    subject: Subject,
-    observed_at: String,
-    execution_transcript_id: String,
-) -> Result<crate::model::Observation> {
-    observation_with_provenance(
-        normalized,
-        metadata,
-        invocation,
-        source,
-        subject,
-        observed_at,
-        None,
-        vec![execution_transcript_id],
-    )
-}
-
-/// bind normalized remote pack output to its core-owned collection run.
-///
-/// # Errors
-///
-/// returns an error when its timestamp or deterministic identity is invalid.
-pub fn remote_observation(
-    normalized: NormalizedObservation,
-    metadata: &PackMetadata,
-    invocation: &PackInvocation,
-    source: &crate::model::SourceDocument,
-    subject: Subject,
-    observed_at: String,
-    collection_run_id: String,
-) -> Result<crate::model::Observation> {
-    observation_with_provenance(
-        normalized,
-        metadata,
-        invocation,
-        source,
-        subject,
-        observed_at,
-        Some(collection_run_id),
-        vec![],
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn observation_with_provenance(
-    normalized: NormalizedObservation,
-    metadata: &PackMetadata,
-    invocation: &PackInvocation,
-    source: &crate::model::SourceDocument,
-    subject: Subject,
-    observed_at: String,
-    collection_run_id: Option<String>,
-    execution_transcript_ids: Vec<String>,
-) -> Result<crate::model::Observation> {
-    crate::parse_timestamp(&observed_at)?;
-    let identity = serde_json::json!({
-        "claim_key": normalized.claim_key,
-        "collection_run": collection_run_id,
-        "execution_transcripts": execution_transcript_ids,
-        "observed_at": observed_at,
-        "pack_invocation": invocation.id,
-        "source_sha256": source.sha256,
-        "subject": subject,
-    });
-    let digest = hex_digest(&canonical_json(&identity)?);
-    Ok(crate::model::Observation {
-        claim_key: normalized.claim_key,
-        collection_run_id,
-        execution_transcript_ids,
-        pack_invocation_ids: vec![invocation.id.clone()],
-        data: normalized.data,
-        evidence_class: normalized.evidence_class,
-        id: format!("ev_{}", &digest[..20]),
-        kind: normalized.kind,
-        observed_at,
-        producer: crate::model::Producer {
-            name: metadata.id.clone(),
-            version: metadata.version.clone(),
-            collector: format!("pack:{}/{}", metadata.id, invocation.contents.operation),
-        },
-        provenance: crate::model::Provenance {
-            pointer: String::new(),
-            source_id: source.id.clone(),
-        },
-        severity: normalized.severity,
-        status: normalized.status,
-        subject,
-    })
-}
-
-/// a working directory holding one pack run, removed when the run ends.
-///
-/// the shared temp directory is not one: a pack writing a relative path there
-/// meets every other run's files, and on a multi-user host it is not the
-/// pack's own. each run gets a fresh directory instead.
-struct PackWorkingDir {
-    path: PathBuf,
-}
-
-impl PackWorkingDir {
-    /// `create_dir` fails when the path already exists, a symlink included, so
-    /// a name something else got to first is never adopted. the attempts cover
-    /// a collision with another run started in the same nanosecond.
-    fn create() -> Result<Self> {
-        let parent = std::env::temp_dir();
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos());
-        for attempt in 0..16u32 {
-            let path = parent.join(format!(
-                "divinate-pack-{}-{stamp}-{attempt}",
-                std::process::id()
-            ));
-            let mut builder = fs::DirBuilder::new();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::DirBuilderExt;
-                // the pack's scratch is the pack's own, not the host's.
-                builder.mode(0o700);
-            }
-            match builder.create(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(source) if source.kind() == ErrorKind::AlreadyExists => (),
-                Err(source) => return Err(Error::Io { path, source }),
+            .env_clear()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // a pack is given what it needs to run, what the configuration names,
+        // and nothing else of the environment.
+        let kept = ["PATH", "HOME", "LANG", "TMPDIR"].map(str::to_owned);
+        for name in kept.iter().chain(&entry.inherit) {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
             }
         }
-        Err(Error::Invalid(
-            "cannot create a working directory for the pack".into(),
-        ))
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for PackWorkingDir {
-    fn drop(&mut self) {
-        // best effort: a scratch directory that will not go away must not fail
-        // a run that otherwise succeeded.
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn invoke(
-    config: &PackConfig,
-    metadata: Option<&PackMetadata>,
-    operation: &str,
-    input: Value,
-) -> Result<PackCapture> {
-    if !(1..=3600).contains(&config.timeout_seconds) {
-        return Err(Error::Invalid(
-            "pack timeout_seconds must be between 1 and 3600".into(),
-        ));
-    }
-    reject_sensitive_configuration(&config.configuration, "configuration")?;
-    let request = Request {
-        protocol_version: PROTOCOL_VERSION,
-        operation: operation.into(),
-        configuration: config.configuration.clone(),
-        input,
-    };
-    let request_bytes = canonical_json(&serde_json::to_value(&request).map_err(Error::Serialize)?)?;
-    let executable_path = fs::canonicalize(&config.executable).map_err(|source| Error::Io {
-        path: config.executable.clone(),
-        source,
-    })?;
-    let executable_bytes = fs::read(&executable_path).map_err(|source| Error::Io {
-        path: executable_path.clone(),
-        source,
-    })?;
-    // dropped when `invoke` returns, by any path, taking the directory with it.
-    let working_dir = PackWorkingDir::create()?;
-    let mut child = Command::new(&executable_path)
-        .env_clear()
-        .current_dir(working_dir.path())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|source| Error::Io {
-            path: executable_path,
-            source,
-        })?;
-    let request_write = child
-        .stdin
-        .take()
-        .ok_or_else(|| Error::Invalid("pack stdin unavailable".into()))?
-        .write_all(&request_bytes);
-    let (status, stdout, stderr) = wait_for_pack(
-        &mut child,
-        StdDuration::from_secs(config.timeout_seconds),
-        operation,
-    )?;
-    if !status.success() {
-        return Err(Error::Collection(format!(
-            "pack {operation} exited with {:?}: {}",
-            status.code(),
-            String::from_utf8_lossy(&stderr).trim()
-        )));
-    }
-    request_write
-        .map_err(|source| Error::Collection(format!("cannot write pack request: {source}")))?;
-    let mut deserializer = serde_json::Deserializer::from_slice(&stdout);
-    let response = Response::deserialize(&mut deserializer).map_err(|error| {
-        Error::Collection(format!("invalid pack {operation} response: {error}"))
-    })?;
-    deserializer.end().map_err(|error| {
-        Error::Collection(format!(
-            "trailing output after pack {operation} response: {error}"
-        ))
-    })?;
-    if !response.ok {
-        return Err(Error::Collection(response.error.unwrap_or_else(|| {
-            format!("pack {operation} failed without an error")
-        })));
-    }
-    let result = response
-        .result
-        .ok_or_else(|| Error::Collection(format!("pack {operation} response missing result")))?;
-    let response_bytes = canonical_json(&result)?;
-    let executable = BlobRef {
-        sha256: hex_digest(&executable_bytes),
-        size: u64::try_from(executable_bytes.len())
-            .map_err(|_| Error::Invalid("pack executable is too large".into()))?,
-    };
-    let contents = PackInvocationContents {
-        pack_id: metadata
-            .map_or("unresolved", |item| item.id.as_str())
-            .into(),
-        pack_version: metadata
-            .map_or("unresolved", |item| item.version.as_str())
-            .into(),
-        protocol_version: PROTOCOL_VERSION,
-        operation: operation.into(),
-        execution_transcript_id: None,
-        acquisition_transcript_ids: vec![],
-        executable,
-        request_sha256: hex_digest(&request_bytes),
-        response_sha256: hex_digest(&response_bytes),
-        request: String::from_utf8(request_bytes)
-            .map_err(|_| Error::Invalid("pack request is not utf-8".into()))?,
-        response: String::from_utf8(response_bytes)
-            .map_err(|_| Error::Invalid("pack response is not utf-8".into()))?,
-    };
-    Ok(PackCapture {
-        invocation: seal(contents)?,
-        executable_bytes,
-        result,
-    })
-}
-
-fn wait_for_pack(
-    child: &mut Child,
-    timeout: StdDuration,
-    operation: &str,
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| Error::Collection("pack stdout unavailable".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| Error::Collection("pack stderr unavailable".into()))?;
-    let (stdout_tx, stdout_rx) = mpsc::channel();
-    let (stderr_tx, stderr_rx) = mpsc::channel();
-    thread::spawn(move || {
-        let _ = stdout_tx.send(read_all(stdout));
-    });
-    thread::spawn(move || {
-        let _ = stderr_tx.send(read_all(stderr));
-    });
-    let deadline = Instant::now() + timeout;
-    let status = loop {
-        match child
-            .try_wait()
-            .map_err(|source| Error::Collection(format!("cannot wait for pack: {source}")))?
-        {
-            Some(status) => break status,
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(Error::Collection(format!(
-                    "pack {operation} timed out after {} second(s)",
-                    timeout.as_secs()
-                )));
-            }
-            None => thread::sleep(StdDuration::from_millis(10)),
+        command.envs(&entry.env);
+        // a pack is told its setup with everything but a derivation, which
+        // must follow from the transcripts alone.
+        let mut request = request.clone();
+        if request["request"] != "derive" {
+            request["setup"] = entry.setup.clone().unwrap_or(Value::Null);
         }
-    };
-    let stdout = receive_output(&stdout_rx, deadline, operation, "stdout")?;
-    let stderr = receive_output(&stderr_rx, deadline, operation, "stderr")?;
-    Ok((status, stdout, stderr))
-}
-
-fn receive_output(
-    receiver: &mpsc::Receiver<std::io::Result<Vec<u8>>>,
-    deadline: Instant,
-    operation: &str,
-    stream: &str,
-) -> Result<Vec<u8>> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    receiver
-        .recv_timeout(remaining)
-        .map_err(|_| {
-            Error::Collection(format!(
-                "pack {operation} {stream} did not close before timeout"
-            ))
-        })?
-        .map_err(|source| Error::Collection(format!("cannot read pack {stream}: {source}")))
-}
-
-fn read_all(mut input: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    input.read_to_end(&mut bytes)?;
-    Ok(bytes)
-}
-
-fn reject_sensitive_configuration(value: &Value, path: &str) -> Result<()> {
-    match value {
-        Value::Object(values) => {
-            for (key, value) in values {
-                if credential_like(key) {
-                    return Err(Error::Invalid(format!(
-                        "refusing to retain credential-like pack configuration key {path}.{key}"
-                    )));
-                }
-                reject_sensitive_configuration(value, &format!("{path}.{key}"))?;
-            }
-        }
-        Value::Array(values) => {
-            for (index, value) in values.iter().enumerate() {
-                reject_sensitive_configuration(value, &format!("{path}[{index}]"))?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
-/// reject configuration that would retain credential-like values.
-///
-/// # Errors
-///
-/// returns an error when a nested key appears to contain credentials.
-pub fn validate_configuration(value: &Value) -> Result<()> {
-    reject_sensitive_configuration(value, "configuration")
-}
-
-fn reseal(mut capture: PackCapture, metadata: &PackMetadata) -> Result<PackCapture> {
-    capture.invocation.contents.pack_id.clone_from(&metadata.id);
-    capture
-        .invocation
-        .contents
-        .pack_version
-        .clone_from(&metadata.version);
-    capture.invocation = seal(capture.invocation.contents)?;
-    Ok(capture)
-}
-
-/// create a content-addressed pack invocation.
-///
-/// # Errors
-///
-/// returns an error when the contents cannot be serialized.
-pub fn seal(contents: PackInvocationContents) -> Result<PackInvocation> {
-    let digest = hex_digest(&canonical_json(
-        &serde_json::to_value(&contents).map_err(Error::Serialize)?,
-    )?);
-    Ok(PackInvocation {
-        id: format!("packrun_{}", &digest[..20]),
-        schema_version: TRANSCRIPT_SCHEMA_VERSION.into(),
-        contents,
-    })
-}
-
-/// verify one retained pack invocation offline.
-///
-/// # Errors
-///
-/// returns an error when its identity, executable, request, or response changed.
-pub fn verify(invocation: &PackInvocation, blobs: &BTreeMap<String, Vec<u8>>) -> Result<()> {
-    verify_blobs(invocation, blobs, true)
-}
-
-/// verify one invocation against blobs already stored under their own digest,
-/// as [`crate::workflow::load_blobs`] returns them, without hashing them again.
-///
-/// # Errors
-///
-/// returns an error when its identity, executable size, request, or response
-/// changed, or its executable is missing.
-pub fn verify_stored(invocation: &PackInvocation, blobs: &BTreeMap<String, Vec<u8>>) -> Result<()> {
-    verify_blobs(invocation, blobs, false)
-}
-
-fn verify_blobs(
-    invocation: &PackInvocation,
-    blobs: &BTreeMap<String, Vec<u8>>,
-    rehash: bool,
-) -> Result<()> {
-    if seal(invocation.contents.clone())?.id != invocation.id
-        || invocation.schema_version != TRANSCRIPT_SCHEMA_VERSION
-    {
-        return Err(Error::Provenance(format!(
-            "pack invocation identity mismatch: {}",
-            invocation.id
-        )));
-    }
-    let executable = blobs
-        .get(&invocation.contents.executable.sha256)
-        .ok_or_else(|| Error::Provenance("pack executable blob is missing".into()))?;
-    if (rehash && hex_digest(executable) != invocation.contents.executable.sha256)
-        || u64::try_from(executable.len()).ok() != Some(invocation.contents.executable.size)
-        || hex_digest(invocation.contents.request.as_bytes()) != invocation.contents.request_sha256
-        || hex_digest(invocation.contents.response.as_bytes())
-            != invocation.contents.response_sha256
-    {
-        return Err(Error::Provenance(format!(
-            "pack invocation failed integrity: {}",
-            invocation.id
-        )));
-    }
-    Ok(())
-}
-
-/// verify retained pack links to independently stored execution and acquisition objects.
-///
-/// # Errors
-///
-/// returns an error when an invocation names a transcript that is not retained.
-pub fn verify_transcript_links(
-    invocation: &PackInvocation,
-    executions: &[crate::execution::ExecutionTranscript],
-    acquisitions: &[crate::acquisition::AcquisitionTranscript],
-) -> Result<()> {
-    let execution_ids = executions
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let acquisition_ids = acquisitions
-        .iter()
-        .map(|item| item.id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    check_transcript_links(
-        invocation,
-        |id| execution_ids.contains(id),
-        |id| acquisition_ids.contains(id),
-    )
-}
-
-pub(crate) fn check_transcript_links(
-    invocation: &PackInvocation,
-    has_execution: impl Fn(&str) -> bool,
-    has_acquisition: impl Fn(&str) -> bool,
-) -> Result<()> {
-    if let Some(id) = invocation
-        .contents
-        .execution_transcript_id
-        .as_deref()
-        .filter(|id| !has_execution(id))
-    {
-        return Err(Error::Provenance(format!(
-            "pack invocation references missing execution transcript {id}"
-        )));
-    }
-    if let Some(id) = invocation
-        .contents
-        .acquisition_transcript_ids
-        .iter()
-        .find(|id| !has_acquisition(id))
-    {
-        return Err(Error::Provenance(format!(
-            "pack invocation references missing acquisition transcript {id}"
-        )));
-    }
-    Ok(())
-}
-
-/// verify every observation-to-pack link against blobs stored under their own
-/// digest, as [`crate::workflow::load_blobs`] returns them.
-///
-/// # Errors
-///
-/// returns an error for missing, invalid, or semantically mismatched invocations.
-pub fn verify_observation_links(
-    corpus: &crate::model::Corpus,
-    invocations: &[PackInvocation],
-    executions: &[crate::execution::ExecutionTranscript],
-    blobs: &BTreeMap<String, Vec<u8>>,
-) -> Result<()> {
-    let by_id = invocations
-        .iter()
-        .map(|item| (item.id.as_str(), item))
-        .collect::<BTreeMap<_, _>>();
-    for observation in &corpus.observations {
-        let mut identity: Option<(&str, &str, &BlobRef)> = None;
-        let mut operations = BTreeMap::new();
-        for invocation_id in &observation.pack_invocation_ids {
-            let invocation = by_id.get(invocation_id.as_str()).ok_or_else(|| {
-                Error::Provenance(format!(
-                    "observation {} references missing pack invocation {invocation_id}",
-                    observation.id
-                ))
-            })?;
-            verify_stored(invocation, blobs)?;
-            let current = (
-                invocation.contents.pack_id.as_str(),
-                invocation.contents.pack_version.as_str(),
-                &invocation.contents.executable,
-            );
-            if let Some(expected) = identity {
-                if current != expected {
-                    return Err(Error::Provenance(format!(
-                        "observation {} mixes identities from different pack executables",
-                        observation.id
-                    )));
-                }
-            } else {
-                identity = Some(current);
-            }
-            let source = corpus
-                .sources
-                .iter()
-                .find(|item| item.id == observation.provenance.source_id)
-                .ok_or_else(|| {
-                    Error::Provenance(format!(
-                        "observation {} references missing source {}",
-                        observation.id, observation.provenance.source_id
-                    ))
-                })?;
-            verify_observation_invocation(corpus, observation, source, invocation, executions)?;
-            *operations
-                .entry(invocation.contents.operation.as_str())
-                .or_insert(0_usize) += 1;
-        }
-        if let Some((pack_id, pack_version, _)) = identity {
-            if operations.get("describe") != Some(&1)
-                || operations.get("collect") != Some(&1)
-                || operations.get("normalize") != Some(&1)
-                || operations.len() != 3
-                || observation.producer.name != pack_id
-                || observation.producer.version != pack_version
-            {
-                return Err(Error::Provenance(format!(
-                    "observation {} is not bound to its normalizing pack identity",
-                    observation.id
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn verify_observation_invocation(
-    corpus: &crate::model::Corpus,
-    observation: &crate::model::Observation,
-    source: &crate::model::SourceDocument,
-    invocation: &PackInvocation,
-    executions: &[crate::execution::ExecutionTranscript],
-) -> Result<()> {
-    match invocation.contents.operation.as_str() {
-        "describe" => {
-            let metadata: PackMetadata = serde_json::from_str(&invocation.contents.response)
-                .map_err(|error| {
-                    Error::Provenance(format!("invalid retained pack metadata: {error}"))
-                })?;
-            validate_metadata(&metadata)?;
-            if metadata.id != observation.producer.name
-                || metadata.version != observation.producer.version
-            {
-                return Err(Error::Provenance(format!(
-                    "describe invocation does not bind observation {} producer",
-                    observation.id
-                )));
-            }
-        }
-        "collect" => {
-            let plan: CollectionPlan = serde_json::from_str(&invocation.contents.response)
-                .map_err(|error| {
-                    Error::Provenance(format!("invalid retained collection plan: {error}"))
-                })?;
-            if plan.subject != observation.subject
-                || plan.observed_at != observation.observed_at
-                || plan.adapter != source.format
-            {
-                return Err(Error::Provenance(format!(
-                    "collect invocation does not bind observation {} subject, time, or adapter",
-                    observation.id
-                )));
-            }
-            match plan.action()? {
-                CollectionAction::Local { command } => {
-                    let Some(execution_id) = &invocation.contents.execution_transcript_id else {
-                        return Err(Error::Provenance(format!(
-                            "collect invocation does not name the execution for observation {}",
-                            observation.id
-                        )));
-                    };
-                    if !observation.execution_transcript_ids.contains(execution_id) {
-                        return Err(Error::Provenance(format!(
-                            "collect invocation execution does not match observation {}",
-                            observation.id
-                        )));
-                    }
-                    let execution = executions
-                        .iter()
-                        .find(|item| item.id == *execution_id)
-                        .ok_or_else(|| {
-                            Error::Provenance(format!(
-                                "collect invocation references missing execution {execution_id}"
-                            ))
-                        })?;
-                    validate_retained_execution(&command, execution)?;
-                    if execution.contents.stdout.sha256 != source.sha256 {
-                        return Err(Error::Provenance(format!(
-                            "collect execution output does not match observation {} source",
-                            observation.id
-                        )));
-                    }
-                }
-                CollectionAction::Remote { .. } => {
-                    verify_remote_collection_invocation(corpus, observation, invocation)?;
-                }
-            }
-        }
-        "normalize" => {
-            let request: Value =
-                serde_json::from_str(&invocation.contents.request).map_err(|error| {
-                    Error::Provenance(format!("invalid retained normalize request: {error}"))
-                })?;
-            if request["input"]["adapter"] != source.format
-                || request["input"]["source"]["sha256"] != source.sha256
-                || request["input"]["subject"]
-                    != serde_json::to_value(&observation.subject).map_err(Error::Serialize)?
-            {
-                return Err(Error::Provenance(format!(
-                    "normalize invocation does not bind observation {}",
-                    observation.id
-                )));
-            }
-        }
-        _ => {
-            return Err(Error::Provenance(format!(
-                "pack operation {} cannot bind an observation",
-                invocation.contents.operation
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn verify_remote_collection_invocation(
-    corpus: &crate::model::Corpus,
-    observation: &crate::model::Observation,
-    invocation: &PackInvocation,
-) -> Result<()> {
-    let run = observation
-        .collection_run_id
-        .as_ref()
-        .and_then(|id| corpus.collections.iter().find(|run| run.id == *id))
-        .ok_or_else(|| {
-            Error::Provenance(format!(
-                "remote observation {} has no collection run",
-                observation.id
+        let body = serde_json::to_vec(&request).map_err(Error::Serialize)?;
+        let mut child = command.spawn().map_err(|error| {
+            failed(&format!(
+                "could not be started ({}): {error}",
+                program.display()
             ))
         })?;
-    if invocation.contents.acquisition_transcript_ids.is_empty()
-        || invocation.contents.acquisition_transcript_ids != run.acquisition_transcript_ids
-    {
-        return Err(Error::Provenance(format!(
-            "collect invocation acquisitions do not match observation {}",
-            observation.id
-        )));
-    }
-    Ok(())
-}
-
-fn validate_captured_execution(
-    plan: &CommandPlan,
-    transcript: &crate::execution::ExecutionTranscript,
-) -> Result<()> {
-    validate_retained_execution(plan, transcript)?;
-    let executable = fs::read(&plan.executable).map_err(|source| Error::Io {
-        path: plan.executable.clone(),
-        source,
-    })?;
-    if hex_digest(&executable) != transcript.contents.tool.executable.sha256 {
-        return Err(Error::Provenance(
-            "pack collection executable does not match captured execution".into(),
-        ));
-    }
-    for (name, path) in &plan.inputs {
-        let input = fs::read(path).map_err(|source| Error::Io {
-            path: path.clone(),
-            source,
-        })?;
-        let retained = transcript
-            .contents
-            .inputs
-            .iter()
-            .find(|item| item.name == *name)
-            .ok_or_else(|| {
-                Error::Provenance(format!("pack collection input {name} was not captured"))
-            })?;
-        if hex_digest(&input) != retained.blob.sha256 {
-            return Err(Error::Provenance(format!(
-                "pack collection input {name} does not match captured execution"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_retained_execution(
-    plan: &CommandPlan,
-    transcript: &crate::execution::ExecutionTranscript,
-) -> Result<()> {
-    let input_names = plan.inputs.keys().cloned().collect::<Vec<_>>();
-    let retained_names = transcript
-        .contents
-        .inputs
-        .iter()
-        .map(|item| item.name.clone())
-        .collect::<Vec<_>>();
-    if transcript.contents.tool.name != plan.tool_name
-        || transcript.contents.tool.reported_version != plan.reported_version
-        || transcript.contents.argv != plan.argv
-        || transcript.contents.working_directory.is_some()
-        || !transcript.contents.environment.is_empty()
-        || !transcript.contents.outputs.is_empty()
-        || input_names != retained_names
-    {
-        return Err(Error::Provenance(format!(
-            "execution {} does not match its pack collection plan",
-            transcript.id
-        )));
-    }
-    Ok(())
-}
-
-/// verify every assertion-to-pack link against blobs stored under their own
-/// digest, as [`crate::workflow::load_blobs`] returns them.
-///
-/// # Errors
-///
-/// returns an error for missing, invalid, or mismatched evaluator invocations.
-pub fn verify_assertion_links(
-    assertions: &[DerivedAssertion],
-    invocations: &[PackInvocation],
-    blobs: &BTreeMap<String, Vec<u8>>,
-) -> Result<()> {
-    for assertion in assertions {
-        let Some(invocation_id) = &assertion.derivation.pack_invocation_id else {
-            continue;
-        };
-        let invocation = invocations
-            .iter()
-            .find(|item| item.id == *invocation_id)
-            .ok_or_else(|| {
-                Error::Provenance(format!(
-                    "assertion {} references missing pack invocation {invocation_id}",
-                    assertion.id
-                ))
-            })?;
-        verify_stored(invocation, blobs)?;
-        if invocation.contents.operation != "evaluate"
-            || assertion.derivation.evaluator
-                != format!(
-                    "pack:{}/{}",
-                    invocation.contents.pack_id,
-                    evaluator_name(assertion)
-                )
-            || assertion.derivation.version != invocation.contents.pack_version
-        {
-            return Err(Error::Provenance(format!(
-                "pack invocation {invocation_id} does not bind assertion {}",
-                assertion.id
-            )));
-        }
-        let request: Value =
-            serde_json::from_str(&invocation.contents.request).map_err(|error| {
-                Error::Provenance(format!("invalid retained pack evaluation request: {error}"))
-            })?;
-        let evaluator = request["input"]["evaluator"].as_str().ok_or_else(|| {
-            Error::Provenance("pack evaluation request does not name an evaluator".into())
-        })?;
-        let returned: Vec<PackAssertion> = serde_json::from_str(&invocation.contents.response)
-            .map_err(|error| {
-                Error::Provenance(format!("invalid retained pack assertion response: {error}"))
-            })?;
-        let expected = returned
-            .into_iter()
-            .map(|item| {
-                let mut derived = derived_assertion(
-                    item,
-                    &invocation.contents.pack_id,
-                    &invocation.contents.pack_version,
-                    evaluator,
-                )?;
-                derived.derivation.pack_invocation_id = Some(invocation.id.clone());
-                Ok(derived)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        if !expected.contains(assertion) {
-            return Err(Error::Provenance(format!(
-                "saved assertion {} does not match its retained pack response",
-                assertion.id
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn evaluator_name(assertion: &DerivedAssertion) -> &str {
-    assertion
-        .derivation
-        .evaluator
-        .rsplit('/')
-        .next()
-        .unwrap_or(&assertion.derivation.evaluator)
-}
-
-fn validate_metadata(metadata: &PackMetadata) -> Result<()> {
-    if metadata.protocol_version != PROTOCOL_VERSION {
-        return Err(Error::Invalid(format!(
-            "pack {} uses protocol {}, expected {}",
-            metadata.id, metadata.protocol_version, PROTOCOL_VERSION
-        )));
-    }
-    if metadata.id.trim().is_empty() || metadata.version.trim().is_empty() {
-        return Err(Error::Invalid(
-            "pack id and version must not be empty".into(),
-        ));
-    }
-    if let Some(compatibility) = &metadata.compatibility {
-        if compatibility.control_definition_version.trim().is_empty()
-            || compatibility
-                .control_ids
-                .iter()
-                .any(|id| id.trim().is_empty())
-        {
-            return Err(Error::Invalid(format!(
-                "pack {} has incomplete compatibility metadata",
-                metadata.id
-            )));
-        }
-        if !version_requirement_matches(&compatibility.core, env!("CARGO_PKG_VERSION"))? {
-            return Err(Error::Invalid(format!(
-                "pack {} requires Divinate core {}, current version is {}",
-                metadata.id,
-                compatibility.core,
-                env!("CARGO_PKG_VERSION")
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn version_requirement_matches(requirement: &str, version: &str) -> Result<bool> {
-    let version = parse_version(version)?;
-    requirement.split(',').try_fold(true, |matches, clause| {
-        let clause = clause.trim();
-        let (operator, expected) = [">=", "<=", ">", "<", "="]
-            .into_iter()
-            .find_map(|operator| clause.strip_prefix(operator).map(|rest| (operator, rest)))
-            .ok_or_else(|| Error::Invalid(format!("unsupported core version clause {clause:?}")))?;
-        let expected = parse_version(expected.trim())?;
-        let clause_matches = match operator {
-            ">=" => version >= expected,
-            "<=" => version <= expected,
-            ">" => version > expected,
-            "<" => version < expected,
-            "=" => version == expected,
-            _ => unreachable!(),
-        };
-        Ok(matches && clause_matches)
-    })
-}
-
-fn parse_version(value: &str) -> Result<(u64, u64, u64)> {
-    let core = value.split_once('-').map_or(value, |(core, _)| core);
-    let parts = core.split('.').collect::<Vec<_>>();
-    let [major, minor, patch] = parts.as_slice() else {
-        return Err(Error::Invalid(format!(
-            "invalid semantic version {value:?}"
-        )));
-    };
-    Ok((
-        major
-            .parse()
-            .map_err(|_| Error::Invalid(format!("invalid semantic version {value:?}")))?,
-        minor
-            .parse()
-            .map_err(|_| Error::Invalid(format!("invalid semantic version {value:?}")))?,
-        patch
-            .parse()
-            .map_err(|_| Error::Invalid(format!("invalid semantic version {value:?}")))?,
-    ))
-}
-
-fn validate_assertions(
-    assertions: &[DerivedAssertion],
-    corpus: &crate::model::Corpus,
-    target: &EvaluationTarget,
-    metadata: &PackMetadata,
-    evaluator: &str,
-    evaluated_at: &str,
-) -> Result<()> {
-    let evaluated_at_time = crate::parse_timestamp(evaluated_at)?;
-    let declared_propositions =
-        metadata
-            .evaluator_propositions
-            .get(evaluator)
-            .ok_or_else(|| {
-                Error::Invalid(format!(
-                    "pack {} does not declare coverage propositions for evaluator {evaluator}",
-                    metadata.id
-                ))
-            })?;
-    for assertion in assertions {
-        if assertion.evaluated_at != evaluated_at {
-            return Err(Error::Invalid(format!(
-                "pack {} returned an assertion for a different evaluation time",
-                metadata.id
-            )));
-        }
-        for decision in &assertion.coverage {
-            if !declared_propositions.contains(&decision.requirement.proposition) {
-                return Err(Error::Invalid(format!(
-                    "pack {} returned undeclared coverage proposition {:?}",
-                    metadata.id, decision.requirement.proposition
-                )));
+        // the request is written and the answer read on threads of their
+        // own, so a pack that neither reads nor answers can be stopped.
+        let input = child.stdin.take();
+        let writer = std::thread::spawn(move || {
+            if let Some(mut input) = input {
+                let _ = input.write_all(&body);
             }
-            let expected =
-                coverage::assess(corpus, decision.requirement.clone(), evaluated_at_time)?;
-            if expected != *decision {
-                return Err(Error::Invalid(format!(
-                    "pack {} returned a coverage decision that does not match core assessment",
-                    metadata.id
-                )));
-            }
-        }
-        if assertion.outcome == Outcome::Supported {
-            validate_supported_coverage(assertion, corpus, declared_propositions, metadata)?;
-        }
-        for evidence in assertion
-            .support
-            .iter()
-            .chain(&assertion.contradictions)
-            .chain(&assertion.considered)
-        {
-            validate_evidence_reference(evidence, corpus, metadata)?;
-        }
-        for evidence in assertion.support.iter().chain(&assertion.contradictions) {
-            let Some(observation) = corpus
-                .observations
-                .iter()
-                .find(|item| item.id == evidence.observation_id)
-            else {
-                continue;
-            };
-            if let Some(reason) = crate::provenance::mirror_gap(
-                &target.repository,
-                target.mirror_of.as_deref(),
-                observation,
-            ) {
-                return Err(Error::Invalid(format!(
-                    "pack {} used evidence {} without authority: {reason}",
-                    metadata.id, observation.id
-                )));
-            }
-            let Some(run_id) = observation.collection_run_id.as_ref() else {
-                continue;
-            };
-            let run = corpus
-                .collections
-                .iter()
-                .find(|run| &run.id == run_id)
-                .ok_or_else(|| {
-                    Error::Invalid(format!(
-                        "pack assertion references observation {} from missing collection run {run_id}",
-                        evidence.observation_id
-                    ))
-                })?;
-            if let Some(reason) = unestablished(run) {
-                return Err(Error::Invalid(format!(
-                    "pack {} used evidence from collection run {run_id}, which established nothing: {reason}",
-                    metadata.id
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// the evidence must name a retained observation by its own source, with no core-derived detail.
-fn validate_evidence_reference(
-    evidence: &EvidenceUse,
-    corpus: &crate::model::Corpus,
-    metadata: &PackMetadata,
-) -> Result<()> {
-    if evidence.review.is_some() {
-        return Err(Error::Invalid(format!(
-            "pack {} supplied review details for observation {}; only core derives them",
-            metadata.id, evidence.observation_id
-        )));
-    }
-    let observation = corpus
-        .observations
-        .iter()
-        .find(|item| item.id == evidence.observation_id)
-        .ok_or_else(|| {
-            Error::Invalid(format!(
-                "pack assertion references missing observation {}",
-                evidence.observation_id
-            ))
-        })?;
-    if observation.provenance.source_id != evidence.source_id {
-        return Err(Error::Invalid(format!(
-            "pack assertion source does not match observation {}",
-            evidence.observation_id
-        )));
-    }
-    Ok(())
-}
-
-/// why a collection run's observations cannot support or contradict a claim, if they cannot.
-///
-/// a failed, denied, or unattempted run established nothing, and a declared mirror
-/// is not the system of record. a partial run still observed what it returned.
-fn unestablished(run: &crate::model::CollectionRun) -> Option<String> {
-    use crate::model::{CollectionLimitationKind, CollectionOutcome};
-    if let Some(limitation) = run
-        .limitations
-        .iter()
-        .find(|item| item.kind == CollectionLimitationKind::NotSystemOfRecord)
-    {
-        return Some(limitation.detail.clone());
-    }
-    match run.outcome {
-        CollectionOutcome::Failed
-        | CollectionOutcome::PermissionDenied
-        | CollectionOutcome::NotAttempted => Some(run.limitations.first().map_or_else(
-            || format!("collection ended {:?}", run.outcome),
-            |item| item.detail.clone(),
-        )),
-        CollectionOutcome::Complete
-        | CollectionOutcome::Partial
-        | CollectionOutcome::RetentionLimited
-        | CollectionOutcome::Interrupted => None,
-    }
-}
-
-fn validate_supported_coverage(
-    assertion: &DerivedAssertion,
-    corpus: &crate::model::Corpus,
-    declared: &[Proposition],
-    metadata: &PackMetadata,
-) -> Result<()> {
-    if assertion.validity.basis == crate::assertions::ValidityBasis::PointInTime
-        && assertion.coverage.is_empty()
-    {
-        let authoritative = declared.iter().all(|proposition| {
-            assertion
-                .support
-                .iter()
-                .any(|evidence| corpus_observation_run(corpus, evidence, *proposition))
         });
-        if authoritative {
-            return Ok(());
+        let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
+        let reader = std::thread::spawn(move || {
+            let mut answer = Vec::new();
+            if let Some(out) = &mut out {
+                let _ = out.read_to_end(&mut answer);
+            }
+            answer
+        });
+        let complaints = std::thread::spawn(move || {
+            let mut said = String::new();
+            if let Some(err) = &mut err {
+                let _ = err.read_to_string(&mut said);
+            }
+            said
+        });
+        let deadline = Instant::now() + Duration::from_secs(entry.timeout_seconds);
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(failed(&format!(
+                        "did not answer within {} seconds",
+                        entry.timeout_seconds
+                    )));
+                }
+                Err(error) => return Err(failed(&format!("could not be waited for: {error}"))),
+            }
+        };
+        let _ = writer.join();
+        let answer = reader.join().unwrap_or_default();
+        let said = complaints.join().unwrap_or_default();
+        if !status.success() {
+            let said = said.lines().last().unwrap_or("it said nothing");
+            return Err(failed(&format!("failed: {said}")));
+        }
+        serde_json::from_slice(&answer).map_err(|_| failed("did not answer with json"))
+    }
+
+    fn secrets(&self, pack: &str) -> Vec<String> {
+        self.config
+            .packs
+            .get(pack)
+            .into_iter()
+            .flat_map(|entry| &entry.inherit)
+            .filter_map(|name| std::env::var(name).ok())
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// what a pack says it offers.
+pub struct Description {
+    pub protocol: u64,
+    pub name: String,
+    pub version: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub checks: Vec<Check>,
+    #[serde(default)]
+    pub processes: Vec<Shipped>,
+    #[serde(default)]
+    /// what the pack reads as a source, when it is one.
+    pub collects: Option<Collects>,
+    #[serde(default)]
+    /// the frameworks the process definitions it ships can map to.
+    pub frameworks: crate::process::Frameworks,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// what a pack reads as a source.
+pub struct Collects {
+    /// the scopes it reads, for a message, such as `osv:<owner>/<repository>`.
+    pub scopes: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// one check a pack offers.
+pub struct Check {
+    pub name: String,
+    pub answers: Shape,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+/// what a check answers with, which decides where a definition can use it.
+pub enum Shape {
+    /// an outcome for each item: used in a step.
+    EachItem,
+    /// one outcome for all items together: used under `overall`.
+    AllItems,
+    /// a number over all items: used in a measure.
+    Number,
+}
+
+impl Shape {
+    /// where in a definition a check of this shape goes.
+    #[must_use]
+    pub fn place(self) -> &'static str {
+        match self {
+            Self::EachItem => "a step",
+            Self::AllItems => "`overall`",
+            Self::Number => "a measure",
         }
     }
-    if !declared.is_empty()
-        && (assertion.subject.from.is_none() || assertion.subject.until.is_none())
-    {
-        return Err(Error::Invalid(format!(
-            "pack {} returned a coverage-backed supported assertion whose subject lacks from or until",
-            metadata.id
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+/// a process definition a pack ships.
+pub struct Shipped {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    /// the definition, as the yaml text a file would hold.
+    pub definition: String,
+}
+
+/// ask a pack what it offers.
+///
+/// # Errors
+///
+/// returns an error when the pack cannot be run, speaks another protocol, or
+/// answers under another name.
+pub fn describe(packs: &dyn Packs, pack: &str) -> Result<Description> {
+    let answer = packs.call(
+        pack,
+        &json!({ "protocol": PROTOCOL, "request": "describe" }),
+    )?;
+    let description: Description = serde_json::from_value(answer).map_err(|error| {
+        Error::Pack(format!(
+            "the pack {pack:?} does not describe itself as expected: {error}"
+        ))
+    })?;
+    if description.protocol != PROTOCOL {
+        return Err(Error::Pack(format!(
+            "the pack {pack:?} speaks protocol {}, and this divinate speaks {PROTOCOL}",
+            description.protocol
         )));
     }
-    for proposition in declared {
-        let matching = assertion
-            .coverage
-            .iter()
-            .filter(|decision| {
-                decision.requirement.proposition == *proposition
-                    && decision.requirement.repository == assertion.subject.repository
-                    && decision.requirement.branch == assertion.subject.branch
-                    && assertion
-                        .subject
-                        .from
-                        .as_ref()
-                        .is_some_and(|from| decision.requirement.interval.from == *from)
-                    && assertion
-                        .subject
-                        .until
-                        .as_ref()
-                        .is_some_and(|until| decision.requirement.interval.until == *until)
-            })
-            .collect::<Vec<_>>();
-        if matching.len() != 1 || matching[0].outcome != CoverageOutcome::Complete {
-            return Err(Error::Invalid(format!(
-                "pack {} returned supported without complete {:?} coverage for the assertion scope",
-                metadata.id, proposition
-            )));
+    if description.name != pack {
+        return Err(Error::Pack(format!(
+            "the pack installed as {pack:?} calls itself {:?}",
+            description.name
+        )));
+    }
+    Ok(description)
+}
+
+/// the pack and the name within it that `<pack>/<name>` names.
+///
+/// # Errors
+///
+/// returns an error when there is no `/`.
+pub fn named(uses: &str) -> Result<(&str, &str)> {
+    uses.split_once('/')
+        .filter(|(pack, name)| !pack.is_empty() && !name.is_empty())
+        .ok_or_else(|| Error::Pack(format!("{uses:?} is not `<pack>/<check>`")))
+}
+
+/// the descriptions of the packs a check has asked so far, each asked once.
+pub struct Asked<'a> {
+    packs: &'a dyn Packs,
+    described: BTreeMap<String, Description>,
+}
+
+impl<'a> Asked<'a> {
+    #[must_use]
+    pub fn new(packs: &'a dyn Packs) -> Self {
+        Self {
+            packs,
+            described: BTreeMap::new(),
         }
     }
-    Ok(())
-}
 
-fn corpus_observation_run(
-    corpus: &crate::model::Corpus,
-    evidence: &crate::assertions::EvidenceUse,
-    proposition: Proposition,
-) -> bool {
-    corpus
-        .observations
-        .iter()
-        .find(|observation| observation.id == evidence.observation_id)
-        .and_then(|observation| observation.collection_run_id.as_deref())
-        .and_then(|run_id| corpus.collections.iter().find(|run| run.id == run_id))
-        .is_some_and(|run| {
-            run.outcome == crate::model::CollectionOutcome::Complete
-                && run.authority.contains(&proposition)
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_working_directory_is_private_unique_and_removed() {
-        let (first_path, mode) = {
-            let dir = PackWorkingDir::create().unwrap();
-            assert!(dir.path().is_dir());
-            assert_eq!(
-                fs::read_dir(dir.path()).unwrap().count(),
-                0,
-                "the pack starts in an empty directory"
-            );
-            assert_ne!(dir.path(), std::env::temp_dir(), "not the shared directory");
-
-            let second = PackWorkingDir::create().unwrap();
-            assert_ne!(dir.path(), second.path(), "two runs do not share one");
-
-            #[cfg(unix)]
-            let mode = {
-                use std::os::unix::fs::PermissionsExt;
-                fs::metadata(dir.path()).unwrap().permissions().mode() & 0o777
-            };
-            #[cfg(not(unix))]
-            let mode = 0o700;
-
-            (dir.path().to_path_buf(), mode)
-        };
-
-        assert_eq!(mode, 0o700, "readable by the owner only, was {mode:o}");
-        assert!(
-            !first_path.exists(),
-            "{} outlived the run",
-            first_path.display()
-        );
+    /// run one check of a pack on some items, after making sure the pack has
+    /// a check of that name that answers in the wanted shape.
+    ///
+    /// # Errors
+    ///
+    /// returns an error when the pack cannot be run or has no such check.
+    pub fn check(
+        &mut self,
+        uses: &str,
+        shape: Shape,
+        with: Option<&Value>,
+        about: &Value,
+        items: &[Value],
+    ) -> Result<Value> {
+        let (pack, name) = named(uses)?;
+        if !self.described.contains_key(pack) {
+            self.described
+                .insert(pack.to_owned(), describe(self.packs, pack)?);
+        }
+        let found = self.described[pack]
+            .checks
+            .iter()
+            .find(|check| check.name == name)
+            .ok_or_else(|| Error::Pack(format!("the pack {pack:?} has no check {name:?}")))?;
+        if found.answers != shape {
+            return Err(Error::Pack(format!(
+                "{uses} belongs in {}, not in {}",
+                found.answers.place(),
+                shape.place()
+            )));
+        }
+        self.packs.call(
+            pack,
+            &json!({
+                "protocol": PROTOCOL,
+                "request": "check",
+                "check": name,
+                "with": with.cloned().unwrap_or_else(|| json!({})),
+                "collection": about,
+                "items": items,
+            }),
+        )
     }
 
-    #[test]
-    fn commercial_compatibility_ranges_fail_closed() {
-        assert!(version_requirement_matches(">=0.0.1,<0.1.0", "0.0.1").unwrap());
-        assert!(!version_requirement_matches(">=0.1.0,<1.0.0", "0.0.1").unwrap());
-        assert!(version_requirement_matches("future", "0.0.1").is_err());
+    /// the packs that were asked, as `<name> <version>`.
+    #[must_use]
+    pub fn used(&self) -> Vec<String> {
+        self.described
+            .values()
+            .map(|description| format!("{} {}", description.name, description.version))
+            .collect()
     }
 }

@@ -5,6 +5,5 @@
 .vscode
 lcov.info
 
-# repository-local evidence state created by `divinate init` in this directory.
-# the checked-in dogfood state under dossiers/ is deliberate and not ignored.
-/.evidence
+# a record kept in this directory by `divinate collect`.
+/evidence

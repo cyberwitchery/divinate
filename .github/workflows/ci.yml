@@ -48,8 +48,6 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # pack tests execute the python fixtures under packs/
-      - run: python3 --version
       - run: cargo test --all-features
 
   # keep the rust-version declared in Cargo.toml honest.
@@ -83,30 +81,16 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # verify the published package without the excluded example corpus.
       - run: cargo package
 
-  schemas:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # validate schemas against the example corpus.
-      - run: python3 -m pip install --quiet --upgrade "jsonschema>=4.18"
-      - run: cargo run --quiet --bin divinate -- verify --state dossiers/sbom-diff/repeated/.evidence
-      # capture the pack protocol afresh, so a change to what core or a pack
-      # sends meets the schemas too.
-      - run: DIVINATE_PACK_PROTOCOL_CAPTURE="$RUNNER_TEMP/pack-protocol" cargo test --quiet --test pack pack_protocol_messages
-      - run: python3 scripts/validate-schemas.py "$RUNNER_TEMP/pack-protocol"
-
+  # read this repository with the tool itself, and check the record offline.
+  # a reading the token may not make is recorded as a gap and does not fail.
   dogfood:
     runs-on: ubuntu-latest
     permissions:
       checks: read
       contents: read
+      issues: read
       pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -114,14 +98,12 @@ jobs:
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # exercise the committed clone-and-collect configuration and its provenance.
-      - run: python3 --version
-      - run: cargo build --bins
-      - run: echo "$PWD/target/debug" >> "$GITHUB_PATH"
-      - run: cargo run --quiet --bin divinate -- collect
+      - run: cargo build
+      - run: target/debug/divinate collect "github:${GITHUB_REPOSITORY}" --from "$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
         env:
           GITHUB_TOKEN: ${{ github.token }}
-      - run: cargo run --quiet --bin divinate -- verify
+      - run: target/debug/divinate verify
+      - run: target/debug/divinate show
 
   deny:
     runs-on: ubuntu-latest
@@ -167,7 +149,7 @@ jobs:
       mode: report
 
   success:
-    needs: [fmt, clippy, test, msrv, doc, package, schemas, dogfood, deny, coverage, unsafe-budget, sbom]
+    needs: [fmt, clippy, test, msrv, doc, package, dogfood, deny, coverage, unsafe-budget, sbom]
     runs-on: ubuntu-latest
     if: always()
     steps:
@@ -179,7 +161,6 @@ jobs:
              [[ "${{ needs.msrv.result }}" != "success" ]] ||
              [[ "${{ needs.doc.result }}" != "success" ]] ||
              [[ "${{ needs.package.result }}" != "success" ]] ||
-             [[ "${{ needs.schemas.result }}" != "success" ]] ||
              [[ "${{ needs.dogfood.result }}" != "success" ]] ||
              [[ "${{ needs.deny.result }}" != "success" ]] ||
              [[ "${{ needs.coverage.result }}" != "success" ]] ||
