@@ -259,6 +259,9 @@ pub fn summary(reports: &[Report]) -> String {
             let _ = writeln!(out, "  {column:<width$}  {cell}");
         }
     }
+    if !first.packs.is_empty() {
+        let _ = writeln!(out, "\npacks: {}", first.packs.join(", "));
+    }
     out
 }
 

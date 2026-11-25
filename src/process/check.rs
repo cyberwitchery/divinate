@@ -66,7 +66,9 @@ pub fn check_with<'a>(
         overall: Vec::new(),
         measures: Vec::new(),
         references: references(process),
-        packs: Vec::new(),
+        // a definition a pack ships is that pack's, whether or not the pack
+        // also judges anything.
+        packs: process.shipped_by.iter().cloned().collect(),
         frameworks: covered(process),
     };
     report.branches = branch_rows(process, derived, &index);
@@ -128,7 +130,9 @@ pub fn check_with<'a>(
         &mut asked,
         &mut report,
     )?;
-    report.packs = asked.used();
+    report.packs.extend(asked.used());
+    report.packs.sort();
+    report.packs.dedup();
     Ok(report)
 }
 

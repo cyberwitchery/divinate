@@ -1402,6 +1402,9 @@ fn the_example_pack_checks_the_checklist_in_a_description() {
     assert!(checked.contains("checklist completed: broken, the description has no checklist"));
     assert!(checked.contains("completed share  0% (0 of 2 items)"));
     assert!(checked.contains("packs: checklist 0.1.0"));
+    // the summary names the pack as well.
+    let (_, summary) = divinate(directory.path(), &["check", "checklist:merged", "--all"]);
+    assert!(summary.ends_with("\npacks: checklist 0.1.0\n"), "{summary}");
     let (ok, missing) = divinate(directory.path(), &["check", "checklist:nothing"]);
     assert!(!ok && missing.contains("ships no process definition \"nothing\"; it has: merged"));
 }
