@@ -1,0 +1,54 @@
+# collect a repository once a day and keep the record in git.
+#
+# this goes into a private repository that holds nothing but the record, as
+# .github/workflows/divinate.yml. docs/schedule.md says why, and who should
+# be able to read that repository.
+#
+# set SCOPE to the repository you collect, and add a secret DIVINATE_TOKEN
+# to the record's repository: a token that can read SCOPE. the job's own
+# token only writes to the record's repository.
+#
+# there is no release of divinate yet, so the job builds it from a fixed
+# commit. change `--rev` to a newer commit to update it.
+
+name: divinate
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+# one run at a time, so two runs never write to the record at once.
+concurrency:
+  group: divinate
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  SCOPE: github:acme/shop
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      # the branch as it is when the run starts. a run that waited for the
+      # one before it would otherwise push on top of an old commit.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.ref }}
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: stable
+      - run: cargo install --locked --git https://github.com/cyberwitchery/divinate --rev fea1623743356ef118bd0eeaf79d16acbc814c82 divinate
+      - run: divinate collect "$SCOPE"
+        env:
+          GITHUB_TOKEN: ${{ secrets.DIVINATE_TOKEN }}
+      - run: divinate verify
+      - run: |
+          git add evidence
+          git -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet --message "collect $SCOPE"
+          git push origin "HEAD:$GITHUB_REF_NAME"

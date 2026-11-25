@@ -30,6 +30,9 @@ on what you collected, the directory holds:
 - repository and organisation settings as the platform returned them. these
   can include things like a billing email address
 - scanner alerts, including where in the code a finding is
+- on github, every secret that secret scanning detected, in plain text,
+  since github’s list of secret scanning alerts includes the secrets
+  themselves
 - response headers that describe your token, such as the list of scopes
   github reports for it
 
@@ -37,6 +40,8 @@ so treat the directory like the repository it came from. the people who may
 see the repository’s issues and security alerts are the people who should see
 `evidence/`. have a look through it before you commit it somewhere or send it
 to someone.
+[collecting on a schedule](schedule.md#where-to-keep-evidence) suggests where
+to keep it between runs.
 
 ## what a verified directory tells you
 
