@@ -26,6 +26,12 @@ verify` can check. the examples below run the job in that repository as
 well. that way, changing the job takes the same access as changing the
 record, and write access to the repository you collect gives you neither.
 
+on github, the record also holds every secret that secret scanning detected,
+in plain text, when the reading token may read secret scanning alerts:
+github’s list of alerts includes the secret itself. each run commits a new
+copy of that list, and a secret stays in the repository’s history after it
+has been rotated and its alert closed.
+
 a ci cache or an artifact is no place for a record. both are meant to be
 temporary, and the ci platform deletes them after a while. a record is only as
 useful as its oldest collection, and when the directory is gone, the next
@@ -56,7 +62,10 @@ record:
 | | reads | pushes |
 |---|---|---|
 | github actions | the secret `DIVINATE_TOKEN`, passed to divinate as `GITHUB_TOKEN` | the job’s own token, with `contents: write` |
-| gitlab ci | the variable `GITLAB_TOKEN` | the variable `RECORD_PUSH_TOKEN`, a project access token with `write_repository` |
+| gitlab ci | the variable `GITLAB_TOKEN` | the variable `RECORD_PUSH_TOKEN`, a project access token with the maintainer role and `write_repository` |
+
+the gitlab push token needs the maintainer role because, by default, gitlab
+lets only maintainers push to a project’s default branch.
 
 on github, the job’s own token only reaches the record’s repository, so
 reading takes a token of its own. divinate takes a github token from `gh auth
@@ -66,6 +75,13 @@ from `GITLAB_TOKEN`. what the reading token has to be allowed is in
 everything, the three alert rows need a token that may read security events,
 and only an admin’s can read `branch protection`. on gitlab, approval
 settings and approval rules are only shown to members of the project.
+
+an expired reading token doesn’t fail the job: a request the platform refuses
+is a gap in the collection, not an error, and `collect` succeeds however many
+gaps there are, so every run commits a collection that holds nothing but
+gaps. in the job log, the line `collected <scope>: <n> records, <n> gaps`
+that `collect` prints then says `0 records`. on gitlab, every new access
+token has an expiry date.
 
 ## how it grows
 
@@ -94,9 +110,7 @@ $ du -sh evidence/collections evidence/transcripts evidence ../record.git
 
 each collection had 275 transcripts, and none of them was in both. git
 compresses the files, so the repository grows by much less than the
-directory. the lists of files that the pull requests touched, which
-`--no-files` leaves out, were a third of the transcripts. a job that runs
-every day on a repository this busy adds about 12M a day to the directory,
-and under 2M to its git repository.
+directory. a job that runs every day on a repository this busy adds about
+12M a day to the directory, and under 2M to its git repository.
 the jobs clone the latest commit, which holds every collection, so the clone
 takes a little longer every time.

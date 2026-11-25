@@ -6,8 +6,9 @@
 #
 # set SCOPE to the project you collect, and add two masked ci/cd variables to
 # the record's project: GITLAB_TOKEN, a token that can read SCOPE, and
-# RECORD_PUSH_TOKEN, a project access token of the record's project with
-# write_repository, which the job pushes with.
+# RECORD_PUSH_TOKEN, a project access token of the record's project with the
+# maintainer role and write_repository, which the job pushes with. by
+# default, only maintainers may push to a project's default branch.
 #
 # there is no release of divinate yet, so the job builds it from a fixed
 # commit. change `--rev` to a newer commit to update it.

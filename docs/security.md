@@ -30,6 +30,9 @@ on what you collected, the directory holds:
 - repository and organisation settings as the platform returned them. these
   can include things like a billing email address
 - scanner alerts, including where in the code a finding is
+- on github, every secret that secret scanning detected, in plain text,
+  since github’s list of secret scanning alerts includes the secrets
+  themselves
 - response headers that describe your token, such as the list of scopes
   github reports for it
 
