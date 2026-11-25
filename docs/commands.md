@@ -6,22 +6,30 @@ stored, so they run offline. `pack` tells you about an installed
 [pack](packs.md).
 
 all of them use the directory `evidence/` in the current directory. pass
-`--state <path>` to use another one.
+`--state <path>` to use another one. packs are declared in `divinate.yaml` in
+the current directory, or in the file you pass with `--config <file>`.
 
 ## `divinate collect`
 
 ```text
-divinate collect <scope> [--from <time>] [--until <time>]
+divinate collect <scope> [--from <time>] [--until <time>] [--no-files]
 ```
 
 reads a repository or an organisation and stores the result as a new
 collection. `<scope>` is something like `github:acme/shop`, and
-[sources](sources.md) lists what else you can write there.
+[sources](sources.md) lists what else you can write there. a scope can also
+start with the name of a [pack](packs.md) that reads another system, such as
+`osv:acme/shop`.
 
 `--from` and `--until` set the period for tickets, pull requests, findings,
 and branch updates. times look like `2026-01-01T00:00:00Z`. without them you
 get the last 90 days. when you collect an organisation, only settings are
 read and the period doesn’t matter.
+
+`--no-files` leaves out the list of files each pull request touches. that
+saves a request per pull request, and keeps the diffs (and with them your
+source code) out of `evidence/`. rules that use `paths` then answer `cannot
+tell`.
 
 when it’s done it prints how many rows it recorded, how many of them are
 gaps, and the id of the collection:
@@ -64,14 +72,16 @@ platform’s id for it.
 ## `divinate check`
 
 ```text
-divinate check <definition> [--collection <id>] [--json]
-divinate check <definition> --last <n> [--scope <scope>] [--json]
-divinate check <definition> --all [--json]
+divinate check <definition>... [--collection <id>] [--json]
+divinate check <definition>... --last <n> [--scope <scope>] [--json]
+divinate check <definition>... --all [--json]
 ```
 
 checks the rules in a [process definition](processes.md) against a collection.
-`<definition>` is a yaml file, or `<pack>:<name>` for a definition that an
-installed [pack](packs.md) ships.
+`<definition>` is a yaml file, `<pack>:<name>` for a definition that a
+configured [pack](packs.md) ships, or `<pack>:` for all of that pack’s
+definitions. you can give several. each gets its own results, and the
+[framework](processes.md#frameworks) list at the end covers them together.
 
 | option | what you get |
 |---|---|
@@ -90,8 +100,8 @@ with as many definitions as you like.
 divinate pack <name>
 ```
 
-prints what an installed pack offers: its version, its checks, and the
-process definitions it ships.
+prints what a configured pack offers: its version, what it collects, its
+checks, and the process definitions it ships.
 
 ## `divinate verify`
 
@@ -115,4 +125,5 @@ the first difference and tells you which file it is.
 
 a collection written by a different version of divinate may have been worked
 out differently. `verify` still checks its files and lists it as `derived by
-other rules`.
+other rules`. the same goes for a collection that a pack read, when that pack
+isn’t configured where you run `verify`.

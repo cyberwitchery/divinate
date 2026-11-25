@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """an example pack for divinate: is the checklist in a description filled in?
 
-install it by putting this file in a directory on PATH, or in one that
-DIVINATE_PACKS names. see docs/packs.md.
+the divinate.yaml next to this file declares it. see docs/packs.md.
 """
 
 import json

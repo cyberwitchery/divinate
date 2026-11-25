@@ -78,7 +78,7 @@ fn project(approver: u64) -> Responses {
             r#"[{{"id":21,"state":"merged","user":{},"created_at":"2026-03-19T12:00:00.000Z"}}]"#, user(2)
         ))),
         (format!("{base}/merge_requests?scope=all&state=merged&updated_after=2026-01-01T00%3A00%3A00Z&order_by=updated_at&sort=asc&per_page=100"), ok(format!("[{merge_request}]"))),
-        (format!("{base}/merge_requests/2/pipelines?per_page=100"), ok(r#"[{"id":31,"sha":"3f467b9e7ed6241bf3052cdccd47f4c2aec6c924","ref":"fix","status":"success","created_at":"2026-03-19T09:00:00.000Z","updated_at":"2026-03-19T09:30:00.000Z"},{"id":30,"sha":"1111111111111111111111111111111111111111","ref":"fix","status":"failed","created_at":"2026-03-18T09:00:00.000Z","updated_at":"2026-03-18T09:30:00.000Z"}]"#.to_owned())),
+        (format!("{base}/merge_requests/2/pipelines?per_page=100"), ok(r#"[{"id":32,"sha":"3f467b9e7ed6241bf3052cdccd47f4c2aec6c924","ref":"fix","source":"schedule","status":"failed","created_at":"2026-03-19T09:40:00.000Z","updated_at":"2026-03-19T09:50:00.000Z"},{"id":31,"sha":"3f467b9e7ed6241bf3052cdccd47f4c2aec6c924","ref":"fix","source":"merge_request_event","status":"success","created_at":"2026-03-19T09:00:00.000Z","updated_at":"2026-03-19T09:30:00.000Z"},{"id":30,"sha":"1111111111111111111111111111111111111111","ref":"fix","status":"failed","created_at":"2026-03-18T09:00:00.000Z","updated_at":"2026-03-18T09:30:00.000Z"}]"#.to_owned())),
         // the first push merged the merge request, the second went around one,
         // and the third was to another branch.
         (format!("{base}/events?action=pushed&after=2025-12-31&before=2026-03-28&sort=asc&per_page=100"), ok(format!(
@@ -372,4 +372,37 @@ fn a_merge_request_is_read_with_its_files_and_a_project_with_its_releases() {
     let state = tempfile::tempdir().unwrap();
     record::store(state.path(), &collection, &transcripts).unwrap();
     verify::verify(state.path()).unwrap();
+}
+
+#[test]
+fn a_collection_can_leave_out_the_files_of_each_merge_request() {
+    let mut responses = project(3);
+    // nothing asks for the diffs, so nothing has to answer for them.
+    responses.remove(&format!(
+        "{API}/projects/7/merge_requests/2/diffs?per_page=100"
+    ));
+    let (collection, transcripts) = common::collect_with(
+        "gitlab:example/platform/service",
+        "2026-01-01T00:00:00Z",
+        NOW,
+        false,
+        |url| common::answer(responses.get(url), url),
+    );
+    assert!(transcripts
+        .iter()
+        .all(|transcript| transcript.contents.resource != source::gitlab::DIFFS));
+    let change = collection
+        .statement_about("gitlab:example/platform/service!2", "change")
+        .unwrap();
+    // the paths are unknown, which is not the same as none.
+    assert!(change.reading.value().unwrap()["paths"].is_null());
+    let definition = "process: p\nitems:\n  kind: change\n  paths: auth/**\nsteps:\n  - name: reviewed\n    event: approval\n";
+    let definition = process::parse(definition, std::path::Path::new("inline")).unwrap();
+    let report = process::check(&definition, &collection, &[]).unwrap();
+    assert_eq!(
+        report.rows[0].outcomes[0],
+        Outcome::CannotTell(
+            "the files gitlab:example/platform/service!2 touches were not read".into()
+        )
+    );
 }

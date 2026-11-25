@@ -25,7 +25,7 @@ on what you collected, the directory holds:
 - titles and descriptions of tickets and pull requests
 - comments and review threads
 - the diff of every pull request in the period, which means parts of your
-  source code
+  source code. `divinate collect --no-files` leaves these out
 - account names, which are email addresses on azure devops
 - repository and organisation settings as the platform returned them. these
   can include things like a billing email address
@@ -56,14 +56,24 @@ their own hands.
 ## packs
 
 a [pack](packs.md) is a program on your machine that divinate starts when a
-definition uses it. it runs with your user’s rights, like any other program
-you install, so only install packs from people you trust.
+definition or a scope names it. it runs with your user’s rights, like any
+other program you install, so only configure packs from people you trust.
 
 divinate limits what it hands to a pack. a pack is started with an almost
-empty environment, so the tokens in `GITHUB_TOKEN` and friends aren’t passed
-on. it’s shown the items a definition picked (titles, descriptions, labels,
-events, account names) and nothing else from `evidence/`, and it can’t add to
-or change the directory through divinate.
+empty environment. it gets a token only when you list the variable under
+`inherit` in `divinate.yaml`, so you decide per pack which of your tokens it
+sees.
+
+a pack that judges items is shown the items a definition picked (titles,
+descriptions, labels, events, account names) and nothing else from
+`evidence/`. nothing it answers is stored.
+
+a pack that is a source makes its own requests, so it can talk to any host.
+what it reads ends up in `evidence/` like everything else, with one check on
+the way in: if a response contains the value of a variable the pack
+inherited, divinate stores nothing. a source pack may also send data to the
+system it reads. the osv pack, for instance, sends the names and versions of
+your dependencies to osv.dev.
 
 ## reporting a vulnerability
 

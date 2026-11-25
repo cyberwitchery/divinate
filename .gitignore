@@ -5,6 +5,5 @@
 .vscode
 lcov.info
 
-# a record kept in this directory by `divinate collect`, and the old tool's state.
+# a record kept in this directory by `divinate collect`.
 /evidence
-/.evidence

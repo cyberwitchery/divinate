@@ -171,26 +171,36 @@ complete for that question.
 
 ## packs
 
-a pack is an executable named `divinate-pack-<name>` that `check` can call.
-it gets one json request on standard input and answers with one json
-document. [docs/packs.md](docs/packs.md) describes the protocol, and the code
-is in `src/pack.rs`.
+a pack is a program declared in `divinate.yaml`. it gets one json request on
+standard input and answers with one json document.
+[docs/packs.md](docs/packs.md) describes the protocol, and the code is in
+`src/pack.rs` and `src/pack/source.rs`.
 
 packs exist because a rule language that could express everything would be a
 programming language. the definition format stays small, and anything that
 needs real logic (parsing a description, a calculation over many items) goes
 into a pack, in whatever language its author likes.
 
-a few choices keep packs from weakening the rest:
+a pack can judge items in a `check`, and it can be a source. a few choices
+keep either from weakening the rest:
 
-- a pack only takes part in `check`. it never adds to a collection, so
-  `verify` doesn’t depend on any pack, and a collection means the same with
-  or without packs installed.
-- a pack is shown derived items, never transcripts. it works on the same
-  model on every platform.
-- a pack is started with an almost empty environment, so it doesn’t get the
-  tokens.
-- a report names the packs that took part and their versions.
+- a check pack is shown derived items, never transcripts, so it works on the
+  same model on every platform. nothing it answers is stored, and a report
+  names the packs that took part and their versions.
+- a source pack makes its own requests. this is the one place where core
+  doesn’t do the reading, because a pack that had to describe every request
+  in advance couldn’t read much. in exchange it hands back every response,
+  and core seals them as transcripts, so they’re covered by `verify` like any
+  others.
+- a source pack derives in a separate request that gets the transcripts and
+  nothing else. that keeps the property the built-in sources have: the model
+  is a function of the transcripts and can be worked out again later. the
+  collection records the pack and its version, and `verify` asks that
+  version again when it’s configured.
+- what a source pack derives is checked before it’s stored: ids stay in the
+  pack’s own namespace, and every statement names transcripts that exist.
+- a pack is started with an almost empty environment and gets the variables
+  its entry names. a reading that repeats one of those values is refused.
 
 a pack can also ship process definitions, which is how a set of rules for a
 framework or a company policy can be handed around as one thing.

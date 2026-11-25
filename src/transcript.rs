@@ -38,6 +38,9 @@ pub struct TranscriptContents {
 pub struct HttpRequest {
     pub method: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// what was sent with the request, where a source is asked with a body.
+    pub body: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -147,6 +150,7 @@ pub fn exchange(
         request: HttpRequest {
             method: "GET".into(),
             url: url.into(),
+            body: None,
         },
         response: HttpResponse {
             status,

@@ -26,26 +26,42 @@ guidelines for ai agents working on this codebase.
 - document public items in lowercase, with `# Errors` on anything fallible
 - use `#[cfg(test)] mod tests` for unit tests
 
-## evidence semantics
+## what is easy to break
 
-this is the part that is easy to break without noticing.
+divinate records what a platform said and lets people check rules against it.
+these properties hold that together, and a change can break them without a
+test failing right away.
 
-- the record holds no verdicts. a statement is a recorded value or a gap with its reason. kept and broken belong to a process check, which is not stored.
-- no absence claim without a complete read. a listing that did not complete is a gap, and nothing is concluded from what it did not return.
-- what is partly known is recorded with a note that says what is missing. a check that finds nothing in a partial reading answers cannot tell.
-- derivation is a pure function of the transcripts. it makes no requests and reads no clock, so `verify` can repeat it offline.
-- a change to what is derived from the same transcripts needs a new `DERIVATION` in `src/record.rs`.
-- an entity is identified by the source's own id, never by its name.
-- every source produces the same shapes. build scopes with `source/build.rs` and work items and events with `source/work.rs`.
+- everything in a collection comes out of a stored response. the derivation
+  makes no requests and reads no clock, so `verify` can repeat it offline.
+- a change that makes the same responses produce a different model needs a new
+  `DERIVATION` in `src/record.rs`.
+- a collection holds what was read, and no results of rules. `kept` and
+  `broken` belong to `check`, which stores nothing.
+- a list that wasn’t read to the end is a gap. don’t record the part that was
+  read as the whole.
+- something that is only partly known is recorded with a note saying what is
+  missing, and a rule that finds nothing in it answers `cannot tell`.
+- an entity is identified by the platform’s own id, never by its name.
+- every platform produces the same shapes. build scopes with
+  `source/build.rs` and work items and events with `source/work.rs`.
 
-## security considerations
+## security
 
-this is a security tool. when modifying:
+this is a security tool, and it handles tokens.
 
-- core makes every request. a source says what to read and what the responses mean.
-- do not retain credentials. request headers are never kept, and a response that repeats a credential is refused.
-- only follow links on the source's own origin.
-- build a url only from values that were checked, never from a response as it came.
+- core makes the requests for the built-in platforms, through the one reader
+  in `src/source/reading.rs`. a platform module says what to read and what
+  the responses mean.
+- tokens are never stored. request headers aren’t kept, and a response that
+  repeats a token is refused.
+- only follow links on the platform’s own host, and build a url only from
+  values that were checked.
+- a pack gets an almost empty environment plus the variables its entry in
+  `divinate.yaml` lists. don’t pass it more.
+- what a source pack hands back is checked before it’s stored: no inherited
+  secret in a reading, ids in the pack’s own namespace, statements that cite
+  transcripts which exist. keep those checks in `src/pack/source.rs`.
 
 ## testing
 

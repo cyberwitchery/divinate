@@ -6,8 +6,8 @@ use std::fmt::Write as _;
 use time::{Duration, OffsetDateTime};
 
 use super::{
-    duration, By, Count, Found, Measure, Measured, Outcome, Patterns, Process, Report, Row, Rule,
-    Selected, Selection, Step, When,
+    duration, By, Contribution, Count, Covered, Found, Measure, Measured, Outcome, Patterns,
+    Process, Report, Row, Rule, Selected, Selection, Step, Target, When,
 };
 use serde_json::{json, Value};
 
@@ -67,6 +67,7 @@ pub fn check_with<'a>(
         measures: Vec::new(),
         references: references(process),
         packs: Vec::new(),
+        frameworks: covered(process),
     };
     report.branches = branch_rows(process, derived, &index);
     let Some(items) = &process.items else {
@@ -86,7 +87,7 @@ pub fn check_with<'a>(
     });
     report.selected = Ok(Selected {
         kind: items.kind.clone(),
-        label: items.label.clone(),
+        label: items.label.as_ref().map(|label| label.0.clone()),
         when: items.when,
         into: items.into.clone(),
         paths: items.paths.as_ref().map(|paths| paths.0.clone()),
@@ -181,6 +182,37 @@ fn together(
         });
     }
     Ok(())
+}
+
+/// the frameworks a process declares, with what its rules contribute to each
+/// of their requirements.
+fn covered(process: &Process) -> Vec<Covered> {
+    process
+        .frameworks
+        .iter()
+        .map(|(name, framework)| Covered {
+            framework: name.clone(),
+            title: framework.title.clone(),
+            targets: framework
+                .targets
+                .iter()
+                .map(|(id, title)| Target {
+                    id: id.clone(),
+                    title: title.clone(),
+                    contributions: process
+                        .mapped()
+                        .flat_map(|(rule, maps)| maps.iter().map(move |mapping| (rule, mapping)))
+                        .filter(|(_, mapping)| &mapping.framework == name && &mapping.target == id)
+                        .map(|(rule, mapping)| Contribution {
+                            rule: rule.to_owned(),
+                            strength: mapping.strength,
+                            limitation: mapping.limitation.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 /// where each part of a process comes from, by its name.
@@ -371,7 +403,10 @@ impl<'a> Index<'a> {
                         .and_then(|statement| statement.reading.value())
                         .and_then(|value| value["labels"].as_array())
                         .is_some_and(|labels| {
-                            labels.iter().any(|found| found.as_str() == Some(label))
+                            labels
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .any(|found| label.match_any(found, None))
                         })
                 })
             })

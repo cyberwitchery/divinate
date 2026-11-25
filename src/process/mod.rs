@@ -10,6 +10,7 @@
 mod check;
 mod render;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -17,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use time::Duration;
 
 pub use check::{check, check_with};
-pub use render::{render, summary};
+pub use render::{coverage, render, summary};
 
 use crate::error::{Error, Result};
 use crate::model::Interval;
@@ -43,6 +44,47 @@ pub struct Process {
     #[serde(default)]
     /// numbers worked out over the selected items.
     pub measures: Vec<Measure>,
+    #[serde(default)]
+    /// the frameworks the rules of this process map to, by a short name.
+    pub frameworks: Frameworks,
+}
+
+/// frameworks by the short name mappings use for them.
+pub type Frameworks = BTreeMap<String, Framework>;
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// a framework: a standard, a regulation, a policy.
+pub struct Framework {
+    #[serde(default)]
+    /// its full name.
+    pub title: Option<String>,
+    /// the requirements it has, by their id, each with a title.
+    pub targets: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+/// what a rule contributes to one requirement of a framework.
+pub struct Mapping {
+    /// the short name of the framework.
+    pub framework: String,
+    /// the id of the requirement.
+    pub target: String,
+    pub strength: Strength,
+    #[serde(default)]
+    /// what the rule does not establish of the requirement, even when kept.
+    pub limitation: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+/// how much of a requirement a rule answers.
+pub enum Strength {
+    /// the rule answers the requirement.
+    Full,
+    /// the rule answers a part of it.
+    Partial,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +100,9 @@ pub struct Overall {
     #[serde(default, rename = "ref")]
     /// where the requirement comes from, such as a section of a policy.
     pub reference: Option<String>,
+    #[serde(default)]
+    /// the requirements of a framework this contributes to.
+    pub maps: Vec<Mapping>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +119,9 @@ pub struct Measure {
     #[serde(default, rename = "ref")]
     /// where the requirement comes from, such as a section of a policy.
     pub reference: Option<String>,
+    #[serde(default)]
+    /// the requirements of a framework this contributes to.
+    pub maps: Vec<Mapping>,
     #[serde(default)]
     /// the name of a step: the share of items that kept it, among those that
     /// kept or broke it.
@@ -94,8 +142,8 @@ pub struct Selection {
     /// the kind of work item: `ticket`, `change`, or `finding`.
     pub kind: String,
     #[serde(default)]
-    /// only items carrying this label.
-    pub label: Option<String>,
+    /// only items carrying a label that matches one of these patterns.
+    pub label: Option<Patterns>,
     #[serde(default)]
     /// which items of the period: those opened in it, or those merged in it.
     pub when: When,
@@ -127,6 +175,9 @@ pub struct Step {
     #[serde(default, rename = "ref")]
     /// where the requirement comes from, such as a section of a policy.
     pub reference: Option<String>,
+    #[serde(default)]
+    /// the requirements of a framework this contributes to.
+    pub maps: Vec<Mapping>,
     #[serde(default)]
     /// instead of an event: the check of a pack that judges each item, as
     /// `<pack>/<check>`.
@@ -332,6 +383,9 @@ pub struct Rule {
     /// where the requirement comes from, such as a section of a policy.
     pub reference: Option<String>,
     #[serde(default)]
+    /// the requirements of a framework this contributes to.
+    pub maps: Vec<Mapping>,
+    #[serde(default)]
     /// a change needs at least this many approvals before it is merged.
     pub approvals: Option<u64>,
     #[serde(default)]
@@ -364,10 +418,27 @@ pub fn load(path: &Path) -> Result<Process> {
 /// returns an error when the text is not a process definition, or asks for
 /// something this build cannot check.
 pub fn parse(text: &str, origin: &Path) -> Result<Process> {
-    let process: Process = serde_saphyr::from_str(text).map_err(|source| Error::Yaml {
+    parse_with(text, origin, &Frameworks::new())
+}
+
+/// read a process definition from yaml text, with frameworks it can map to
+/// beside those it declares itself, such as those of the pack that ships it.
+///
+/// # Errors
+///
+/// returns an error when the text is not a process definition, or asks for
+/// something this build cannot check.
+pub fn parse_with(text: &str, origin: &Path, shared: &Frameworks) -> Result<Process> {
+    let mut process: Process = serde_saphyr::from_str(text).map_err(|source| Error::Yaml {
         path: origin.to_path_buf(),
         source: Box::new(source),
     })?;
+    for (name, framework) in shared {
+        process
+            .frameworks
+            .entry(name.clone())
+            .or_insert_with(|| framework.clone());
+    }
     let about_items =
         !process.steps.is_empty() || !process.overall.is_empty() || !process.measures.is_empty();
     if !about_items && process.branches.is_empty() {
@@ -398,9 +469,50 @@ pub fn parse(text: &str, origin: &Path) -> Result<Process> {
     Ok(process)
 }
 
+impl Process {
+    /// every rule by its name, with what it maps to.
+    pub(crate) fn mapped(&self) -> impl Iterator<Item = (&str, &[Mapping])> {
+        let steps = self.steps.iter().map(|step| (&step.name, &step.maps));
+        let rules = self.branches.iter().map(|rule| (&rule.name, &rule.maps));
+        let overall = self
+            .overall
+            .iter()
+            .map(|overall| (&overall.name, &overall.maps));
+        let measures = self
+            .measures
+            .iter()
+            .map(|measure| (&measure.name, &measure.maps));
+        steps
+            .chain(rules)
+            .chain(overall)
+            .chain(measures)
+            .map(|(name, maps)| (name.as_str(), maps.as_slice()))
+    }
+}
+
+/// refuse a mapping to a framework or requirement the process does not declare.
+fn mapped_to_declared(process: &Process) -> Result<()> {
+    for (rule, maps) in process.mapped() {
+        for mapping in maps {
+            let known = process
+                .frameworks
+                .get(&mapping.framework)
+                .is_some_and(|framework| framework.targets.contains_key(&mapping.target));
+            if !known {
+                return Err(Error::Invalid(format!(
+                    "{rule:?} maps to {:?} of {:?}, which `frameworks` does not declare",
+                    mapping.target, mapping.framework
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// refuse a definition whose measures or steps ask for something that
 /// cannot be checked.
 fn validate(process: &Process) -> Result<()> {
+    mapped_to_declared(process)?;
     for measure in &process.measures {
         let timed = measure.from.is_some() && measure.to.is_some();
         let known = |step: &String| process.steps.iter().any(|known| &known.name == step);
@@ -585,6 +697,38 @@ pub struct Report {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     /// the packs that judged a part of this, with their versions.
     pub packs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// the frameworks the process maps to, with what its rules contribute to
+    /// each requirement.
+    pub frameworks: Vec<Covered>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// one framework, and what a process contributes to its requirements.
+pub struct Covered {
+    /// the short name of the framework.
+    pub framework: String,
+    pub title: Option<String>,
+    pub targets: Vec<Target>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// one requirement of a framework.
+pub struct Target {
+    pub id: String,
+    pub title: String,
+    /// the rules that contribute to it. none when the process has no rule
+    /// for it.
+    pub contributions: Vec<Contribution>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+/// one rule's part in a requirement.
+pub struct Contribution {
+    /// the name of the step, rule, or measure.
+    pub rule: String,
+    pub strength: Strength,
+    pub limitation: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -622,7 +766,8 @@ fn selection<S: serde::Serializer>(
 /// the items a process applies to.
 pub struct Selected {
     pub kind: String,
-    pub label: Option<String>,
+    /// the patterns a label must match, when the process names any.
+    pub label: Option<Vec<String>>,
     pub when: When,
     /// the branch the changes must go into, when the process names one.
     pub into: Option<String>,

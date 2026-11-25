@@ -513,6 +513,7 @@ mod tests {
         let period = Period {
             from: "2026-01-01T00:00:00Z".into(),
             until: "2026-04-01T00:00:00Z".into(),
+            files: true,
         };
         let read = |path: &str| {
             capture(

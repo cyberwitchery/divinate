@@ -12,11 +12,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Error, Result};
 use crate::facts;
 use crate::model::{Derived, Reading, Statement};
+use crate::pack::source::Stamp;
 use crate::transcript::Transcript;
 use crate::{content_id, read_json, write_json};
 
 /// the version of the rules that turn transcripts into statements.
-pub const DERIVATION: &str = "8";
+pub const DERIVATION: &str = "9";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 /// one reading of a scope, addressed by the digest of its contents.
@@ -35,6 +36,9 @@ pub struct CollectionContents {
     pub scope: String,
     pub started_at: String,
     pub completed_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// the pack that read and derived this, when a pack did.
+    pub pack: Option<Stamp>,
     /// every transcript of the reading, in the order it was made.
     pub transcripts: Vec<String>,
     #[serde(flatten)]
@@ -80,17 +84,36 @@ pub fn seal(
     completed_at: String,
     transcripts: &[Transcript],
 ) -> Result<Collection> {
+    let derived = facts::derive(transcripts)?;
+    seal_derived(scope, started_at, completed_at, transcripts, derived, None)
+}
+
+/// make a collection of transcripts and what was derived from them, by this
+/// crate or by a pack.
+///
+/// # Errors
+///
+/// returns an error when the collection cannot be serialized.
+pub fn seal_derived(
+    scope: &str,
+    started_at: String,
+    completed_at: String,
+    transcripts: &[Transcript],
+    derived: Derived,
+    pack: Option<Stamp>,
+) -> Result<Collection> {
     let contents = CollectionContents {
         tool: concat!("divinate/", env!("CARGO_PKG_VERSION")).into(),
         derivation: DERIVATION.into(),
         scope: scope.into(),
         started_at,
         completed_at,
+        pack,
         transcripts: transcripts
             .iter()
             .map(|transcript| transcript.id.clone())
             .collect(),
-        derived: facts::derive(transcripts)?,
+        derived,
     };
     Ok(Collection {
         id: content_id("col", &contents)?,

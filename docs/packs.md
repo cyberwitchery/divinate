@@ -1,9 +1,9 @@
 # packs
 
-a pack adds to what divinate can check. it’s a small program that you (or
-someone you trust) write in any language. a pack can do two things: judge
-things that a process definition can’t express on its own, and ship
-ready-made process definitions.
+a pack adds to what divinate can do. it’s a small program that you (or
+someone you trust) write in any language. a pack can do three things: judge
+things that a process definition can’t express on its own, ship ready-made
+process definitions, and read a system that divinate doesn’t know.
 
 a typical reason to write one: your policy says that every pull request has a
 checklist in its description and that all boxes are ticked. divinate has the
@@ -11,12 +11,35 @@ description, but no step that reads task lists. a pack can read it.
 
 ## using a pack
 
-a pack is a program named `divinate-pack-<name>`. divinate finds it in the
-directories listed in `DIVINATE_PACKS`, and after that on your `PATH`. this
-repository has an example in [examples/](../examples/divinate-pack-checklist):
+packs are declared in `divinate.yaml`, which divinate looks for in the
+directory you run it in (`--config <file>` names another one):
+
+```yaml
+packs:
+  checklist:
+    command: ./divinate-pack-checklist
+```
+
+the name under `packs` is how definitions and commands refer to the pack.
+these are the keys of an entry:
+
+| key | meaning |
+|---|---|
+| `command` | the program. a path is taken relative to the configuration file, and a bare name is looked up on your `PATH` |
+| `args` | arguments for the program |
+| `working_dir` | the directory the pack runs in. the directory of the configuration file by default |
+| `inherit` | names of environment variables the pack gets from your environment, such as a token it needs |
+| `env` | environment variables set for the pack, written out here. don’t put secrets in this one |
+| `timeout_seconds` | how long a request to the pack may take. 300 by default |
+| `setup` | settings for the pack, handed to it with every request. what goes here is up to the pack |
+
+a pack starts with an almost empty environment. it only sees a token when its
+entry lists the variable under `inherit`.
+
+this repository has an example in [examples/](../examples/divinate.yaml):
 
 ```console
-$ export DIVINATE_PACKS=$PWD/examples
+$ cd examples
 $ divinate pack checklist
 checklist 0.1.0
 checks the task list in the description of a ticket or change
@@ -81,21 +104,105 @@ measures:
     uses: checklist/share            # a number
 ```
 
+`divinate check checklist:` (with nothing after the colon) checks every
+definition the pack ships in one run.
+
 `with` passes settings to the check. what they are is up to the pack.
 `divinate pack <name>` tells you which of the three places each check is for.
 steps that use a pack sit next to ordinary steps and get the same five
 results. a step with `uses` can also have `linked`, which hands the pack the
 pull requests that close a ticket instead of the ticket.
 
+## a pack as a source
+
+a pack can also read a system and add collections of its own. the pack in
+[packs/](../packs/divinate-pack-osv) does that: for every release of a github
+repository it reads the sboms attached to it, and asks [osv.dev](https://osv.dev)
+which known vulnerabilities their components have.
+
+```yaml
+packs:
+  osv:
+    command: ./divinate-pack-osv
+    inherit: [GITHUB_TOKEN]
+    timeout_seconds: 900
+    setup:
+      sbom: '*.cdx.json'
+```
+
+```console
+$ divinate collect osv:cyberwitchery/sbom-diff
+collected osv:cyberwitchery/sbom-diff: 14 records, 0 gaps
+col_6ea5e976003a755e4ab7
+$ divinate show
+osv:cyberwitchery/sbom-diff · collected 2026-11-25T08:46:51Z · col_6ea5e976003a755e4ab7
+14 records, 0 gaps
+
+osv:cyberwitchery/sbom-diff
+  ■ findings  1 finding
+  ■ releases  5 releases
+```
+
+the name before the colon picks the pack. the result is an ordinary
+collection: `show` and `ledger` print it, and rules work on it. every known
+vulnerability is a finding that is opened when it’s first known of a release
+and closed by the next release that no longer has it, so this definition asks
+whether vulnerable dependencies get replaced within a month:
+
+```yaml
+process: known vulnerabilities
+items:
+  kind: finding
+steps:
+  - name: fixed in a release
+    event: closed
+    within: 30d
+```
+
+```console
+$ divinate check known-vulnerabilities.yaml
+known vulnerabilities · osv:cyberwitchery/sbom-diff · as of 2026-11-25T08:47:36Z
+findings opened 2026-08-27T08:46:51Z to 2026-11-25T08:46:51Z: 1 read
+
+item                                           fixed in a release
+osv:cyberwitchery/sbom-diff RUSTSEC-2026-0543  broken
+
+fixed in a release  1 broken
+
+not kept
+  osv:cyberwitchery/sbom-diff RUSTSEC-2026-0543 · fixed in a release: broken, no closed within 30d
+```
+
+(that one is “chrono is unmaintained”, and all five releases of the period
+have it.)
+
+a finding’s label is its severity: the word the database gives (`high`), the
+band of its cvss 3 score, or for a notice that isn’t a vulnerability the kind
+of notice (`unmaintained`). `items.label` selects by it.
+
+a source pack makes its own requests, and hands divinate every response it
+got. divinate stores them the same way it stores its own, so `verify` covers
+them. `verify` also asks the pack to work out the collection again from the
+stored responses, as long as the same version of the pack is configured. on a
+machine without the pack, `verify` still checks the files and says which pack
+it would need for the rest:
+
+```
+col_…: derived by the pack osv 0.1.0, which is not configured here; bytes checked, statements not recomputed
+```
+
 ## writing a pack
 
 divinate starts the pack, writes one json request to its standard input, and
-reads one json answer from its standard output. there are two requests.
+reads one json answer from its standard output. every request has
+`"protocol": 1`, a `"request"` that says what is asked, and the `"setup"`
+from the configuration. a pack answers `describe`, and then `check` if it has
+checks, or `collect` and `derive` if it is a source.
 
 ### describe
 
 ```json
-{"protocol": 1, "request": "describe"}
+{"protocol": 1, "request": "describe", "setup": null}
 ```
 
 the pack answers with what it offers:
@@ -116,7 +223,14 @@ the pack answers with what it offers:
 }
 ```
 
-`name` has to match the file name. `answers` is `each_item` for a check used in
+a pack can also declare `"frameworks"`, in the same form as in a
+[process definition](processes.md#frameworks). the definitions it ships can
+then map to them without repeating the list of requirements, which is how a
+pack carries the mapping of a whole set of rules to a standard.
+
+`name` has to match the name in `divinate.yaml`. a source also has
+`"collects": {"scopes": "osv:<owner>/<repository>", "description": "..."}`.
+`answers` is `each_item` for a check used in
 a step, `all_items` for one used under `overall`, and `number` for a measure.
 a `definition` is the text of a [process definition](processes.md), and it can
 use the pack’s own checks.
@@ -128,6 +242,7 @@ use the pack’s own checks.
   "protocol": 1,
   "request": "check",
   "check": "completed",
+  "setup": null,
   "with": {},
   "collection": {
     "scope": "github:cyberwitchery/divinate",
@@ -207,15 +322,108 @@ if something goes wrong, the pack should write a message to its standard
 error and exit with a status other than zero. divinate prints the message and
 stops.
 
+### collect
+
+```json
+{
+  "protocol": 1,
+  "request": "collect",
+  "setup": {"sbom": "*.cdx.json"},
+  "path": "acme/shop",
+  "period": {"from": "2026-08-26T00:00:00Z", "until": "2026-11-24T00:00:00Z"}
+}
+```
+
+`path` is what came after the colon. the pack reads what it needs and answers
+with a list of readings. a reading is one question to the system, with every
+request it took:
+
+```json
+{"readings": [
+  {
+    "resource": "osv/query/v1",
+    "subject": "osv:acme/shop",
+    "parameters": {"release": "v1.2.0", "asset": "shop.cdx.json", "part": "0"},
+    "captured_at": "2026-11-24T10:00:03Z",
+    "exchanges": [
+      {
+        "request": {"method": "POST", "url": "https://api.osv.dev/v1/querybatch", "body": "{\"queries\":[...]}"},
+        "response": {"status": 200, "headers": {"date": "..."}, "body": "{\"results\":[...]}"}
+      }
+    ],
+    "termination": {"kind": "exhausted"}
+  }
+]}
+```
+
+- `resource` names the kind of question and starts with the pack’s name.
+- bodies go in as they arrived, as text. leave out request headers, since
+  that’s where tokens are, and only keep the response headers you need.
+- `termination` says how it ended: `exhausted` when everything was read, or
+  one of the kinds in [state and formats](state.md#a-transcript) with a
+  `diagnostic`. a reading that failed is still a reading. hand it back with
+  what happened, and say in `derive` what is missing because of it.
+
+divinate refuses the whole answer if a reading contains the value of a
+variable the pack got through `inherit`.
+
+### derive
+
+```json
+{"protocol": 1, "request": "derive", "transcripts": [{"id": "acq_…", "contents": {"...": "..."}}]}
+```
+
+the transcripts are the readings from `collect`, each with the id divinate
+gave it. the pack answers with what they mean, in the model that
+[state and formats](state.md) describes:
+
+```json
+{
+  "entities": [
+    {"uid": "osv/repository/github.com/acme/shop", "class": "scope", "kind": "repository", "native_kind": "repository", "name": "osv:acme/shop"}
+  ],
+  "statements": [
+    {
+      "about": "osv/repository/github.com/acme/shop",
+      "aspect": "findings",
+      "population": {"of": "finding", "interval": {"from": "...", "until": "..."}},
+      "value": {"members": []},
+      "transcripts": ["acq_…"]
+    }
+  ],
+  "relations": []
+}
+```
+
+a statement has a `value`, or a `gap` with the reason when it couldn’t be
+read, and can have a `note`. to work with the built-in rules, use the same
+kinds, aspects, and events as divinate does: a `finding` has a state with
+`title`, `state`, `labels`, `opened_at`, and `closed_at`, and an `events`
+statement that lists its event entities.
+
+four rules make sure a pack’s collection can be trusted like any other:
+
+- the pack’s `version` changes whenever `derive` would say something
+  different about the same transcripts. `verify` only asks a pack of the
+  version that made the collection, and a pack that changed its mind without
+  changing its version makes `verify` fail.
+- `derive` gets no `setup` and must not read anything else. the answer has to
+  follow from the transcripts alone, since `verify` asks again later.
+- every `uid` starts with the pack’s name and a `/`.
+- every statement is about an entity in the answer and names transcripts from
+  the request.
+
+divinate refuses an answer that breaks one of them.
+
 ### what a pack can rely on
 
-- a pack gets one request per start, and is started once per check and
-  collection.
-- it runs with an almost empty environment (`PATH`, `HOME`, `LANG`, and
-  `TMPDIR`), so the tokens divinate uses aren’t passed on.
-- it only gets the items of the request. it has no access to `evidence/`
-  through divinate, and nothing it answers is stored.
+- a pack gets one request per start.
+- it runs with an almost empty environment: `PATH`, `HOME`, `LANG`, `TMPDIR`,
+  and what its entry lists under `inherit` and `env`.
+- a check only gets the items of the request, and nothing it answers is
+  stored.
 - `protocol` is `1`. divinate refuses a pack that names another version.
 
-the [example pack](../examples/divinate-pack-checklist) is about 70 lines of
-python and a good place to start.
+the [checklist pack](../examples/divinate-pack-checklist) is about 70 lines
+of python and a good place to start for checks. the
+[osv pack](../packs/divinate-pack-osv) is a complete source.

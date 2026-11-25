@@ -25,10 +25,24 @@ pub fn collect(
     at: &str,
     answer: impl Fn(&str) -> Answer,
 ) -> (Collection, Vec<Transcript>) {
+    collect_with(scope, from, at, true, answer)
+}
+
+/// the same, with or without the files each change touches.
+// each test binary compiles this module, and not every one leaves the files out.
+#[allow(dead_code)]
+pub fn collect_with(
+    scope: &str,
+    from: &str,
+    at: &str,
+    files: bool,
+    answer: impl Fn(&str) -> Answer,
+) -> (Collection, Vec<Transcript>) {
     let (source, path) = source::for_scope(scope).unwrap();
     let period = Period {
         from: from.into(),
         until: at.into(),
+        files,
     };
     let transcripts = source
         .capture(path, &period, &|| Ok(at.to_owned()), &mut |url: &str| {

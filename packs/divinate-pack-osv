@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""a divinate source pack: known vulnerabilities in what a repository released.
+
+for every release a github repository published in the period, the pack reads
+the software bills of materials attached to it (cyclonedx json) and asks
+osv.dev which known vulnerabilities their components have. a vulnerability
+becomes a finding that is opened when it is first known of a release, and
+closed by the next release that no longer has it.
+
+    divinate collect osv:<owner>/<repository>
+
+it uses the python standard library only. see docs/packs.md.
+"""
+
+import fnmatch
+import json
+import math
+import os
+import sys
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
+
+VERSION = "0.2.0"
+GITHUB = "https://api.github.com"
+OSV = "https://api.osv.dev/v1"
+AGENT = f"divinate-pack-osv/{VERSION}"
+BATCH = 500
+LARGEST_SBOM = 32 * 1024 * 1024
+
+RELEASES = "osv/github-releases/v1"
+SBOM = "osv/release-sbom/v1"
+QUERY = "osv/query/v1"
+VULNERABILITY = "osv/vulnerability/v1"
+
+
+def now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def when(text):
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
+def send(method, url, body=None, headers=None):
+    """one request. returns status, the headers worth keeping, the body, and
+    where a redirect points."""
+    request = urllib.request.Request(url, data=body, method=method)
+    request.add_header("user-agent", AGENT)
+    for name, value in (headers or {}).items():
+        request.add_header(name, value)
+    try:
+        with OPENER.open(request, timeout=60) as response:
+            status, found, raw = response.status, response.headers, response.read(LARGEST_SBOM + 1)
+    except urllib.error.HTTPError as error:
+        status, found, raw = error.code, error.headers, error.read(1024 * 1024)
+    except OSError as error:
+        return None, {}, str(error), None
+    kept = {name: found[name] for name in ("date", "link", "retry-after") if found.get(name)}
+    return status, kept, raw.decode("utf-8", "replace"), found.get("location")
+
+
+def ending(status, body, complete=True):
+    """how a reading ended, in divinate's words."""
+    said = body.strip().splitlines()[0][:200] if body.strip() else "no body"
+    diagnostic = f"HTTP {status}: {said}" if status else said
+    if status == 200:
+        return {"kind": "exhausted"} if complete else {"kind": "failed", "diagnostic": "the answer is not complete"}
+    if status == 401:
+        return {"kind": "unauthenticated", "diagnostic": diagnostic}
+    if status == 403 and "rate limit" in body.lower() or status == 429:
+        return {"kind": "rate_limited", "diagnostic": diagnostic}
+    if status == 403:
+        return {"kind": "permission_denied", "diagnostic": diagnostic}
+    if status == 404:
+        return {"kind": "not_found", "diagnostic": diagnostic}
+    return {"kind": "failed", "diagnostic": diagnostic}
+
+
+def exchange(method, url, status, headers, body, sent=None):
+    request = {"method": method, "url": url}
+    if sent is not None:
+        request["body"] = sent
+    return {"request": request, "response": {"status": status or 0, "headers": headers, "body": body if status else ""}}
+
+
+def reading(resource, subject, parameters, exchanges, termination):
+    return {
+        "resource": resource,
+        "subject": subject,
+        "parameters": parameters,
+        "captured_at": now(),
+        "exchanges": exchanges,
+        "termination": termination,
+    }
+
+
+def github_headers(accept="application/vnd.github+json"):
+    headers = {"accept": accept, "x-github-api-version": "2022-11-28"}
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
+def next_page(headers):
+    for part in headers.get("link", "").split(","):
+        if 'rel="next"' in part:
+            url = part.split(";")[0].strip().strip("<>")
+            if url.startswith(GITHUB + "/"):
+                return url
+    return None
+
+
+def read_releases(subject, path, period):
+    exchanges, releases = [], []
+    url = f"{GITHUB}/repos/{path}/releases?per_page=100"
+    while url:
+        status, headers, body, _ = send("GET", url, headers=github_headers())
+        exchanges.append(exchange("GET", url, status, headers, body))
+        if status != 200:
+            return reading(RELEASES, subject, period, exchanges, ending(status, body)), []
+        releases.extend(json.loads(body))
+        url = next_page(headers)
+    return reading(RELEASES, subject, period, exchanges, {"kind": "exhausted"}), releases
+
+
+def read_sbom(subject, path, release, asset):
+    """an attached file, through the api. github answers with a redirect to
+    where the file is stored. it is followed without the token, and the
+    signed address it points to is not kept."""
+    url = f"{GITHUB}/repos/{path}/releases/assets/{asset['id']}"
+    parameters = {"release": release["tag_name"], "asset": asset["name"]}
+    status, headers, body, location = send("GET", url, headers=github_headers("application/octet-stream"))
+    if status in (301, 302, 303, 307, 308) and location and location.startswith("https://"):
+        status, headers, body, _ = send("GET", location)
+    complete = status == 200 and len(body.encode()) <= LARGEST_SBOM
+    done = reading(SBOM, subject, parameters, [exchange("GET", url, status, headers, body)], ending(status, body, complete))
+    return done, body if complete else None
+
+
+def purls(sbom):
+    """the versioned package urls a cyclonedx document lists, without qualifiers."""
+    try:
+        components = json.loads(sbom).get("components") or []
+    except (ValueError, AttributeError):
+        return None
+    found = set()
+    for component in components:
+        purl = (component.get("purl") or "").split("?")[0].split("#")[0]
+        if purl.startswith("pkg:") and "@" in purl:
+            found.add(purl)
+    return sorted(found)
+
+
+def query(subject, parameters, packages):
+    """ask osv about some packages. the ids of what it knows of each come back
+    in the order asked."""
+    sent = json.dumps({"queries": [{"package": {"purl": purl}} for purl in packages]}, separators=(",", ":"))
+    url = f"{OSV}/querybatch"
+    status, headers, body, _ = send("POST", url, sent.encode(), {"content-type": "application/json"})
+    complete = False
+    if status == 200:
+        results = json.loads(body).get("results") or []
+        # a result that says there is more was cut short.
+        complete = len(results) == len(packages) and not any(result.get("next_page_token") for result in results)
+    done = reading(QUERY, subject, parameters, [exchange("POST", url, status, headers, body, sent)], ending(status, body, complete))
+    ids = set()
+    if complete:
+        for result in results:
+            ids.update(vuln["id"] for vuln in result.get("vulns") or [])
+    return done, ids
+
+
+def collect(request):
+    path = request["path"]
+    owner, _, repository = path.partition("/")
+    allowed = lambda name, extra: bool(name) and all(c.isalnum() or c in extra for c in name)
+    if not allowed(owner, "-") or not allowed(repository, "-_."):
+        sys.exit(f"{path!r} is not <owner>/<repository>")
+    pattern = (request.get("setup") or {}).get("sbom", "*.cdx.json")
+    subject = f"osv:{path}"
+    period = request["period"]
+    listing, releases = read_releases(subject, path, period)
+    readings, ids = [listing], set()
+    for release in releases:
+        published = release.get("published_at")
+        if release.get("draft") or not published:
+            continue
+        if not when(period["from"]) <= when(published) < when(period["until"]):
+            continue
+        for asset in release.get("assets") or []:
+            if not fnmatch.fnmatchcase(asset["name"], pattern):
+                continue
+            read, sbom = read_sbom(subject, path, release, asset)
+            readings.append(read)
+            packages = purls(sbom) if sbom is not None else None
+            for part, start in enumerate(range(0, len(packages or []), BATCH)):
+                parameters = {"release": release["tag_name"], "asset": asset["name"], "part": str(part)}
+                asked, found = query(subject, parameters, packages[start : start + BATCH])
+                readings.append(asked)
+                ids |= found
+    for vulnerability in sorted(ids):
+        url = f"{OSV}/vulns/{vulnerability}"
+        status, headers, body, _ = send("GET", url)
+        readings.append(reading(VULNERABILITY, subject, {"id": vulnerability}, [exchange("GET", url, status, headers, body)], ending(status, body)))
+    return {"readings": readings}
+
+
+# from here on nothing is requested. what follows is a function of the transcripts.
+
+
+def gap(transcript):
+    """why a reading is incomplete, or None."""
+    termination = transcript["contents"]["termination"]
+    if termination["kind"] == "exhausted":
+        return None
+    said = termination.get("diagnostic") or termination.get("reason") or ""
+    return f"{termination['kind'].replace('_', ' ')}: {said}".rstrip(": ")
+
+
+def bodies(transcript):
+    return [e["response"]["body"] for e in transcript["contents"]["exchanges"] if e["response"]["status"] == 200]
+
+
+def cvss3(vector):
+    """the base score of a cvss 3 vector, as its specification works it out."""
+    try:
+        metric = dict(part.split(":", 1) for part in vector.split("/")[1:])
+        changed = metric["S"] == "C"
+        required = {"N": 0.85, "L": 0.68 if changed else 0.62, "H": 0.5 if changed else 0.27}
+        loss = {"H": 0.56, "L": 0.22, "N": 0.0}
+        exploitability = (
+            8.22
+            * {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}[metric["AV"]]
+            * {"L": 0.77, "H": 0.44}[metric["AC"]]
+            * required[metric["PR"]]
+            * {"N": 0.85, "R": 0.62}[metric["UI"]]
+        )
+        base = 1 - (1 - loss[metric["C"]]) * (1 - loss[metric["I"]]) * (1 - loss[metric["A"]])
+    except (KeyError, ValueError):
+        return None
+    impact = 7.52 * (base - 0.029) - 3.25 * (base - 0.02) ** 15 if changed else 6.42 * base
+    if impact <= 0:
+        return 0.0
+    score = min((1.08 if changed else 1.0) * (impact + exploitability), 10)
+    return math.ceil(score * 10 - 1e-9) / 10
+
+
+def severity(vulnerability):
+    """one label for how bad it is: the word the database gives, the band of
+    its cvss 3 score, or the kind of notice when it is no vulnerability."""
+    word = (vulnerability.get("database_specific") or {}).get("severity")
+    if isinstance(word, str):
+        return [{"moderate": "medium"}.get(word.lower(), word.lower())]
+    specific = [affected.get("database_specific") or {} for affected in vulnerability.get("affected") or []]
+    vectors = [entry.get("score") for entry in vulnerability.get("severity") or [] if entry.get("type") == "CVSS_V3"]
+    vectors += [entry.get("cvss") for entry in specific]
+    for vector in vectors:
+        score = cvss3(vector) if isinstance(vector, str) else None
+        if score is not None:
+            bands = [(9.0, "critical"), (7.0, "high"), (4.0, "medium"), (0.1, "low")]
+            return [next((label for least, label in bands if score >= least), "none")]
+    notices = [entry.get("informational") for entry in specific]
+    return [notice for notice in notices if isinstance(notice, str)][:1]
+
+
+def derive(request):
+    transcripts = request["transcripts"]
+    by = lambda resource: [t for t in transcripts if t["contents"]["resource"] == resource]
+    listing = by(RELEASES)[0]
+    subject = listing["contents"]["subject"]
+    path = subject.split(":", 1)[1]
+    home = f"github.com/{path}"
+    period = listing["contents"]["parameters"]
+    interval = {"from": period["from"], "until": period["until"]}
+    scope = f"osv/repository/{home}"
+    entities = [{"uid": scope, "class": "scope", "kind": "repository", "native_kind": "repository", "name": subject}]
+    statements, relations = [], []
+
+    def state(about, aspect, value, cited, population=None, note=None):
+        statement = {"about": about, "aspect": aspect, "transcripts": cited}
+        statement.update(value)
+        if population:
+            statement["population"] = population
+        if note:
+            statement["note"] = note
+        statements.append(statement)
+
+    def events(about, happened, cited):
+        members = []
+        for kind, at in happened:
+            uid = f"osv/event/{kind}/{about.split('/', 1)[1]}/{at}"
+            entities.append({"uid": uid, "class": "event", "kind": kind, "native_kind": kind, "name": uid, "parent": about, "occurred_at": at})
+            members.append(uid)
+        state(about, "events", {"value": {"members": members}}, cited, {"of": "event"})
+
+    of_releases = {"of": "release", "interval": interval}
+    of_findings = {"of": "finding", "interval": interval}
+    unread = gap(listing)
+    if unread:
+        state(scope, "releases", {"gap": unread}, [listing["id"]], of_releases)
+        state(scope, "findings", {"gap": unread}, [listing["id"]], of_findings)
+        return {"entities": entities, "statements": statements, "relations": relations}
+
+    listed = [release for body in bodies(listing) for release in json.loads(body)]
+    releases = sorted(
+        (
+            release
+            for release in listed
+            if not release.get("draft")
+            and release.get("published_at")
+            and when(interval["from"]) <= when(release["published_at"]) < when(interval["until"])
+        ),
+        key=lambda release: when(release["published_at"]),
+    )
+    # what was read of each release: its bills of materials and what osv knows of them.
+    read = {}
+    for transcript in by(SBOM) + by(QUERY):
+        read.setdefault(transcript["contents"]["parameters"]["release"], []).append(transcript)
+    known, details_unread = {}, None
+    for transcript in by(VULNERABILITY):
+        details_unread = details_unread or gap(transcript)
+        if not gap(transcript):
+            vulnerability = json.loads(bodies(transcript)[0])
+            known[vulnerability["id"]] = (vulnerability, transcript["id"])
+
+    affected, without, incomplete, members = {}, [], None, []
+    for release in releases:
+        tag = release["tag_name"]
+        uid = f"osv/release/{home}/{tag}"
+        about = read.get(tag, [])
+        sboms = [t for t in about if t["contents"]["resource"] == SBOM]
+        incomplete = incomplete or next((gap(t) for t in about if gap(t)), None)
+        found, components = set(), 0
+        for transcript in sboms:
+            if not gap(transcript):
+                packages = purls(bodies(transcript)[0])
+                if packages is None:
+                    incomplete = incomplete or f"{transcript['contents']['parameters']['asset']} is not a cyclonedx document"
+                components += len(packages or [])
+        for transcript in about:
+            if transcript["contents"]["resource"] == QUERY and not gap(transcript):
+                for result in json.loads(bodies(transcript)[0]).get("results") or []:
+                    found.update(vuln["id"] for vuln in result.get("vulns") or [])
+        if sboms:
+            affected[tag] = found
+        else:
+            without.append(tag)
+        entities.append({"uid": uid, "class": "product", "kind": "release", "native_kind": "release", "name": f"{subject} release {tag}", "parent": scope})
+        value = {
+            "tag": tag,
+            "title": release.get("name"),
+            "prerelease": release.get("prerelease"),
+            "published_at": release["published_at"],
+            "assets": [{"name": asset["name"], "size": asset.get("size"), "digest": asset.get("digest")} for asset in release.get("assets") or []],
+            "sboms": sorted(t["contents"]["parameters"]["asset"] for t in sboms),
+            "components": components,
+            "known_vulnerabilities": sorted(found),
+        }
+        cited = [listing["id"]] + [t["id"] for t in about]
+        state(uid, "release", {"value": value}, cited)
+        events(uid, [("published", release["published_at"])], [listing["id"]])
+        members.append(uid)
+    state(scope, "releases", {"value": {"members": sorted(members)}}, [listing["id"]], of_releases)
+
+    cited = [t["id"] for t in transcripts]
+    incomplete = incomplete or details_unread
+    if incomplete:
+        state(scope, "findings", {"gap": incomplete}, cited, of_findings)
+        return {"entities": entities, "statements": statements, "relations": relations}
+
+    findings = []
+    order = [release for release in releases if release["tag_name"] in affected]
+    for identifier in sorted(set().union(*affected.values()) if affected else []):
+        vulnerability, source = known[identifier]
+        happened, tags, is_open = [], [], False
+        for release in order:
+            has = identifier in affected[release["tag_name"]]
+            at = release["published_at"]
+            if has:
+                tags.append(release["tag_name"])
+            if has and not is_open:
+                # known of this release once both exist: the release, and the report.
+                published = vulnerability.get("published") or at
+                at = max(at, published, key=when) if not happened else at
+                happened.append(("opened" if not happened else "reopened", at))
+                is_open = True
+            elif not has and is_open:
+                happened.append(("closed", at))
+                is_open = False
+        uid = f"osv/finding/{home}/{identifier}"
+        entities.append({"uid": uid, "class": "work_item", "kind": "finding", "native_kind": "known vulnerability", "name": f"{subject} {identifier}", "parent": scope})
+        closed = [at for kind, at in happened if kind == "closed"]
+        value = {
+            "number": None,
+            "title": vulnerability.get("summary") or identifier,
+            "state": "open" if is_open else "closed",
+            "labels": severity(vulnerability),
+            "opened_at": happened[0][1],
+            "closed_at": None if is_open else closed[-1],
+            "merged_at": None,
+            "aliases": sorted(vulnerability.get("aliases") or []),
+            "releases": tags,
+        }
+        state(uid, "finding", {"value": value}, [listing["id"], source])
+        events(uid, happened, [listing["id"], source])
+        findings.append(uid)
+    note = None
+    if without:
+        note = f"{len(without)} of {len(releases)} releases have no bill of materials attached, and nothing is known of them: {', '.join(without)}"
+    state(scope, "findings", {"value": {"members": sorted(findings)}}, cited, of_findings, note)
+    return {"entities": entities, "statements": statements, "relations": relations}
+
+
+def describe():
+    return {
+        "protocol": 1,
+        "name": "osv",
+        "version": VERSION,
+        "description": "known vulnerabilities in the releases of a github repository, from their sboms and osv.dev",
+        "collects": {
+            "scopes": "osv:<owner>/<repository>",
+            "description": "the releases of the period, the cyclonedx sboms attached to them, and what osv.dev knows of their components",
+        },
+    }
+
+
+def main():
+    request = json.load(sys.stdin)
+    if request.get("protocol") != 1:
+        sys.exit("this pack speaks protocol 1")
+    handlers = {"describe": lambda _: describe(), "collect": collect, "derive": derive}
+    if request["request"] not in handlers:
+        sys.exit(f"unknown request {request['request']}")
+    json.dump(handlers[request["request"]](request), sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

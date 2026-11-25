@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use divinate::error::{Error, Result};
-use divinate::pack::{self, Installed};
+use divinate::pack::{self, Configured};
 use divinate::record::Collection;
 use divinate::source::{self, Period};
 use divinate::{format_time, ledger, parse_time, process, record, timestamp, verify};
@@ -17,6 +17,10 @@ use divinate::{format_time, ledger, parse_time, process, record, timestamp, veri
     about = "keep a dated record of how software is developed and released"
 )]
 struct Cli {
+    /// the configuration file, which declares the packs; `divinate.yaml` in
+    /// the current directory by default
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -36,6 +40,10 @@ enum Command {
         /// read tickets and changes opened before this time; defaults to now
         #[arg(long)]
         until: Option<String>,
+        /// leave out the files each change touches: a faster collection, with
+        /// no diffs kept
+        #[arg(long)]
+        no_files: bool,
         /// where the record is kept
         #[arg(long, default_value = "evidence")]
         state: PathBuf,
@@ -62,9 +70,10 @@ enum Command {
     },
     /// check a process definition against one collection; the latest by default
     Check {
-        /// the process definition: a yaml file, or `<pack>:<name>` for one a
-        /// pack ships
-        definition: String,
+        /// the process definitions: yaml files, `<pack>:<name>` for one a pack
+        /// ships, or `<pack>:` for all of them
+        #[arg(required = true)]
+        definitions: Vec<String>,
         /// the collection to check, by id
         #[arg(long, conflicts_with_all = ["last", "all"])]
         collection: Option<String>,
@@ -85,7 +94,7 @@ enum Command {
         #[arg(long, default_value = "evidence")]
         state: PathBuf,
     },
-    /// show what an installed pack offers: its checks and process definitions
+    /// show what a configured pack offers: what it collects, its checks, and its process definitions
     Pack {
         /// the name of the pack, as in `divinate-pack-<name>`
         name: String,
@@ -99,7 +108,8 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse().command) {
+    let cli = Cli::parse();
+    match Configured::load(cli.config.as_deref()).and_then(|packs| run(cli.command, &packs)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("error: {error}");
@@ -108,16 +118,24 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(command: Command) -> Result<()> {
+fn run(command: Command, packs: &Configured) -> Result<()> {
     match command {
         Command::Collect {
             scope,
             from,
             until,
+            no_files,
             state,
-        } => collect(&scope, from.as_deref(), until.as_deref(), &state),
+        } => collect(
+            &scope,
+            from.as_deref(),
+            until.as_deref(),
+            !no_files,
+            &state,
+            packs,
+        ),
         Command::Check {
-            definition,
+            definitions,
             collection,
             last,
             scope,
@@ -125,46 +143,31 @@ fn run(command: Command) -> Result<()> {
             json,
             state,
         } => {
-            let packs = Installed::from_environment();
-            let definition = definition_from(&definition, &packs)?;
+            let mut loaded = Vec::new();
+            for definition in &definitions {
+                loaded.extend(definitions_from(definition, packs)?);
+            }
             let collections = record::load(&state)?;
-            // each collection is checked with those before it at hand.
-            let checked = |position: usize| {
-                process::check_with(
-                    &definition,
-                    &collections[position],
-                    &collections[..position],
-                    &packs,
-                )
-            };
             let positions = if all {
-                latest_of_each_scope(&collections)
+                Some(latest_of_each_scope(&collections))
             } else if let Some(last) = last {
                 let mut positions = in_scope(&collections, scope.as_deref())?;
                 positions.drain(..positions.len().saturating_sub(last));
-                positions
+                Some(positions)
             } else {
-                let report = checked(position(&collections, collection.as_deref())?)?;
-                if json {
-                    println!("{}", to_json(&report)?);
-                } else {
-                    print!("{}", process::render(&report));
-                }
-                return Ok(());
+                None
             };
-            let reports = positions
-                .into_iter()
-                .map(checked)
-                .collect::<Result<Vec<_>>>()?;
-            if json {
-                println!("{}", to_json(&reports)?);
-            } else {
-                print!("{}", process::summary(&reports));
-            }
-            Ok(())
+            check(
+                &loaded,
+                &collections,
+                positions,
+                collection.as_deref(),
+                json,
+                packs,
+            )
         }
         Command::Show { collection, state } => show(collection.as_deref(), &state),
-        Command::Pack { name } => offered(&name),
+        Command::Pack { name } => offered(&name, packs),
         Command::Ledger { scope, last, state } => {
             let all = record::load(&state)?;
             let collections = in_scope(&all, scope.as_deref())?
@@ -175,25 +178,31 @@ fn run(command: Command) -> Result<()> {
             Ok(())
         }
         Command::Verify { state } => {
-            let report = verify::verify(&state)?;
+            let report = verify::verify_with(&state, packs)?;
             println!(
                 "verified {} collections and {} transcripts",
                 report.collections, report.transcripts
             );
-            for id in &report.not_recomputed {
-                println!("{id}: derived by other rules; bytes checked, statements not recomputed");
+            for (id, why) in &report.not_recomputed {
+                println!("{id}: {why}; bytes checked, statements not recomputed");
             }
             Ok(())
         }
     }
 }
 
-/// print what an installed pack offers.
-fn offered(name: &str) -> Result<()> {
-    let found = pack::describe(&Installed::from_environment(), name)?;
+/// print what a configured pack offers.
+fn offered(name: &str, packs: &Configured) -> Result<()> {
+    let found = pack::describe(packs, name)?;
     println!("{} {}", found.name, found.version);
     if !found.description.is_empty() {
         println!("{}", found.description);
+    }
+    if let Some(collects) = &found.collects {
+        println!(
+            "\ncollects\n  {}  {}",
+            collects.scopes, collects.description
+        );
     }
     if !found.checks.is_empty() {
         println!("\nchecks");
@@ -216,15 +225,88 @@ fn offered(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// the process definition an argument names: a file, or one a pack ships as
-/// `<pack>:<name>`.
-fn definition_from(argument: &str, packs: &Installed) -> Result<process::Process> {
+/// check process definitions against one collection in full, or against
+/// the collections at `positions` as a summary each.
+fn check(
+    definitions: &[process::Process],
+    collections: &[Collection],
+    positions: Option<Vec<usize>>,
+    collection: Option<&str>,
+    json: bool,
+    packs: &Configured,
+) -> Result<()> {
+    // each collection is checked with those before it at hand.
+    let checked = |definition: &process::Process, position: usize| {
+        process::check_with(
+            definition,
+            &collections[position],
+            &collections[..position],
+            packs,
+        )
+    };
+    let Some(positions) = positions else {
+        let position = position(collections, collection)?;
+        let reports = definitions
+            .iter()
+            .map(|definition| checked(definition, position))
+            .collect::<Result<Vec<_>>>()?;
+        if json {
+            // one definition prints one report, as it always has.
+            match reports.as_slice() {
+                [report] => println!("{}", to_json(report)?),
+                reports => println!("{}", to_json(&reports)?),
+            }
+        } else {
+            for (number, report) in reports.iter().enumerate() {
+                if number > 0 {
+                    println!();
+                }
+                print!("{}", process::render(report));
+            }
+            print!("{}", process::coverage(&reports));
+        }
+        return Ok(());
+    };
+    let mut summaries = Vec::new();
+    for definition in definitions {
+        summaries.push(
+            positions
+                .iter()
+                .map(|position| checked(definition, *position))
+                .collect::<Result<Vec<_>>>()?,
+        );
+    }
+    if json {
+        match summaries.as_slice() {
+            [reports] => println!("{}", to_json(reports)?),
+            summaries => println!("{}", to_json(&summaries)?),
+        }
+    } else {
+        for (number, reports) in summaries.iter().enumerate() {
+            if number > 0 {
+                println!();
+            }
+            print!("{}", process::summary(reports));
+        }
+    }
+    Ok(())
+}
+
+/// the process definitions an argument names: a file, one a pack ships as
+/// `<pack>:<name>`, or all a pack ships as `<pack>:`.
+fn definitions_from(argument: &str, packs: &Configured) -> Result<Vec<process::Process>> {
     let path = Path::new(argument);
     let shipped = argument.split_once(':').filter(|_| !path.exists());
     let Some((pack, name)) = shipped else {
-        return process::load(path);
+        return Ok(vec![process::load(path)?]);
     };
     let found = pack::describe(packs, pack)?;
+    // a definition a pack ships can map to the frameworks the pack declares.
+    let parsed =
+        |process: &pack::Shipped| process::parse_with(&process.definition, path, &found.frameworks);
+    if name.is_empty() {
+        return found.processes.iter().map(parsed).collect();
+    }
     let process = found
         .processes
         .iter()
@@ -240,15 +322,21 @@ fn definition_from(argument: &str, packs: &Installed) -> Result<process::Process
                 "the pack {pack:?} ships no process definition {name:?}; it has: {known}"
             ))
         })?;
-    process::parse(&process.definition, path)
+    Ok(vec![parsed(process)?])
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> Result<String> {
     serde_json::to_string_pretty(value).map_err(Error::Serialize)
 }
 
-fn collect(scope: &str, from: Option<&str>, until: Option<&str>, state: &Path) -> Result<()> {
-    let (source, path) = source::for_scope(scope)?;
+fn collect(
+    scope: &str,
+    from: Option<&str>,
+    until: Option<&str>,
+    files: bool,
+    state: &Path,
+    packs: &Configured,
+) -> Result<()> {
     let started_at = timestamp()?;
     let until = match until {
         Some(until) => format_time(parse_time(until)?)?,
@@ -258,9 +346,28 @@ fn collect(scope: &str, from: Option<&str>, until: Option<&str>, state: &Path) -
         Some(from) => format_time(parse_time(from)?)?,
         None => format_time(parse_time(&until)? - time::Duration::days(90))?,
     };
-    let mut fetch = source.client(&source.token()?);
-    let transcripts = source.capture(path, &Period { from, until }, &timestamp, &mut *fetch)?;
-    let collection = record::seal(scope, started_at, timestamp()?, &transcripts)?;
+    let period = Period { from, until, files };
+    // a scope names a source of this build, or a pack that is one.
+    let by_pack = scope.split_once(':').filter(|(name, _)| packs.has(name));
+    let (collection, transcripts) = if let Some((pack, path)) = by_pack {
+        let (transcripts, stamp) = pack::source::collect(packs, pack, path, &period)?;
+        let derived = pack::source::derive(packs, pack, &transcripts)?;
+        let collection = record::seal_derived(
+            scope,
+            started_at,
+            timestamp()?,
+            &transcripts,
+            derived,
+            Some(stamp),
+        )?;
+        (collection, transcripts)
+    } else {
+        let (source, path) = source::for_scope(scope)?;
+        let mut fetch = source.client(&source.token()?);
+        let transcripts = source.capture(path, &period, &timestamp, &mut *fetch)?;
+        let collection = record::seal(scope, started_at, timestamp()?, &transcripts)?;
+        (collection, transcripts)
+    };
     record::store(state, &collection, &transcripts)?;
     println!(
         "collected {scope}: {} records, {} gaps\n{}",

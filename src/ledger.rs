@@ -197,6 +197,7 @@ mod tests {
                 scope: "github:example".into(),
                 started_at: started_at.into(),
                 completed_at: started_at.into(),
+                pack: None,
                 transcripts: Vec::new(),
                 derived: Derived {
                     entities: vec![Entity {

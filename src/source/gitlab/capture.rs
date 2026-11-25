@@ -201,7 +201,15 @@ fn project(
     )?;
     let numbers = super::work::numbers(&issues);
     transcripts.push(issues);
-    details(reader, &base, &subject, "issues", &numbers, transcripts)?;
+    details(
+        reader,
+        &base,
+        &subject,
+        "issues",
+        false,
+        &numbers,
+        transcripts,
+    )?;
     let opened = reader.read(
         MERGE_REQUESTS,
         &subject,
@@ -227,6 +235,7 @@ fn project(
         &base,
         &subject,
         "merge_requests",
+        period.files,
         &numbers,
         transcripts,
     )?;
@@ -245,6 +254,7 @@ fn details(
     base: &str,
     subject: &str,
     collection: &str,
+    with_files: bool,
     numbers: &[u64],
     transcripts: &mut Vec<Transcript>,
 ) -> Result<()> {
@@ -258,8 +268,10 @@ fn details(
         (STATE_EVENTS, "resource_state_events?per_page=100"),
         last,
     ];
-    if collection != "issues" {
+    if with_files {
         readings.push((DIFFS, "diffs?per_page=100"));
+    }
+    if collection != "issues" {
         readings.push((PIPELINES, "pipelines?per_page=100"));
     }
     for number in numbers {
@@ -345,6 +357,7 @@ mod tests {
         let period = Period {
             from: "2026-01-01T00:00:00Z".into(),
             until: "2026-04-01T00:00:00Z".into(),
+            files: true,
         };
         let read = |path: &str| {
             capture(

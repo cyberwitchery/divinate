@@ -166,6 +166,7 @@ fn one_repository(
     let about = reader.read(REPOSITORY, &subject, &[], base.clone())?;
     let default_branch = super::facts::default_branch(&about);
     transcripts.push(about);
+    let with_files = period.files;
     let period = [("from", period.from.as_str()), ("until", &period.until)];
     // the settings of a branch, and every update of it in the period.
     let governed = |reader: &mut Reader, branch: &str, transcripts: &mut Vec<Transcript>| {
@@ -222,12 +223,14 @@ fn one_repository(
         let head = super::work::head(&pull);
         targets.extend(super::work::base(&pull));
         transcripts.push(pull);
-        transcripts.push(reader.read(
-            FILES,
-            &about,
-            &parameters,
-            format!("{base}/pulls/{number}/files?per_page=100"),
-        )?);
+        if with_files {
+            transcripts.push(reader.read(
+                FILES,
+                &about,
+                &parameters,
+                format!("{base}/pulls/{number}/files?per_page=100"),
+            )?);
+        }
         // without the commit there is nothing to read the checks of, and the
         // missing readings say so.
         let Some(head) = head else {

@@ -44,19 +44,19 @@ one gets rarer the more often you collect.
 
 ## a check finds nothing to check
 
-- the label doesn’t match. labels are compared exactly, so `Security` and
+- the label doesn’t match. upper and lower case matter, so `Security` and
   `security` are different
 - the items were opened before the period started. collect with an earlier
   `--from`
 - with `when: merged`: nothing was merged in the period
 
-## `the pack "…" is not installed`
+## `the pack "…" is not configured`
 
-the definition uses a check from a [pack](packs.md), and divinate can’t find
-the program. a pack called `acme` is a file named `divinate-pack-acme`. put
-its directory in `DIVINATE_PACKS`, or the file somewhere on your `PATH`, and
-make sure it’s executable. `divinate pack acme` tells you whether divinate
-finds it.
+a definition or a scope names a [pack](packs.md) that isn’t in
+`divinate.yaml`. divinate reads that file from the directory you run it in,
+so either run it from the directory that has the file or pass `--config`.
+`divinate pack <name>` tells you whether divinate finds the pack and can
+start it.
 
 ## a pattern gives a yaml error
 
@@ -76,7 +76,8 @@ divinate asks the platform several questions per ticket and pull request, so
 a busy repository takes a while. gitlab.com also makes clients wait when they
 ask too much at once, and divinate prints `rate limited; waiting N seconds`
 when that happens. you can just let it run. if you’re in a hurry, pass a later
-`--from` to collect a shorter period.
+`--from` to collect a shorter period, or `--no-files` to skip the files of
+each pull request.
 
 ## `verify` fails
 

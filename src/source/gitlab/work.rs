@@ -23,11 +23,21 @@ pub(super) fn numbers(listing: &Transcript) -> Vec<u64> {
         .collect()
 }
 
+/// the pipelines a merge request's listing holds that ran for it. gitlab
+/// lists every pipeline on the commits of the source branch, and one that a
+/// schedule started says nothing of the merge request.
+fn own_pipelines(listing: &Transcript) -> Vec<Value> {
+    items(listing)
+        .into_iter()
+        .filter(|pipeline| pipeline["source"] != "schedule")
+        .collect()
+}
+
 /// the pipelines that ran on the newest commit of a merge request. their jobs
 /// are read one by one. pipeline ids grow, so the newest pipeline has the
 /// highest.
 pub(super) fn head_pipelines(listing: &Transcript) -> Vec<u64> {
-    let pipelines = items(listing);
+    let pipelines = own_pipelines(listing);
     let Some(newest) = pipelines
         .iter()
         .max_by_key(|pipeline| pipeline["id"].as_u64())
@@ -404,15 +414,15 @@ fn checks(
     pipelines: Option<&Transcript>,
     jobs: &[&Transcript],
 ) -> std::result::Result<Vec<Happened>, String> {
-    let pipelines = pipelines.ok_or("its pipelines were not read")?;
-    if let Some(reason) = pipelines.contents.termination.gap() {
+    let listing = pipelines.ok_or("its pipelines were not read")?;
+    if let Some(reason) = listing.contents.termination.gap() {
         return Err(reason);
     }
-    let mut checks = items(pipelines)
+    let mut checks = own_pipelines(listing)
         .iter()
         .filter_map(|pipeline| check(pipeline, "pipeline", "updated_at", Some("pipeline")))
         .collect::<Vec<_>>();
-    for pipeline in head_pipelines(pipelines) {
+    for pipeline in head_pipelines(listing) {
         let pipeline = pipeline.to_string();
         let read = jobs
             .iter()

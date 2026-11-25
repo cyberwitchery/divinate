@@ -36,8 +36,10 @@ everything is json. the formats can still change between versions.
 }
 ```
 
-the id is a checksum of the contents. `derivation` is the version of the code
-that turned the responses into the three lists below. `divinate verify` can
+the id is a checksum of the contents. a collection that a
+[pack](packs.md) read also has `"pack": {"name": "osv", "version": "0.1.0"}`.
+`derivation` is the version of the code that turned the responses into the
+three lists below. `divinate verify` can
 rebuild a collection when its own version is the same.
 
 ### entities
@@ -194,7 +196,8 @@ a transcript is one question to the platform with everything that came back.
 `resource` names what was asked for, and `parameters` (when there are any)
 narrow it down to a branch, a pull request, or a period. there is one exchange
 per request, so a long list that came in ten pages has ten of them. the body
-is stored exactly as it arrived, together with its checksum.
+is stored exactly as it arrived, together with its checksum. a request that
+was sent with a body, which some packs do, has it as `body` next to the url.
 
 `termination` says how it ended. `exhausted` means divinate got everything.
 the others are `truncated`, `unauthenticated`, `permission_denied`,

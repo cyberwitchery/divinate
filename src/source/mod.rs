@@ -21,6 +21,9 @@ use crate::transcript::{HttpExchange, Transcript};
 pub struct Period {
     pub from: String,
     pub until: String,
+    /// whether to read the files each change touches. reading them takes a
+    /// request per change and keeps the diffs in the record.
+    pub files: bool,
 }
 
 /// one request to a source, answered with the exchange to retain.

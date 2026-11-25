@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use super::{Measured, Report, Row, When};
+use super::{Measured, Report, Row, Strength, When};
 
 const LABELS: [&str; 5] = ["kept", "broken", "pending", "cannot tell", "n/a"];
 
@@ -33,7 +33,12 @@ pub fn render(report: &Report) -> String {
                         format!(" {when} {} to {}", interval.from, interval.until)
                     });
                 let mut chosen = selected.label.as_ref().map_or_else(String::new, |label| {
-                    format!(", {} labelled {label:?}", report.rows.len())
+                    let label = label
+                        .iter()
+                        .map(|label| format!("{label:?}"))
+                        .collect::<Vec<_>>()
+                        .join(" or ");
+                    format!(", {} labelled {label}", report.rows.len())
                 });
                 if let Some(into) = &selected.into {
                     let _ = write!(chosen, ", {} into {into}", report.rows.len());
@@ -255,4 +260,94 @@ pub fn summary(reports: &[Report]) -> String {
         }
     }
     out
+}
+
+/// render what several checked processes contribute to the frameworks they
+/// map to: for every requirement the rules that speak to it, with what the
+/// check found for each, and the requirements no rule speaks to.
+///
+/// the reports are of one collection each. a framework that several of them
+/// name is shown once, with the contributions of all of them.
+#[must_use]
+pub fn coverage(reports: &[Report]) -> String {
+    let mut frameworks =
+        BTreeMap::<&str, (Option<&str>, BTreeMap<&str, (&str, Vec<String>)>)>::new();
+    for report in reports {
+        for covered in &report.frameworks {
+            let (title, targets) = frameworks.entry(&covered.framework).or_default();
+            *title = title.or(covered.title.as_deref());
+            for target in &covered.targets {
+                let (_, lines) = targets
+                    .entry(&target.id)
+                    .or_insert((&target.title, Vec::new()));
+                for contribution in &target.contributions {
+                    let strength = match contribution.strength {
+                        Strength::Full => "full",
+                        Strength::Partial => "partial",
+                    };
+                    lines.push(format!(
+                        "    {} ({strength}): {}",
+                        contribution.rule,
+                        found(report, &contribution.rule)
+                    ));
+                    if let Some(limitation) = &contribution.limitation {
+                        lines.push(format!("      does not establish: {limitation}"));
+                    }
+                }
+            }
+        }
+    }
+    let mut out = String::new();
+    for (name, (title, targets)) in frameworks {
+        let _ = writeln!(out, "\n{}", title.unwrap_or(name));
+        let mut targets = targets.into_iter().collect::<Vec<_>>();
+        targets.sort_by_key(|(id, _)| natural(id));
+        for (id, (title, lines)) in targets {
+            if lines.is_empty() {
+                let _ = writeln!(out, "  {id} {title}: no rule");
+            } else {
+                let _ = writeln!(out, "  {id} {title}\n{}", lines.join("\n"));
+            }
+        }
+    }
+    out
+}
+
+/// a key that sorts ids the way people number them: `a.8.4` before `a.8.32`.
+fn natural(id: &str) -> Vec<(u64, String)> {
+    let mut parts = Vec::new();
+    let mut rest = id;
+    while !rest.is_empty() {
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 {
+            parts.push((rest[..digits].parse().unwrap_or(u64::MAX), String::new()));
+            rest = &rest[digits..];
+        } else {
+            let text = rest.len() - rest.trim_start_matches(|c: char| !c.is_ascii_digit()).len();
+            parts.push((0, rest[..text].to_owned()));
+            rest = &rest[text..];
+        }
+    }
+    parts
+}
+
+/// what a check found for one step, rule, or measure, by its name.
+fn found(report: &Report, name: &str) -> String {
+    if let Some(position) = report.steps.iter().position(|step| step == name) {
+        return match &report.selected {
+            Err(reason) => format!("cannot tell: {reason}"),
+            Ok(_) => counted(&report.rows, position),
+        };
+    }
+    if let Some(position) = report.rules.iter().position(|rule| rule == name) {
+        return counted(&report.branches, position);
+    }
+    if let Some(found) = report.overall.iter().find(|found| found.name == name) {
+        return found.outcome.label().to_owned();
+    }
+    report
+        .measures
+        .iter()
+        .find(|measure| measure.name == name)
+        .map_or_else(|| "not checked".to_owned(), measured)
 }

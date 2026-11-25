@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::error::{Error, Result};
+use crate::pack::{self, NoPacks, Packs};
 use crate::record::{self, Collection, DERIVATION};
 use crate::{content_id, facts, transcript};
 
@@ -17,7 +18,7 @@ pub struct Report {
     pub transcripts: usize,
     /// collections whose statements were derived by other rules than this
     /// build's. their bytes were checked, their statements were not recomputed.
-    pub not_recomputed: Vec<String>,
+    pub not_recomputed: Vec<(String, String)>,
 }
 
 /// check every collection in a state directory against its transcripts.
@@ -30,18 +31,37 @@ pub struct Report {
 ///
 /// returns an error naming the first thing that does not match.
 pub fn verify(state: &Path) -> Result<Report> {
+    verify_with(state, &NoPacks)
+}
+
+/// check every collection in a state directory against its transcripts,
+/// asking the packs at hand to derive again what a pack derived.
+///
+/// a collection that a pack derived is recomputed when that pack is at hand
+/// in the same version. otherwise its bytes are checked and it is listed as
+/// not recomputed, with the pack it needs.
+///
+/// # Errors
+///
+/// returns an error naming the first thing that does not match.
+pub fn verify_with(state: &Path, packs: &dyn Packs) -> Result<Report> {
     let mut report = Report {
         collections: 0,
         transcripts: 0,
         not_recomputed: Vec::new(),
     };
     for collection in record::load(state)? {
-        verify_collection(state, &collection, &mut report)?;
+        verify_collection(state, &collection, packs, &mut report)?;
     }
     Ok(report)
 }
 
-fn verify_collection(state: &Path, collection: &Collection, report: &mut Report) -> Result<()> {
+fn verify_collection(
+    state: &Path,
+    collection: &Collection,
+    packs: &dyn Packs,
+    report: &mut Report,
+) -> Result<()> {
     let expected = content_id("col", &collection.contents)?;
     if expected != collection.id {
         return Err(Error::Verification(format!(
@@ -63,11 +83,32 @@ fn verify_collection(state: &Path, collection: &Collection, report: &mut Report)
     }
     report.collections += 1;
     report.transcripts += transcripts.len();
-    if collection.contents.derivation != DERIVATION {
-        report.not_recomputed.push(collection.id.clone());
+    let derived = if let Some(stamp) = &collection.contents.pack {
+        // the same pack in the same version says the same of the same
+        // transcripts. another version may not.
+        let at_hand = pack::describe(packs, &stamp.name)
+            .ok()
+            .filter(|described| described.version == stamp.version);
+        if at_hand.is_none() {
+            report.not_recomputed.push((
+                collection.id.clone(),
+                format!(
+                    "derived by the pack {} {}, which is not configured here",
+                    stamp.name, stamp.version
+                ),
+            ));
+            return Ok(());
+        }
+        pack::source::derive(packs, &stamp.name, &transcripts)?
+    } else if collection.contents.derivation != DERIVATION {
+        report
+            .not_recomputed
+            .push((collection.id.clone(), "derived by other rules".into()));
         return Ok(());
-    }
-    if facts::derive(&transcripts)? != collection.contents.derived {
+    } else {
+        facts::derive(&transcripts)?
+    };
+    if derived != collection.contents.derived {
         return Err(Error::Verification(format!(
             "collection {}: its statements are not what its transcripts say",
             collection.id

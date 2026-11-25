@@ -975,6 +975,13 @@ fn a_step_can_ask_for_a_label() {
         })
         .collect::<BTreeMap<_, _>>();
     assert_eq!(found["1"], Outcome::Kept);
+    // the labels that select items are patterns as well.
+    let selected = checked_with(
+        "process: p\nitems:\n  kind: ticket\n  label: ['sec*', question]\nsteps:\n  - name: closed\n    event: closed\n",
+        &collection,
+    );
+    assert_eq!(selected.rows.len(), 5);
+    assert!(process::render(&selected).contains("5 labelled \"sec*\" or \"question\""));
     // ticket 6 is labelled `question` and still open.
     assert_eq!(
         found["6"],
@@ -1179,20 +1186,20 @@ fn a_pack_is_asked_only_for_what_it_offers() {
     .is_err());
 }
 
+/// a pack as a shell script. it calls itself what `PACK_NAME` says, judges by
+/// whether it can see `DIVINATE_TEST_SECRET`, and as a source reads one thing.
 #[cfg(unix)]
-#[test]
-fn an_installed_pack_is_an_executable_that_is_not_shown_the_credentials() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("divinate-pack-sample");
-    fs::write(
-        &path,
-        r#"#!/bin/sh
+const SCRIPT: &str = r#"#!/bin/sh
 request=$(cat)
 case "$request" in
   *'"request":"describe"'*)
-    printf '%s\n' '{"protocol":1,"name":"sample","version":"0.1.0","checks":[{"name":"clean","answers":"all_items"}],"processes":[{"name":"merged","definition":"process: merged\nitems:\n  kind: change\n  when: merged\noverall:\n  - name: clean\n    uses: sample/clean\n"}]}' ;;
+    printf '%s\n' '{"protocol":1,"name":"'"$PACK_NAME"'","version":"0.1.0","collects":{"scopes":"'"$PACK_NAME"':<thing>"},"checks":[{"name":"clean","answers":"all_items"}],"processes":[{"name":"merged","definition":"process: merged\nitems:\n  kind: change\n  when: merged\noverall:\n  - name: clean\n    uses: '"$PACK_NAME"'/clean\n"}]}' ;;
+  *'"request":"collect"'*)
+    printf '%s\n' '{"readings":[{"resource":"'"$PACK_NAME"'/thing/v1","subject":"'"$PACK_NAME"':thing","captured_at":"2026-03-27T00:00:00Z","exchanges":[{"request":{"method":"POST","url":"https://example.test/query","body":"{}"},"response":{"status":200,"body":"{\"n\":1,\"seen\":\"'"$DIVINATE_TEST_SECRET"'\"}"}}],"termination":{"kind":"exhausted"}}]}' ;;
+  *'"request":"derive"'*)
+    id=$(printf '%s' "$request" | sed 's/.*"id":"\(acq_[0-9a-f]*\)".*/\1/')
+    case "$request" in *'"setup"'*) exit 3 ;; esac
+    printf '%s\n' '{"entities":[{"uid":"'"$PACK_NAME"'/thing/1","class":"scope","kind":"repository","native_kind":"thing","name":"'"$PACK_NAME"':thing"}],"statements":[{"about":"'"$PACK_NAME"'/thing/1","aspect":"repository","value":{"visibility":"public","default_branch":"main","archived":false,"fork":false},"transcripts":["'"$id"'"]}]}' ;;
   *)
     if [ -n "$DIVINATE_TEST_SECRET" ]; then
       echo '{"outcome":"broken","reason":"the environment was passed on"}'
@@ -1200,31 +1207,118 @@ case "$request" in
       echo '{"outcome":"kept"}'
     fi ;;
 esac
-"#,
+"#;
+
+/// a directory with the script and a configuration that declares it twice:
+/// once given nothing, and once given the secret.
+#[cfg(unix)]
+fn configured() -> (tempfile::TempDir, std::path::PathBuf) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("pack.sh");
+    fs::write(&path, SCRIPT).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    let config = directory.path().join("divinate.yaml");
+    fs::write(
+        &config,
+        "packs:\n  sample:\n    command: ./pack.sh\n    env:\n      PACK_NAME: sample\n    setup:\n      anything: 1\n  trusted:\n    command: ./pack.sh\n    inherit: [DIVINATE_TEST_SECRET]\n    env:\n      PACK_NAME: trusted\n  misnamed:\n    command: ./pack.sh\n    env:\n      PACK_NAME: sample\n  slow:\n    command: sleep\n    args: ['5']\n    timeout_seconds: 1\n",
     )
     .unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-    std::env::set_var("DIVINATE_TEST_SECRET", "secret");
-    let packs = divinate::pack::Installed::at(vec![directory.path().to_owned()]);
-    let found = divinate::pack::describe(&packs, "sample").unwrap();
-    assert_eq!(found.version, "0.1.0");
-    let shipped = process::parse(&found.processes[0].definition, &path).unwrap();
-    let (collection, _) = collect(&repository(3));
-    let report = process::check_with(&shipped, &collection, &[], &packs).unwrap();
-    assert_eq!(report.overall[0].outcome, Outcome::Kept);
+    std::env::set_var("DIVINATE_TEST_SECRET", "a-secret-value");
+    (directory, config)
+}
 
-    let missing = divinate::pack::describe(&packs, "other").unwrap_err();
-    assert!(missing.to_string().contains("is not installed"));
-    assert!(divinate::pack::describe(&packs, "../sample").is_err());
+#[cfg(unix)]
+#[test]
+fn a_configured_pack_is_given_only_the_environment_its_entry_names() {
+    let (_directory, config) = configured();
+    let packs = divinate::pack::Configured::load(Some(&config)).unwrap();
+    let (collection, _) = collect(&repository(3));
+    let overall = |pack: &str| {
+        let found = divinate::pack::describe(&packs, pack).unwrap();
+        let shipped = process::parse(&found.processes[0].definition, &config).unwrap();
+        let report = process::check_with(&shipped, &collection, &[], &packs).unwrap();
+        report.overall[0].outcome.label()
+    };
+    assert_eq!(overall("sample"), "kept");
+    assert_eq!(overall("trusted"), "broken");
+
+    let refused = |pack: &str, why: &str| {
+        let error = divinate::pack::describe(&packs, pack)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(why), "{error}");
+    };
+    refused("other", "is not configured");
+    refused("misnamed", "calls itself \"sample\"");
+    refused("slow", "did not answer within 1 seconds");
+    // a configuration with a key it does not know is refused.
+    fs::write(&config, "packs:\n  sample:\n    comand: x\n").unwrap();
+    assert!(divinate::pack::Configured::load(Some(&config)).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pack_can_be_a_source_whose_readings_are_kept_and_verified() {
+    let (directory, config) = configured();
+    let config = config.to_str().unwrap();
+    let state = directory.path().join("evidence");
+    let run = |arguments: &[&str]| divinate(&state, arguments);
+
+    let (ok, collected) = run(&["--config", config, "collect", "sample:thing"]);
+    assert!(ok, "{collected}");
+    assert!(collected.contains("collected sample:thing: 1 records, 0 gaps"));
+    let (_, shown) = run(&["--config", config, "show"]);
+    assert!(shown.contains("sample:thing\n  ■ repository  public, default branch main"));
+    let stored = record::load(&state).unwrap();
+    let stamp = stored[0].contents.pack.as_ref().unwrap();
+    assert_eq!(
+        (stamp.name.as_str(), stamp.version.as_str()),
+        ("sample", "0.1.0")
+    );
+    // what the pack sent is kept with what it got back.
+    let transcript = record::load_transcript(&state, &stored[0].contents.transcripts[0]).unwrap();
+    assert_eq!(
+        transcript.contents.exchanges[0].request.body.as_deref(),
+        Some("{}")
+    );
+
+    // with the pack at hand the collection is derived again. without it the
+    // bytes are checked, and the collection is named.
+    let (ok, verified) = run(&["--config", config, "verify"]);
+    assert!(
+        ok && verified.trim() == "verified 1 collections and 1 transcripts",
+        "{verified}"
+    );
+    let (ok, verified) = run(&["verify"]);
+    assert!(ok, "{verified}");
+    assert!(verified
+        .contains("derived by the pack sample 0.1.0, which is not configured here; bytes checked"));
+
+    // a pack that hands back the credential it was given has nothing kept.
+    let (ok, refused) = run(&["--config", config, "collect", "trusted:thing"]);
+    assert!(
+        !ok && refused.contains("repeats a credential it was given"),
+        "{refused}"
+    );
+    assert_eq!(record::load(&state).unwrap().len(), 1);
+    // a scope that names neither a source nor a pack is refused as before.
+    let (ok, unknown) = run(&["--config", config, "collect", "nothing:thing"]);
+    assert!(!ok && unknown.contains("a scope is one of"), "{unknown}");
 }
 
 /// run the divinate binary on a state directory and return what it printed.
 fn divinate(state: &std::path::Path, arguments: &[&str]) -> (bool, String) {
-    let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
+    let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/divinate.yaml");
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_divinate"));
-    command.args(arguments).env("DIVINATE_PACKS", examples);
+    // the packs of the examples, unless the arguments name a configuration.
+    if arguments[0] != "--config" {
+        command.arg("--config").arg(examples);
+    }
+    command.args(arguments);
     // `pack` reads no record.
-    if arguments[0] != "pack" {
+    if !arguments.contains(&"pack") {
         command.arg("--state").arg(state);
     }
     let output = command.output().unwrap();
@@ -1310,4 +1404,101 @@ fn the_example_pack_checks_the_checklist_in_a_description() {
     assert!(checked.contains("packs: checklist 0.1.0"));
     let (ok, missing) = divinate(directory.path(), &["check", "checklist:nothing"]);
     assert!(!ok && missing.contains("ships no process definition \"nothing\"; it has: merged"));
+}
+
+const MAPPED: &str = r"
+process: reviewed changes
+frameworks:
+  policy:
+    title: our change policy
+    targets:
+      '4.10': emergency changes
+      '4.2': review
+      '4.3': testing
+items:
+  kind: change
+  when: merged
+steps:
+  - name: reviewed
+    event: approval
+    by: someone else
+    before: merge
+    maps:
+      - framework: policy
+        target: '4.2'
+        strength: partial
+        limitation: that the reviewer understood the change
+branches:
+  - name: review required
+    approvals: 1
+    maps:
+      - framework: policy
+        target: '4.2'
+        strength: full
+";
+
+#[test]
+fn rules_map_to_the_requirements_of_a_framework() {
+    let (collection, _) = collect(&repository(3));
+    let report = checked_with(MAPPED, &collection);
+    let policy = &report.frameworks[0];
+    assert_eq!(policy.title.as_deref(), Some("our change policy"));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(
+        json["frameworks"][0]["targets"][1]["contributions"][0]["strength"],
+        "partial"
+    );
+    // requirements are listed as people number them, and one that no rule
+    // speaks to is listed as such.
+    assert_eq!(
+        process::coverage(&[report]),
+        "\nour change policy\n  4.2 review\n    reviewed (partial): 1 kept, 1 broken\n      does not establish: that the reviewer understood the change\n    review required (full): 2 broken\n  4.3 testing: no rule\n  4.10 emergency changes: no rule\n"
+    );
+
+    // a second definition that names the same framework adds to the same list.
+    let tested = "process: tested changes\nframeworks:\n  policy:\n    targets:\n      '4.3': testing\nitems:\n  kind: change\n  when: merged\nsteps:\n  - name: tested\n    event: check passed\n    before: merge\n    maps:\n      - framework: policy\n        target: '4.3'\n        strength: full\n";
+    let both = [
+        checked_with(MAPPED, &collection),
+        checked_with(tested, &collection),
+    ];
+    let coverage = process::coverage(&both);
+    assert!(coverage.contains("  4.3 testing\n    tested (full): 1 kept, 1 broken\n"));
+    assert!(coverage.contains("  4.10 emergency changes: no rule\n"));
+
+    let unknown = definition(&MAPPED.replace(
+        "target: '4.2'\n        strength: full",
+        "target: '9.9'\n        strength: full",
+    ));
+    assert!(unknown
+        .unwrap_err()
+        .to_string()
+        .contains("which `frameworks` does not declare"));
+    assert!(definition(&MAPPED.replace("strength: full", "strength: strong")).is_err());
+}
+
+#[test]
+fn several_definitions_are_checked_in_one_run() {
+    let (collection, transcripts) = collect(&repository(3));
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("evidence");
+    record::store(&state, &collection, &transcripts).unwrap();
+    let write = |name: &str, text: &str| {
+        let path = directory.path().join(name);
+        fs::write(&path, text).unwrap();
+        path.to_str().unwrap().to_owned()
+    };
+    let (tickets, mapped) = (
+        write("tickets.yaml", DEFINITION),
+        write("mapped.yaml", MAPPED),
+    );
+    let (ok, printed) = divinate(&state, &["check", &tickets, &mapped]);
+    assert!(ok, "{printed}");
+    assert!(printed.contains("security tickets · github:example/service"));
+    assert!(printed.contains("reviewed changes · github:example/service"));
+    assert!(printed.ends_with("  4.3 testing: no rule\n  4.10 emergency changes: no rule\n"));
+    let (_, json) = divinate(&state, &["check", &tickets, &mapped, "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json.as_array().unwrap().len(), 2);
+    let (_, summary) = divinate(&state, &["check", &tickets, &mapped, "--all"]);
+    assert!(summary.contains("security tickets\n") && summary.contains("reviewed changes\n"));
 }

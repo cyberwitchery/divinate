@@ -66,7 +66,7 @@ some more things to keep in mind:
 | does every pull request carry one of a set of labels? | a step with `label: [...]` |
 | does every release have an sbom or a signature attached? | steps on `kind: release` with `asset: '<pattern>'` |
 | how long does it take to close a ticket? what share was reviewed? | `measures` with `from`/`to`, or `share: <step>` |
-| is a checklist in the description filled in, or anything else that needs reading text? | a pack, if one is installed: `divinate pack <name>` |
+| is a checklist in the description filled in, or anything else that needs reading text? | a pack, if one is configured in `divinate.yaml`: `divinate pack <name>` |
 | what changed in the settings since last time? | `divinate ledger`, rows marked `▣` |
 
 if a part of the question isn’t in this table, tell the user that divinate
@@ -101,6 +101,8 @@ divinate collect azure:ORGANISATION/PROJECT
   of gaps, and `divinate show` lists them.
 - a busy repository can take a few minutes. on gitlab you may see `rate
   limited; waiting N seconds`, which is normal.
+- `--no-files` skips the files of each pull request. use it when the user
+  doesn’t want diffs stored, and nothing asks about `paths`.
 - everything goes to `evidence/` in the current directory, or to `--state
   <path>`. each run adds a collection.
 
@@ -146,8 +148,8 @@ branches:
 - a step with `label:` or `asset:` instead of `event:` asks for a label on
   the item, or a file attached to a release.
 - patterns use `*` and `?`. quote a pattern that starts with `*`.
-- `uses: <pack>/<check>` hands the judging to an installed pack. only use a
-  pack the user has installed and knows about.
+- `uses: <pack>/<check>` hands the judging to a pack. packs are declared in
+  `divinate.yaml`. only use a pack the user has configured there.
 - `at least: 2` asks for two events by different people, and `at least:
   required` for as many as the branch requires.
 - `after: commit` only counts events after the last commit.
@@ -156,6 +158,11 @@ branches:
 - `before: merge` says the event has to come before the merge.
 - `linked: change` looks at the pull requests that close a ticket.
 - a branch rule has exactly one of `approvals`, `checks`, and `without`.
+- `maps` on a rule names a requirement of a framework declared under
+  `frameworks`, with `strength: full` or `partial` and an optional
+  `limitation`. the output then lists each requirement with its rules.
+  report that list as it is. `no rule` means nothing was checked for a
+  requirement, and a `partial` rule that is kept doesn’t satisfy it.
 
 `docs/processes.md` in the divinate repository has the full reference.
 
@@ -167,7 +174,7 @@ divinate check definition.yaml            # every item and branch, with reasons
 divinate check definition.yaml --all      # a summary per repository
 divinate check definition.yaml --last 8   # one repository over its last collections
 divinate check definition.yaml --json     # the same results as json
-divinate check <pack>:<name>              # a definition an installed pack ships
+divinate check <pack>:<name>              # a definition a configured pack ships
 divinate ledger                           # settings over time
 ```
 

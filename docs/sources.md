@@ -83,7 +83,9 @@ back to `GITLAB_TOKEN`.
   `pipeline`. the jobs of the pipelines that ran on the latest commit are
   recorded as checks under their own names, so a rule can ask for `secret-scan` or `sast` specifically.
   a job that was skipped or is waiting for someone to start it is neither
-  passed nor failed.
+  passed nor failed. pipelines started by a schedule are left out, since
+  gitlab lists them with a merge request whenever they ran on one of its
+  commits.
 - **releases.** what’s attached to a gitlab release is a list of links, so
   divinate has their names and no checksums. a release dated in the future
   is left out.

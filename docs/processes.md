@@ -47,7 +47,7 @@ each of those items.
 | key | meaning |
 |---|---|
 | `kind` | `ticket`, `change` (a pull or merge request), `finding` (a scanner alert), or `release` |
-| `label` | only items with this label. for a finding, this is its severity, such as `high` |
+| `label` | only items with a label matching this pattern, or one of a list of patterns. for a finding, the label is its severity, such as `high` |
 | `when` | `opened` picks the items opened in the period, which is the default. `merged` picks the pull requests merged in it |
 | `into` | only pull requests into this branch. give a branch name, or `default branch` for the default branch of each repository |
 | `paths` | only pull requests that touch a file matching one of these patterns, such as `src/auth/**` |
@@ -265,6 +265,79 @@ time to merge   9.3 hours (median from opened to merge over 11 of 11 items)
 ```
 
 the part in parentheses says how many items the number rests on.
+
+## frameworks
+
+a rule usually exists because some standard, contract, or policy asks for
+it. `maps` records that, and `frameworks` lists the requirements you care
+about, so the output can tell you what your rules add up to:
+
+```yaml
+process: software change governance
+frameworks:
+  iso 27001:
+    title: iso/iec 27001:2022
+    targets:
+      a.5.3: segregation of duties
+      a.8.4: access to source code
+      a.8.29: security testing in development and acceptance
+      a.8.32: change management
+items:
+  kind: change
+  when: merged
+  into: default branch
+steps:
+  - name: reviewed
+    event: approval
+    by: someone else
+    at least: required
+    after: commit
+    before: merge
+    maps:
+      - framework: iso 27001
+        target: a.8.32
+        strength: partial
+        limitation: authorization of the change, its testing, and approval of its deployment
+      - framework: iso 27001
+        target: a.5.3
+        strength: partial
+        limitation: that the reviewer is independent of the author beyond being another account
+```
+
+(the full file has three more rules, mapped the same way.) a mapping names a
+requirement, says whether the rule answers it in `full` or in `partial`, and
+can say what the rule doesn’t establish even when it’s kept. that last part
+is worth writing down: “every pull request was approved” is evidence for
+change management, but it says nothing about whether the change was tested.
+
+after the usual results, `check` prints every requirement with the rules that
+speak to it and what they found:
+
+```
+iso/iec 27001:2022
+  a.5.3 segregation of duties
+    reviewed (partial): 50 kept, 7 broken, 1 cannot tell
+      does not establish: that the reviewer is independent of the author beyond being another account
+  a.8.4 access to source code
+    no direct updates (partial): 1 broken
+      does not establish: who has write access, which is not read
+  a.8.29 security testing in development and acceptance: no rule
+  a.8.32 change management
+    reviewed (partial): 50 kept, 7 broken, 1 cannot tell
+      does not establish: authorization of the change, its testing, and approval of its deployment
+    validated (partial): 57 kept, 1 cannot tell
+      does not establish: that the required checks test what matters
+    review required (partial): 1 kept
+    no direct updates (partial): 1 broken
+```
+
+a requirement with `no rule` is one you listed and have nothing for yet.
+divinate doesn’t turn this into a verdict on the requirement. it shows what
+you have, and whoever signs off decides whether that’s enough.
+
+you can check several definitions in one run (`divinate check a.yaml
+b.yaml`). when they name the same framework, the list at the end covers all
+of them together.
 
 ## checks from packs
 
