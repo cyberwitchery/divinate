@@ -111,6 +111,9 @@ pub(super) fn derive(
                 merged_at: Value::Null,
                 author: None,
                 target: None,
+                description: Value::Null,
+                files: None,
+                files_from: None,
             };
             let mut details = Details::unread();
             details.events = Ok(events);

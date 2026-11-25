@@ -99,6 +99,7 @@ checks on the same data.
 - [getting started](docs/getting-started.md)
 - [reading the record](docs/record.md)
 - [process definitions](docs/processes.md)
+- [packs](docs/packs.md)
 - [sources](docs/sources.md)
 - [commands](docs/commands.md)
 - [state and formats](docs/state.md)

@@ -244,6 +244,9 @@ pub(super) fn derive(
                     read.as_deref(),
                 )
             }),
+            description: pull["description"].clone(),
+            files: None,
+            files_from: None,
         };
         work.item(item, &populations, listing, details)?;
     }
@@ -633,6 +636,9 @@ impl<'a> Read<'a> {
             merged_at: Value::Null,
             author: actor(&field(&latest, "System.CreatedBy")),
             target: None,
+            description: field(&latest, "System.Description"),
+            files: None,
+            files_from: None,
         };
         let references = match (&complete, self.links.get(&id)) {
             (Ok(()), Some((_, relations))) => relations

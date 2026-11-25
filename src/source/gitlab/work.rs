@@ -3,16 +3,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::capture::{
-    APPROVALS, CLOSED_BY, ISSUES, JOBS, MERGED, MERGE_REQUESTS, NOTES, PIPELINES, PUSHES,
-    STATE_EVENTS,
+    APPROVALS, CLOSED_BY, DIFFS, ISSUES, JOBS, MERGED, MERGE_REQUESTS, NOTES, PIPELINES, PUSHES,
+    RELEASES, STATE_EVENTS,
 };
 use crate::error::Result;
 use crate::model::{aspect, event, kind, relation, Entity};
 use crate::source::build::{find, items, list, single, Span};
-use crate::source::work::{Actor, Details, Happened, Item, Reference, Target, Work};
+use crate::source::work::{Actor, Details, Happened, Item, Reference, Release, Target, Work};
 use crate::transcript::Transcript;
 
 /// the project-level numbers of the issues or merge requests a listing names.
@@ -86,7 +86,7 @@ pub(super) fn derive(
                 .or_default()
                 .push(transcript);
         }
-        if [NOTES, STATE_EVENTS, CLOSED_BY, APPROVALS, PIPELINES].contains(&resource) {
+        if [NOTES, STATE_EVENTS, CLOSED_BY, APPROVALS, PIPELINES, DIFFS].contains(&resource) {
             read.entry(&transcript.contents.subject)
                 .or_default()
                 .insert(resource, transcript);
@@ -131,7 +131,13 @@ pub(super) fn derive(
             read.get(name.as_str()),
             jobs.get(name.as_str()).map_or(&[][..], Vec::as_slice),
         )?;
+        let diffs = read
+            .get(name.as_str())
+            .and_then(|read| read.get(DIFFS).copied());
         let item = Item {
+            description: item["description"].clone(),
+            files: change.then(|| paths(diffs)),
+            files_from: diffs.map(|diffs| diffs.id.clone()),
             kind: of,
             native_kind: if change { "merge request" } else { "issue" }.into(),
             id: id.to_string(),
@@ -171,6 +177,71 @@ pub(super) fn derive(
         work.population(kind::CHANGE, aspect::MERGED_CHANGES, &[listing])?;
     }
     Ok(())
+}
+
+/// the paths of the files a merge request touches, or why they could not be
+/// read. a renamed file counts under both of its names.
+fn paths(diffs: Option<&Transcript>) -> std::result::Result<Vec<String>, String> {
+    let diffs = diffs.ok_or("its files were not read")?;
+    if let Some(reason) = diffs.contents.termination.gap() {
+        return Err(reason);
+    }
+    let mut paths = items(diffs)
+        .iter()
+        .flat_map(|file| [&file["new_path"], &file["old_path"]])
+        .filter_map(|path| path.as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
+/// derive the releases of one project released in the period. gitlab names
+/// a release by its tag, and lists the links attached to it.
+pub(super) fn releases(
+    project: &Entity,
+    project_id: u64,
+    transcripts: &[Transcript],
+    work: &mut Work,
+) -> Result<()> {
+    let Some(listing) = find(transcripts, RELEASES) else {
+        return Ok(());
+    };
+    let period = Span::of(listing);
+    for release in items(listing) {
+        let (Some(tag), Some(released_at)) = (
+            release["tag_name"].as_str(),
+            release["released_at"].as_str(),
+        ) else {
+            continue;
+        };
+        if release["upcoming_release"] == Value::Bool(true)
+            || !period.holds(&release["released_at"])
+        {
+            continue;
+        }
+        let assets = release["assets"]["links"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|link| json!({ "name": link["name"], "kind": link["link_type"] }))
+            .collect();
+        work.release(
+            Release {
+                id: format!("{project_id}/{tag}"),
+                name: format!("{} release {tag}", project.name),
+                tag: release["tag_name"].clone(),
+                title: release["name"].clone(),
+                prerelease: Value::Null,
+                published_at: released_at.to_owned(),
+                author: actor(&release["author"]),
+                assets,
+            },
+            aspect::RELEASES,
+            listing,
+        )?;
+    }
+    work.population(kind::RELEASE, aspect::RELEASES, &[listing])
 }
 
 /// derive every update of one branch during the period. gitlab does

@@ -16,7 +16,7 @@ use crate::transcript::Transcript;
 use crate::{content_id, read_json, write_json};
 
 /// the version of the rules that turn transcripts into statements.
-pub const DERIVATION: &str = "7";
+pub const DERIVATION: &str = "8";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 /// one reading of a scope, addressed by the digest of its contents.

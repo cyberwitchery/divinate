@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::capture::{CHECK_RUNS, PULL_REQUEST, STATUSES, TIMELINE, WORK_ITEMS};
+use super::capture::{CHECK_RUNS, FILES, PULL_REQUEST, STATUSES, TIMELINE, WORK_ITEMS};
 use crate::error::Result;
 use crate::model::{aspect, event, kind, relation, Entity};
 use crate::source::build::{self, find, Span};
@@ -83,7 +83,7 @@ pub(super) fn derive(
     let mut read = BTreeMap::<&str, BTreeMap<&str, &Transcript>>::new();
     for transcript in transcripts {
         let resource = transcript.contents.resource.as_str();
-        if [TIMELINE, PULL_REQUEST, CHECK_RUNS, STATUSES].contains(&resource) {
+        if [TIMELINE, PULL_REQUEST, FILES, CHECK_RUNS, STATUSES].contains(&resource) {
             read.entry(&transcript.contents.subject)
                 .or_default()
                 .insert(resource, transcript);
@@ -105,6 +105,7 @@ pub(super) fn derive(
         let read_branch = base
             .as_ref()
             .and_then(|base| work.named(&format!("{}@{base}", repository.name)));
+        let files = about.and_then(|read| read.get(FILES).copied());
         let item = Item {
             kind: kind_of(&listed),
             native_kind: native_kind(&listed).into(),
@@ -129,12 +130,32 @@ pub(super) fn derive(
             author: actor(&listed["user"]),
             target: change
                 .then(|| Target::new(base.as_deref(), default_branch, read_branch.as_deref())),
+            description: listed["body"].clone(),
+            files: change.then(|| paths(files)),
+            files_from: files.map(|files| files.id.clone()),
         };
         work.item(item, &populations, listing, details)?;
     }
     work.population(kind::TICKET, aspect::TICKETS, &[listing])?;
     work.population(kind::CHANGE, aspect::CHANGES, &[listing])?;
     work.population(kind::CHANGE, aspect::MERGED_CHANGES, &[listing])
+}
+
+/// the paths of the files a pull request touches, or why they could not be
+/// read. a renamed file counts under both of its names.
+fn paths(files: Option<&Transcript>) -> std::result::Result<Vec<String>, String> {
+    let files = files.ok_or("its files were not read")?;
+    if let Some(reason) = files.contents.termination.gap() {
+        return Err(reason);
+    }
+    let mut paths = build::items(files)
+        .iter()
+        .flat_map(|file| [&file["filename"], &file["previous_filename"]])
+        .filter_map(|path| path.as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 /// what happened to one item, from the readings made about it. every reading

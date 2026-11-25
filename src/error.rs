@@ -24,6 +24,8 @@ pub enum Error {
     Invalid(String),
     #[error("collection failed: {0}")]
     Collection(String),
+    #[error("{0}")]
+    Pack(String),
     #[error("verification failed: {0}")]
     Verification(String),
     #[error("cannot serialize json: {0}")]

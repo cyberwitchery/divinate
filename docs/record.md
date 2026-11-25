@@ -31,6 +31,7 @@ project on gitlab and azure devops) the rows are:
 | tickets | how many issues were opened in the period |
 | changes | how many pull requests were opened in the period |
 | merged changes | how many pull requests were merged in the period, whenever they were opened |
+| releases | how many releases were published in the period |
 | code scanning findings, dependency findings, secret findings | how many alerts each github scanner opened in the period |
 
 when you collect a whole organisation or group, you get a block for it with a
@@ -56,10 +57,15 @@ the branch rows are the ones to watch in `divinate ledger`. if someone turns
 off required reviews on `main`, the next collection shows `review policy` with
 a `▣`.
 
-## tickets, pull requests, and findings
+## tickets, pull requests, findings, and releases
 
-`show` only prints how many there are. the record holds each one, with its
-title, labels, author, whether it’s open, and everything that happened to it:
+`show` only prints how many there are. the record holds each one. for a
+ticket or a pull request that’s its title, description, labels, author, and
+whether it’s open. a pull request also has the list of files it touches. a
+release has its tag and the names, sizes, and checksums of the files attached
+to it.
+
+the record also holds everything that happened to each of them:
 
 | event | on | meaning |
 |---|---|---|
@@ -72,6 +78,7 @@ title, labels, author, whether it’s open, and everything that happened to it:
 | commit | changes | a commit was added to the pull request |
 | check passed, check failed | changes | a ci check finished. the event has the name of the check |
 | merge | changes, branches | the pull request was merged |
+| published | releases | the release was published, and by whom |
 | push, force push | branches | someone updated the branch without a pull request |
 
 divinate also keeps the links between them. a pull request knows which branch
@@ -86,10 +93,10 @@ read it with your own tools.
 
 ## the period
 
-tickets, pull requests, and findings are read for a period, which is the last
-90 days unless you pass `--from` and `--until`. a ticket is part of a
-collection when it was opened in the period, and a pull request when it was
-opened or merged in it. an old ticket that’s still open is left out, so pick a
+tickets, pull requests, findings, and releases are read for a period, which is
+the last 90 days unless you pass `--from` and `--until`. a ticket is part of a
+collection when it was opened in the period, a pull request when it was
+opened or merged in it, and a release when it was published in it. an old ticket that’s still open is left out, so pick a
 period that starts early enough for the rule you want to check.
 
 branch settings work differently. the platform only tells divinate what the

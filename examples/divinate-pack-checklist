@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""an example pack for divinate: is the checklist in a description filled in?
+
+install it by putting this file in a directory on PATH, or in one that
+DIVINATE_PACKS names. see docs/packs.md.
+"""
+
+import json
+import re
+import sys
+
+BOX = re.compile(r"^\s*[-*]\s*\[( |x|X)\]", re.M)
+
+DEFINITION = """\
+process: checklists
+items:
+  kind: change
+  when: merged
+steps:
+  - name: checklist completed
+    uses: checklist/completed
+measures:
+  - name: completed share
+    uses: checklist/share
+"""
+
+
+def completed(item):
+    """the outcome for one item, from the task list in its description."""
+    state = item["state"] or {}
+    boxes = BOX.findall(state.get("description") or "")
+    open_boxes = boxes.count(" ")
+    if not boxes:
+        return {"outcome": "broken", "reason": "the description has no checklist"}
+    if open_boxes:
+        return {"outcome": "broken", "reason": f"{open_boxes} of {len(boxes)} boxes are not checked"}
+    return {"outcome": "kept"}
+
+
+def main():
+    request = json.load(sys.stdin)
+    if request["request"] == "describe":
+        answer = {
+            "protocol": 1,
+            "name": "checklist",
+            "version": "0.1.0",
+            "description": "checks the task list in the description of a ticket or change",
+            "checks": [
+                {"name": "completed", "answers": "each_item", "description": "every box is checked"},
+                {"name": "share", "answers": "number", "description": "the share of items with every box checked"},
+            ],
+            "processes": [
+                {"name": "merged", "description": "merged changes have a completed checklist", "definition": DEFINITION}
+            ],
+        }
+    elif request["check"] == "completed":
+        answer = {"results": [dict(completed(item), item=item["id"]) for item in request["items"]]}
+    elif request["check"] == "share":
+        items = request["items"]
+        done = sum(1 for item in items if completed(item)["outcome"] == "kept")
+        answer = {
+            "value": done * 100 / len(items) if items else None,
+            "unit": "percent",
+            "basis": f"{done} of {len(items)} items",
+        }
+    else:
+        sys.exit(f"no check {request['check']}")
+    json.dump(answer, sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

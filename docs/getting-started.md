@@ -29,8 +29,8 @@ if `gh auth status` says you are logged in, you are ready for this tutorial
 
 ```console
 $ divinate collect github:cyberwitchery/divinate
-collected github:cyberwitchery/divinate: 179 records, 0 gaps
-col_6005c5db32e5a3a13363
+collected github:cyberwitchery/divinate: 180 records, 0 gaps
+col_b25ba381174bcdfec8ce
 ```
 
 this can take a few minutes. divinate reads the repository’s settings, every
@@ -46,14 +46,15 @@ the id of this collection, which you can use later to refer to it.
 
 ```console
 $ divinate show
-github:cyberwitchery/divinate · collected 2026-11-24T17:21:38Z · col_6005c5db32e5a3a13363
-179 records, 0 gaps
+github:cyberwitchery/divinate · collected 2026-11-24T23:57:02Z · col_b25ba381174bcdfec8ce
+180 records, 0 gaps
 
 github:cyberwitchery/divinate
   ■ repository              public, default branch main
   ■ tickets                 28 tickets
   ■ changes                 44 changes
   ■ merged changes          41 changes
+  ■ releases                no releases
   ■ code scanning findings  9 findings
   ■ dependency findings     no findings
   ■ secret findings         no findings
@@ -121,8 +122,8 @@ save it as `bug-tickets.yaml` and run:
 
 ```console
 $ divinate check bug-tickets.yaml
-bug tickets · github:cyberwitchery/divinate · as of 2026-11-24T17:23:42Z
-tickets opened 2026-08-26T17:21:38Z to 2026-11-24T17:21:38Z: 28 read, 6 labelled "bug"
+bug tickets · github:cyberwitchery/divinate · as of 2026-11-24T23:59:25Z
+tickets opened 2026-08-26T23:57:02Z to 2026-11-24T23:57:02Z: 28 read, 6 labelled "bug"
 
 item                              answered     resolved     fix reviewed
 github:cyberwitchery/divinate#27  broken       kept         broken
@@ -180,7 +181,7 @@ give it to an auditor. whoever receives it can run:
 
 ```console
 $ divinate verify
-verified 1 collections and 215 transcripts
+verified 1 collections and 260 transcripts
 ```
 
 this checks that the directory is complete and that nothing in it was changed,

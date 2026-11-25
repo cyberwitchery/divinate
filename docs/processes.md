@@ -8,9 +8,11 @@ the file is yours and lives wherever you like (next to the code it’s about is
 a good place). it isn’t stored in `evidence/`, so you can write a new rule
 tomorrow and check it against the collections you already have.
 
-there are two kinds of rules. steps are about tickets, pull requests, and
-findings: “every bug is answered within a week”. branch rules are about
-settings: “main requires a review”. one file can have both.
+there are two kinds of rules. steps are about tickets, pull requests,
+findings, and releases: “every bug is answered within a week”. branch rules
+are about settings: “main requires a review”. one file can have both. a file
+can also ask for [numbers](#numbers), such as the median time it takes to
+close a bug.
 
 ## steps
 
@@ -44,10 +46,11 @@ each of those items.
 
 | key | meaning |
 |---|---|
-| `kind` | `ticket`, `change` (a pull or merge request), or `finding` (a scanner alert) |
+| `kind` | `ticket`, `change` (a pull or merge request), `finding` (a scanner alert), or `release` |
 | `label` | only items with this label. for a finding, this is its severity, such as `high` |
 | `when` | `opened` picks the items opened in the period, which is the default. `merged` picks the pull requests merged in it |
 | `into` | only pull requests into this branch. give a branch name, or `default branch` for the default branch of each repository |
+| `paths` | only pull requests that touch a file matching one of these patterns, such as `src/auth/**` |
 
 ### writing a step
 
@@ -59,15 +62,25 @@ listed in [reading the record](record.md): `comment`, `closed`, `approval`,
 |---|---|
 | `name` | what the step is called in the output |
 | `event` | the event that has to happen. a list such as `[closed, dismissed]` means any one of them |
-| `by` | `someone else` means anyone but the person who opened the item |
+| `by` | `someone else` means anyone but the person who opened the item. a list of account names such as `[alice, bob]` means one of them (and still not the person who opened the item) |
+| `named` | one such event for each of these names. this is how you ask for a ci check by its name |
 | `within` | how long after the item was opened, such as `7d` or `12h` |
 | `before` | the event it has to come before, such as `merge` |
 | `after` | the event it has to come after, such as `commit` |
 | `at least` | how many times it has to happen, each time by a different person. the default is once |
 | `linked` | look for the event on a linked item of this kind. `linked: change` on a ticket means the pull request that closes it |
 | `of` | `required checks` asks for the event once for every check the branch requires |
+| `ref` | where the rule comes from, such as “ssdlc 4.2”. it’s printed below the results |
 
 a step can have `within` or `before`, but not both.
+
+two kinds of step ask for something other than an event, and are written
+without `event`:
+
+| key | meaning |
+|---|---|
+| `label` | the item has a label matching one of these patterns |
+| `asset` | the release has an attached file whose name matches one of these patterns |
 
 a few of these are easier to understand in an example. this one is about pull
 requests: each one merged into a default branch needs as many approvals as the
@@ -105,8 +118,91 @@ later or takes it back, or when someone dismisses it.
 a `check passed` for each of them by name. if the branch requires none, the
 step is `n/a`. it can’t be combined with `within` or `at least`.
 
-and one about findings: every alert of high severity is closed or dismissed
-within 30 days.
+here is one that puts several of the newer pieces together. pull requests that
+change the ci workflows are the sensitive ones in many repositories, so this
+rule only looks at those, and wants a review and a passing check called
+`success` on each:
+
+```yaml
+process: workflow changes
+items:
+  kind: change
+  when: merged
+  paths: .github/workflows/**
+steps:
+  - name: reviewed
+    event: approval
+    by: someone else
+    before: merge
+  - name: tests passed
+    event: check passed
+    named: [success]
+    before: merge
+```
+
+```console
+$ divinate check workflow-changes.yaml
+workflow changes · github:cyberwitchery/sbom-diff · as of 2026-11-24T23:53:50Z
+changes merged 2026-08-26T23:51:01Z to 2026-11-24T23:51:01Z: 58 read, 11 touching .github/workflows/**
+
+item                                reviewed     tests passed
+github:cyberwitchery/sbom-diff#141  kept         kept
+github:cyberwitchery/sbom-diff#152  kept         kept
+github:cyberwitchery/sbom-diff#159  kept         kept
+github:cyberwitchery/sbom-diff#168  cannot tell  cannot tell
+github:cyberwitchery/sbom-diff#170  kept         kept
+github:cyberwitchery/sbom-diff#171  broken       kept
+...
+```
+
+`#168` is `cannot tell` because github answered one request of that run with
+an error, so divinate doesn’t know which files the pull request touched. it
+keeps it in the list for that reason.
+
+### patterns
+
+`paths`, `named`, `label`, and `asset` take patterns. `*` stands for any
+number of characters and `?` for one. in `paths`, a `*` stops at a `/`, and
+`**` goes across directories, so `src/*.rs` matches `src/main.rs` and
+`src/**` matches everything below `src`. a pattern that starts with `*` has to
+be in quotes, because yaml gives a leading `*` a meaning of its own.
+
+### releases
+
+releases have no reviews or comments, but they have attached files. this rule
+wants a cyclonedx sbom and a signature on every release:
+
+```yaml
+process: releases
+items:
+  kind: release
+steps:
+  - name: sbom attached
+    asset: '*.cdx.json'
+  - name: signed
+    asset: ['*.sig', '*.bundle']
+```
+
+```console
+$ divinate check releases.yaml
+releases · github:cyberwitchery/sbom-diff · as of 2026-11-24T23:53:50Z
+releases published 2026-08-26T23:51:01Z to 2026-11-24T23:51:01Z: 5 read
+
+item                                            sbom attached  signed
+github:cyberwitchery/sbom-diff release v0.9.0   kept           broken
+github:cyberwitchery/sbom-diff release v0.9.1   kept           broken
+github:cyberwitchery/sbom-diff release v0.9.2   kept           broken
+github:cyberwitchery/sbom-diff release v0.10.0  kept           broken
+github:cyberwitchery/sbom-diff release v0.11.0  kept           broken
+...
+```
+
+a release also has one event, `published`, so `event: published` with `by:
+[alice, bob]` checks that only certain people cut releases.
+
+### findings
+
+every alert of high severity is closed or dismissed within 30 days:
 
 ```yaml
 process: high findings
@@ -143,6 +239,48 @@ every rule has a `name` and exactly one of these:
 the rules are checked for every branch in the collection, which means the
 default branch of each repository and every branch a pull request was merged
 into.
+
+## numbers
+
+some questions want a number as an answer. `measures` works them out over the
+items the file picks:
+
+```yaml
+measures:
+  - name: reviewed share
+    share: reviewed
+  - name: time to merge
+    from: opened
+    to: merge
+```
+
+`share` takes the name of a step and gives the percentage of items that kept
+it, among those that kept or broke it. `from` and `to` take two events and
+give the median time between them. added to the workflow example from above,
+this prints:
+
+```
+reviewed share  80% (8 of 10 kept; 1 pending, unknown, or not applicable left out)
+time to merge   9.3 hours (median from opened to merge over 11 of 11 items)
+```
+
+the part in parentheses says how many items the number rests on.
+
+## checks from packs
+
+when a rule needs something divinate can’t express, such as “the checklist in
+the description is filled in”, a pack can do the judging. a step then names
+the pack’s check with `uses`:
+
+```yaml
+steps:
+  - name: checklist completed
+    uses: acme/checklist-completed
+```
+
+packs can also judge all items together under `overall`, and work out
+numbers under `measures`. [packs](packs.md) explains how to use and write
+them.
 
 ## results
 
@@ -197,6 +335,10 @@ like `{"outcome": "broken", "reason": "..."}`, and the outcomes are `kept`,
 - `within` counts from the moment the item was opened. a ticket that got its
   `security` label a week after it was opened has already used up that week.
 - `check passed` looks at the checks on the last commit of the pull request.
+- labels are the ones the item has at the time of the collection. divinate
+  doesn’t know when a label was added.
+- a list of accounts in `by` uses the account names as the platform spells
+  them, without the `github:` in front. upper and lower case don’t matter.
 - without `into`, `when: merged` picks the pull requests merged into any
   branch.
 - `required` uses the branch settings from the first collection after the

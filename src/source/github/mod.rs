@@ -7,13 +7,14 @@
 mod capture;
 pub mod facts;
 mod findings;
+mod releases;
 mod updates;
 mod work;
 
 pub use capture::{
     capture, client, token, ACTIVITY, BRANCH_PROTECTION, BRANCH_RULES, CHECK_RUNS, CODE_SCANNING,
-    DEPENDABOT, ORGANISATION, PULL_REQUEST, REPOSITORIES, REPOSITORY, SECRET_SCANNING, STATUSES,
-    TIMELINE, WORK_ITEMS,
+    DEPENDABOT, FILES, ORGANISATION, PULL_REQUEST, RELEASES, REPOSITORIES, REPOSITORY,
+    SECRET_SCANNING, STATUSES, TIMELINE, WORK_ITEMS,
 };
 
 use crate::source::build::Host;

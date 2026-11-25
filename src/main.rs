@@ -6,6 +6,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use divinate::error::{Error, Result};
+use divinate::pack::{self, Installed};
 use divinate::record::Collection;
 use divinate::source::{self, Period};
 use divinate::{format_time, ledger, parse_time, process, record, timestamp, verify};
@@ -61,8 +62,9 @@ enum Command {
     },
     /// check a process definition against one collection; the latest by default
     Check {
-        /// the process definition, a yaml file
-        definition: PathBuf,
+        /// the process definition: a yaml file, or `<pack>:<name>` for one a
+        /// pack ships
+        definition: String,
         /// the collection to check, by id
         #[arg(long, conflicts_with_all = ["last", "all"])]
         collection: Option<String>,
@@ -82,6 +84,11 @@ enum Command {
         /// where the record is kept
         #[arg(long, default_value = "evidence")]
         state: PathBuf,
+    },
+    /// show what an installed pack offers: its checks and process definitions
+    Pack {
+        /// the name of the pack, as in `divinate-pack-<name>`
+        name: String,
     },
     /// check the stored record offline
     Verify {
@@ -118,14 +125,16 @@ fn run(command: Command) -> Result<()> {
             json,
             state,
         } => {
-            let definition = process::load(&definition)?;
+            let packs = Installed::from_environment();
+            let definition = definition_from(&definition, &packs)?;
             let collections = record::load(&state)?;
             // each collection is checked with those before it at hand.
             let checked = |position: usize| {
-                process::check(
+                process::check_with(
                     &definition,
                     &collections[position],
                     &collections[..position],
+                    &packs,
                 )
             };
             let positions = if all {
@@ -155,6 +164,7 @@ fn run(command: Command) -> Result<()> {
             Ok(())
         }
         Command::Show { collection, state } => show(collection.as_deref(), &state),
+        Command::Pack { name } => offered(&name),
         Command::Ledger { scope, last, state } => {
             let all = record::load(&state)?;
             let collections = in_scope(&all, scope.as_deref())?
@@ -176,6 +186,61 @@ fn run(command: Command) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// print what an installed pack offers.
+fn offered(name: &str) -> Result<()> {
+    let found = pack::describe(&Installed::from_environment(), name)?;
+    println!("{} {}", found.name, found.version);
+    if !found.description.is_empty() {
+        println!("{}", found.description);
+    }
+    if !found.checks.is_empty() {
+        println!("\nchecks");
+    }
+    for check in &found.checks {
+        println!(
+            "  {}/{}  for {}. {}",
+            found.name,
+            check.name,
+            check.answers.place(),
+            check.description
+        );
+    }
+    if !found.processes.is_empty() {
+        println!("\nprocess definitions");
+    }
+    for process in &found.processes {
+        println!("  {}:{}  {}", found.name, process.name, process.description);
+    }
+    Ok(())
+}
+
+/// the process definition an argument names: a file, or one a pack ships as
+/// `<pack>:<name>`.
+fn definition_from(argument: &str, packs: &Installed) -> Result<process::Process> {
+    let path = Path::new(argument);
+    let shipped = argument.split_once(':').filter(|_| !path.exists());
+    let Some((pack, name)) = shipped else {
+        return process::load(path);
+    };
+    let found = pack::describe(packs, pack)?;
+    let process = found
+        .processes
+        .iter()
+        .find(|process| process.name == name)
+        .ok_or_else(|| {
+            let known = found
+                .processes
+                .iter()
+                .map(|process| process.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Error::Pack(format!(
+                "the pack {pack:?} ships no process definition {name:?}; it has: {known}"
+            ))
+        })?;
+    process::parse(&process.definition, path)
 }
 
 fn to_json<T: serde::Serialize>(value: &T) -> Result<String> {

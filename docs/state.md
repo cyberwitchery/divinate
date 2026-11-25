@@ -104,8 +104,9 @@ and for which period, and the value holds the `uid` of each member:
 }
 ```
 
-each ticket, pull request, and finding has two statements of its own. the
-first has the aspect `ticket`, `change`, or `finding`, and holds its state:
+each ticket, pull request, finding, and release has two statements of its
+own. the first has the aspect `ticket`, `change`, `finding`, or `release`, and
+holds its state. for a pull request:
 
 ```json
 {
@@ -117,7 +118,29 @@ first has the aspect `ticket`, `change`, or `finding`, and holds its state:
   "state": "merged",
   "target_branch": "main",
   "targets_default_branch": true,
-  "title": "replace serde_yaml_ng with serde-saphyr to drop unmaintained unsafe-libyaml"
+  "title": "replace serde_yaml_ng with serde-saphyr to drop unmaintained unsafe-libyaml",
+  "description": "...",
+  "paths": ["Cargo.lock", "Cargo.toml", "src/error.rs", "src/project.rs"]
+}
+```
+
+`paths` are the files a pull request touches (the example leaves some out).
+it is `null` when divinate couldn’t read them. a release has the aspect
+`release` and looks like this:
+
+```json
+{
+  "tag": "v0.10.0",
+  "title": "v0.10.0",
+  "prerelease": false,
+  "published_at": "2026-11-04T20:39:05Z",
+  "assets": [
+    {
+      "name": "sbom-v0.10.0-sbom-diff.cdx.json",
+      "size": 147812,
+      "digest": "sha256:6a233713fdc1c4ccc87ed3db481e6b4c625732ce80664bb29015a9f7cfa6249a"
+    }
+  ]
 }
 ```
 

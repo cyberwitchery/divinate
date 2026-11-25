@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use time::Duration;
 
-pub use check::check;
+pub use check::{check, check_with};
 pub use render::{render, summary};
 
 use crate::error::{Error, Result};
@@ -37,6 +37,54 @@ pub struct Process {
     #[serde(default)]
     /// what every branch that was read must require.
     pub branches: Vec<Rule>,
+    #[serde(default)]
+    /// what the selected items must show together, as a pack judges it.
+    pub overall: Vec<Overall>,
+    #[serde(default)]
+    /// numbers worked out over the selected items.
+    pub measures: Vec<Measure>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// one thing all selected items must show together.
+pub struct Overall {
+    pub name: String,
+    /// the check of a pack that judges it, as `<pack>/<check>`.
+    pub uses: String,
+    #[serde(default)]
+    /// what the check is told, as the pack defines it.
+    pub with: Option<serde_json::Value>,
+    #[serde(default, rename = "ref")]
+    /// where the requirement comes from, such as a section of a policy.
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// a number over the selected items. either `share` is set, or `from` and `to`.
+pub struct Measure {
+    pub name: String,
+    #[serde(default)]
+    /// the check of a pack that works the number out, as `<pack>/<check>`.
+    pub uses: Option<String>,
+    #[serde(default)]
+    /// what the check is told, as the pack defines it.
+    pub with: Option<serde_json::Value>,
+    #[serde(default, rename = "ref")]
+    /// where the requirement comes from, such as a section of a policy.
+    pub reference: Option<String>,
+    #[serde(default)]
+    /// the name of a step: the share of items that kept it, among those that
+    /// kept or broke it.
+    pub share: Option<String>,
+    #[serde(default)]
+    /// the kind of event a time is counted from, such as `opened`.
+    pub from: Option<String>,
+    #[serde(default)]
+    /// the kind of event a time is counted to, such as `closed`. the result
+    /// is the median over the items that have both.
+    pub to: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -55,6 +103,10 @@ pub struct Selection {
     /// only changes into this branch: a branch name, or `default branch` for
     /// the default branch of each repository.
     pub into: Option<String>,
+    #[serde(default)]
+    /// only changes that touch a file whose path matches one of these
+    /// patterns, such as `src/auth/**`.
+    pub paths: Option<Patterns>,
 }
 
 #[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -72,13 +124,35 @@ pub enum When {
 /// someone else, or on a linked item.
 pub struct Step {
     pub name: String,
+    #[serde(default, rename = "ref")]
+    /// where the requirement comes from, such as a section of a policy.
+    pub reference: Option<String>,
+    #[serde(default)]
+    /// instead of an event: the check of a pack that judges each item, as
+    /// `<pack>/<check>`.
+    pub uses: Option<String>,
+    #[serde(default)]
+    /// what the check is told, as the pack defines it.
+    pub with: Option<serde_json::Value>,
     #[serde(default)]
     /// look for the event on the items of this kind that close the item or
     /// that the source links to it, instead of on the item itself.
     pub linked: Option<String>,
+    #[serde(default)]
     /// the kind of event that must exist, such as `comment` or `approval`, or
     /// several kinds of which one must exist.
     pub event: Events,
+    #[serde(default)]
+    /// instead of an event: the item carries a label that matches one of
+    /// these patterns.
+    pub label: Option<Patterns>,
+    #[serde(default)]
+    /// instead of an event: a file attached to the release has a name that
+    /// matches one of these patterns.
+    pub asset: Option<Patterns>,
+    #[serde(default)]
+    /// one such event for each of these names, such as the name of a check.
+    pub named: Option<Patterns>,
     #[serde(default)]
     pub by: Option<By>,
     #[serde(default, rename = "at least")]
@@ -133,10 +207,59 @@ impl TryFrom<NumberOrWord> for Count {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(from = "OneOrMany")]
 /// one or more kinds of event.
 pub struct Events(pub Vec<String>);
+
+/// one or more patterns, written the same way. in a pattern `*` stands for
+/// any run of characters and `?` for one. in a path `*` stops at a `/` and
+/// `**` does not.
+pub type Patterns = Events;
+
+/// whether a text matches a pattern. `separator` is the character a single
+/// `*` does not cross, for paths.
+#[must_use]
+pub fn matches(pattern: &str, text: &str, separator: Option<char>) -> bool {
+    let (pattern, text) = (
+        pattern.chars().collect::<Vec<_>>(),
+        text.chars().collect::<Vec<_>>(),
+    );
+    glob(&pattern, &text, separator)
+}
+
+fn glob(pattern: &[char], text: &[char], separator: Option<char>) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some((&'*', rest)) => {
+            let deep = rest.first() == Some(&'*');
+            let rest = if deep { &rest[1..] } else { rest };
+            // `**/` also matches no directory at all.
+            if deep && rest.first() == separator.as_ref() && glob(&rest[1..], text, separator) {
+                return true;
+            }
+            (0..=text.len())
+                .take_while(|&taken| taken == 0 || deep || Some(text[taken - 1]) != separator)
+                .any(|taken| glob(rest, &text[taken..], separator))
+        }
+        Some((&'?', rest)) => text
+            .split_first()
+            .is_some_and(|(first, text)| Some(*first) != separator && glob(rest, text, separator)),
+        Some((expected, rest)) => text
+            .split_first()
+            .is_some_and(|(first, text)| first == expected && glob(rest, text, separator)),
+    }
+}
+
+impl Events {
+    /// whether one of the patterns matches a text.
+    #[must_use]
+    pub fn match_any(&self, text: &str, separator: Option<char>) -> bool {
+        self.0
+            .iter()
+            .any(|pattern| matches(pattern, text, separator))
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -162,12 +285,42 @@ impl Events {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(try_from = "OneOrMany")]
 /// who must have caused the event.
 pub enum By {
-    #[serde(rename = "someone else")]
     /// anyone but the actor who opened the item the event is on.
     SomeoneElse,
+    /// one of these accounts, and not the actor who opened the item.
+    Accounts(Vec<String>),
+}
+
+impl TryFrom<OneOrMany> for By {
+    type Error = String;
+
+    fn try_from(written: OneOrMany) -> std::result::Result<Self, String> {
+        match written {
+            OneOrMany::One(word) if word == "someone else" => Ok(Self::SomeoneElse),
+            OneOrMany::One(word) => Err(format!(
+                "`by` is `someone else` or a list of accounts, not {word:?}"
+            )),
+            OneOrMany::Many(accounts) if accounts.is_empty() => {
+                Err("`by` needs at least one account".into())
+            }
+            OneOrMany::Many(accounts) => Ok(Self::Accounts(accounts)),
+        }
+    }
+}
+
+impl By {
+    /// the condition in words, to follow the name of an event.
+    #[must_use]
+    pub fn words(&self) -> String {
+        match self {
+            Self::SomeoneElse => " by someone else".into(),
+            Self::Accounts(accounts) => format!(" by {}", accounts.join(" or ")),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -175,6 +328,9 @@ pub enum By {
 /// one thing every branch must show. exactly one of the three is set.
 pub struct Rule {
     pub name: String,
+    #[serde(default, rename = "ref")]
+    /// where the requirement comes from, such as a section of a policy.
+    pub reference: Option<String>,
     #[serde(default)]
     /// a change needs at least this many approvals before it is merged.
     pub approvals: Option<u64>,
@@ -197,21 +353,118 @@ pub fn load(path: &Path) -> Result<Process> {
         path: path.to_path_buf(),
         source,
     })?;
-    let process: Process = serde_saphyr::from_str(&text).map_err(|source| Error::Yaml {
-        path: path.to_path_buf(),
+    parse(&text, path)
+}
+
+/// read a process definition from yaml text. `origin` says where the text
+/// came from, for an error.
+///
+/// # Errors
+///
+/// returns an error when the text is not a process definition, or asks for
+/// something this build cannot check.
+pub fn parse(text: &str, origin: &Path) -> Result<Process> {
+    let process: Process = serde_saphyr::from_str(text).map_err(|source| Error::Yaml {
+        path: origin.to_path_buf(),
         source: Box::new(source),
     })?;
-    if process.steps.is_empty() && process.branches.is_empty() {
+    let about_items =
+        !process.steps.is_empty() || !process.overall.is_empty() || !process.measures.is_empty();
+    if !about_items && process.branches.is_empty() {
         return Err(Error::Invalid(
             "a process needs `steps` for work items or rules for `branches`".into(),
         ));
     }
-    if process.items.is_none() && !process.steps.is_empty() {
+    if process.items.is_none() && about_items {
         return Err(Error::Invalid(
-            "`steps` need `items` to say which work items they apply to".into(),
+            "`steps`, `overall`, and `measures` need `items` to say which work items they apply to"
+                .into(),
         ));
     }
+    validate(&process)?;
+    for rule in &process.branches {
+        let set = [
+            rule.approvals.is_some(),
+            rule.checks.is_some(),
+            rule.without.is_some(),
+        ];
+        if set.iter().filter(|set| **set).count() != 1 {
+            return Err(Error::Invalid(format!(
+                "branch rule {:?}: use exactly one of `approvals`, `checks`, and `without`",
+                rule.name
+            )));
+        }
+    }
+    Ok(process)
+}
+
+/// refuse a definition whose measures or steps ask for something that
+/// cannot be checked.
+fn validate(process: &Process) -> Result<()> {
+    for measure in &process.measures {
+        let timed = measure.from.is_some() && measure.to.is_some();
+        let known = |step: &String| process.steps.iter().any(|known| &known.name == step);
+        if measure.uses.is_some() {
+            if measure.share.is_some() || measure.from.is_some() || measure.to.is_some() {
+                return Err(Error::Invalid(format!(
+                    "measure {:?}: `uses` stands alone",
+                    measure.name
+                )));
+            }
+            continue;
+        }
+        match &measure.share {
+            Some(step) if measure.from.is_none() && measure.to.is_none() && known(step) => {}
+            Some(step) if !known(step) => {
+                return Err(Error::Invalid(format!(
+                    "measure {:?}: there is no step named {step:?}",
+                    measure.name
+                )));
+            }
+            None if timed && process.items.is_some() => {}
+            _ => {
+                return Err(Error::Invalid(format!(
+                    "measure {:?}: use `share` with the name of a step, `from` and `to` with kinds of event, or `uses` with the check of a pack",
+                    measure.name
+                )));
+            }
+        }
+    }
     for step in &process.steps {
+        let asked = [
+            !step.event.0.is_empty(),
+            step.label.is_some(),
+            step.asset.is_some(),
+            step.uses.is_some(),
+        ];
+        if asked.iter().filter(|asked| **asked).count() != 1 {
+            return Err(Error::Invalid(format!(
+                "step {:?}: use exactly one of `event`, `label`, `asset`, and `uses`",
+                step.name
+            )));
+        }
+        if step.with.is_some() && step.uses.is_none() {
+            return Err(Error::Invalid(format!(
+                "step {:?}: `with` goes with `uses`",
+                step.name
+            )));
+        }
+        let timed = step.within.is_some() || step.before.is_some() || step.after.is_some();
+        let counted = step.at_least.is_some() || step.of.is_some() || step.named.is_some();
+        if step.event.0.is_empty() && (timed || counted || step.by.is_some()) {
+            return Err(Error::Invalid(format!(
+                "step {:?}: `label`, `asset`, and `uses` stand alone, or with `linked`",
+                step.name
+            )));
+        }
+        if step.named.is_some()
+            && (step.within.is_some() || step.at_least.is_some() || step.of.is_some())
+        {
+            return Err(Error::Invalid(format!(
+                "step {:?}: `named` cannot be used with `within`, `at least`, or `of`",
+                step.name
+            )));
+        }
         if step.within.is_some() && step.before.is_some() {
             return Err(Error::Invalid(format!(
                 "step {:?}: use `within` or `before`, not both",
@@ -238,20 +491,7 @@ pub fn load(path: &Path) -> Result<Process> {
             }
         }
     }
-    for rule in &process.branches {
-        let set = [
-            rule.approvals.is_some(),
-            rule.checks.is_some(),
-            rule.without.is_some(),
-        ];
-        if set.iter().filter(|set| **set).count() != 1 {
-            return Err(Error::Invalid(format!(
-                "branch rule {:?}: use exactly one of `approvals`, `checks`, and `without`",
-                rule.name
-            )));
-        }
-    }
-    Ok(process)
+    Ok(())
 }
 
 /// parse `<number>d` or `<number>h`.
@@ -333,6 +573,38 @@ pub struct Report {
     pub rules: Vec<String>,
     /// one row per branch that was read, with the outcome of each rule.
     pub branches: Vec<Row>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// what the selected items show together.
+    pub overall: Vec<Found>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// the numbers the process asks for.
+    pub measures: Vec<Measured>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    /// where each step, rule, and measure comes from, where the process says so.
+    pub references: std::collections::BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// the packs that judged a part of this, with their versions.
+    pub packs: Vec<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+/// what a pack found of all selected items together.
+pub struct Found {
+    pub name: String,
+    #[serde(flatten)]
+    pub outcome: Outcome,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+/// one number over the selected items.
+pub struct Measured {
+    pub name: String,
+    /// the number, or nothing when no item counts towards it.
+    pub value: Option<f64>,
+    /// `percent` or `hours`.
+    pub unit: String,
+    /// how many items the number rests on, and how many were left out.
+    pub basis: String,
 }
 
 /// write the selection as itself, or as the reason it could not be made.
@@ -354,6 +626,8 @@ pub struct Selected {
     pub when: When,
     /// the branch the changes must go into, when the process names one.
     pub into: Option<String>,
+    /// the patterns a changed path must match, when the process names any.
+    pub paths: Option<Vec<String>>,
     pub read: usize,
     pub interval: Option<Interval>,
 }
@@ -363,4 +637,36 @@ pub struct Selected {
 pub struct Row {
     pub item: String,
     pub outcomes: Vec<Outcome>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches;
+
+    #[test]
+    fn a_star_stops_at_a_separator_and_two_do_not() {
+        let path = |pattern, text| matches(pattern, text, Some('/'));
+        assert!(path("src/*.rs", "src/main.rs"));
+        assert!(!path("src/*.rs", "src/source/work.rs"));
+        assert!(path("src/**", "src/source/work.rs"));
+        assert!(path("**/*.rs", "main.rs"));
+        assert!(path("**/*.rs", "src/source/work.rs"));
+        assert!(path("src/**/work.rs", "src/work.rs"));
+        assert!(path(".gitlab-ci.yml", ".gitlab-ci.yml"));
+        assert!(!path("*.yml", "ci/build.yml"));
+        assert!(path("ci/?uild.yml", "ci/build.yml"));
+        assert!(!path("src", "src/main.rs"));
+    }
+
+    #[test]
+    fn without_a_separator_a_star_matches_anything() {
+        assert!(matches(
+            "scan-*",
+            "scan-kyverno-policies: [production]",
+            None
+        ));
+        assert!(matches("sensitivity::*", "sensitivity::high", None));
+        assert!(!matches("sast", "sast-extra", None));
+        assert!(matches("*", "", None));
+    }
 }

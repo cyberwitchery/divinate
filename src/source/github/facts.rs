@@ -119,6 +119,7 @@ fn derive_repository(about: &Transcript, transcripts: &[Transcript]) -> Result<D
         .collect::<Vec<_>>();
     let mut work = Work::new(&HOST, &entity, &mut derived);
     super::work::derive(&entity, default.as_deref(), transcripts, &mut work)?;
+    super::releases::derive(&entity, transcripts, &mut work)?;
     if let Some((_, id)) = repositories.get(&entity.name) {
         super::findings::derive(&entity, *id, transcripts, &mut work)?;
     }

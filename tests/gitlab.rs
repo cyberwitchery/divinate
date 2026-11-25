@@ -85,6 +85,8 @@ fn project(approver: u64) -> Responses {
             r#"[{{"id":41,"action_name":"pushed to","author":{by},"created_at":"2026-03-19T12:00:00.000Z","push_data":{{"action":"pushed","ref_type":"branch","ref":"main","commit_to":"af56d96fdbd7c26e9fc94336b6f50dcc6ceff484"}}}},{{"id":42,"action_name":"pushed to","author":{by},"created_at":"2026-02-10T12:00:00.000Z","push_data":{{"action":"pushed","ref_type":"branch","ref":"main","commit_to":"2adc745e20d7a07fb7f177853d3e78a95b007aef"}}}},{{"id":43,"action_name":"pushed to","author":{by},"created_at":"2026-02-11T12:00:00.000Z","push_data":{{"action":"pushed","ref_type":"branch","ref":"fix","commit_to":"3f467b9e7ed6241bf3052cdccd47f4c2aec6c924"}}}}]"#,
             by = user(2)
         ))),
+        (format!("{base}/merge_requests/2/diffs?per_page=100"), ok(r#"[{"old_path":"auth/login.rb","new_path":"auth/login.rb","diff":"@@"},{"old_path":"docs/old.md","new_path":"docs/new.md","diff":"@@"}]"#.to_owned())),
+        (format!("{base}/releases?per_page=100"), ok(r#"[{"tag_name":"v2.0.0","name":"two","released_at":"2026-03-20T10:00:00.000Z","upcoming_release":false,"author":{"id":2,"username":"user2"},"assets":{"links":[{"id":1,"name":"sbom","url":"https://example.test/sbom.json","link_type":"other"}]}}]"#.to_owned())),
         (format!("{base}/pipelines/31/jobs?per_page=100"), ok(r#"[{"id":313,"name":"deploy","status":"manual","finished_at":null},{"id":312,"name":"secret-scan","status":"failed","finished_at":"2026-03-19T09:20:00.000Z"},{"id":311,"name":"sast","status":"success","finished_at":"2026-03-19T09:25:00.000Z"}]"#.to_owned())),
         (format!("{base}/merge_requests/2/approvals"), ok(format!(
             r#"{{"approved_by":[{{"user":{},"approved_at":"2026-03-19T11:00:00.000Z"}}]}}"#, user(approver)
@@ -345,4 +347,29 @@ fn unreadable_jobs_leave_the_checks_unknown_and_the_reviews_standing() {
         .map(Outcome::label)
         .collect::<Vec<_>>();
     assert_eq!(labels, ["kept", "cannot tell"]);
+}
+
+#[test]
+fn a_merge_request_is_read_with_its_files_and_a_project_with_its_releases() {
+    let (collection, transcripts) = collect(&project(3));
+    let change = collection
+        .statement_about("gitlab:example/platform/service!2", "change")
+        .unwrap();
+    // a renamed file counts under both of its names.
+    assert_eq!(
+        change.reading.value().unwrap()["paths"],
+        serde_json::json!(["auth/login.rb", "docs/new.md", "docs/old.md"])
+    );
+    // the paths are traced to the reading they came from.
+    assert_eq!(change.transcripts.len(), 2);
+    let release = collection
+        .statement_about("gitlab:example/platform/service release v2.0.0", "release")
+        .unwrap();
+    assert_eq!(
+        release.reading.value().unwrap()["assets"],
+        serde_json::json!([{"name": "sbom", "kind": "other"}])
+    );
+    let state = tempfile::tempdir().unwrap();
+    record::store(state.path(), &collection, &transcripts).unwrap();
+    verify::verify(state.path()).unwrap();
 }

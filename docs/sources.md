@@ -10,9 +10,9 @@ the argument to `divinate collect` is the platform, a colon, and a path:
 
 | you write | divinate reads |
 |---|---|
-| `github:acme/shop` | the repository, its branches’ settings, and its issues, pull requests, and alerts |
+| `github:acme/shop` | the repository, its branches’ settings, and its issues, pull requests, releases, and alerts |
 | `github:acme` | the organisation, its repositories, and the settings of each default branch |
-| `gitlab:acme/shop` | the project, its branches’ settings, and its issues and merge requests |
+| `gitlab:acme/shop` | the project, its branches’ settings, and its issues, merge requests, and releases |
 | `gitlab:acme` | the group, the projects in it and in its subgroups, and the settings of each default branch |
 | `azure:acme/shop` | the project, its repositories and their branch policies, its work items, and its pull requests |
 | `azure:acme` | the organisation, its projects and repositories, and the policies of each default branch |
@@ -39,6 +39,8 @@ divinate uses the same words on every platform. this is what they stand for:
 | checks on a change | check runs and commit statuses | pipelines, and the jobs on the latest commit | policy evaluations |
 | branch updates | the branch’s activity | push events | pushes |
 | which change fixes a ticket | closing keyword in the description | the closing reference gitlab keeps | the pull request link on the work item |
+| changed files | the pull request’s file list | the merge request’s diffs | |
+| releases | releases and their assets | releases and their asset links | |
 | findings | code scanning, dependabot, and secret scanning alerts | | |
 
 ## github
@@ -59,7 +61,11 @@ divinate asks `gh auth token` for a token and falls back to `GITHUB_TOKEN`.
   and the commit each review looked at, so a commit that came after a review
   is never dated before it. force pushes are recorded when they happened.
 - **branch updates** go back one year at most.
-- **how long it takes.** expect about four requests per pull request in the
+- **changed files.** github lists at most 3000 files of a pull request. the
+  description of a ticket or pull request is kept as github returns it.
+- **releases.** drafts are left out. github reports a sha-256 checksum for
+  each attached file, and divinate keeps it.
+- **how long it takes.** expect about five requests per pull request in the
   period.
 
 ## gitlab
@@ -78,6 +84,9 @@ back to `GITLAB_TOKEN`.
   recorded as checks under their own names, so a rule can ask for `secret-scan` or `sast` specifically.
   a job that was skipped or is waiting for someone to start it is neither
   passed nor failed.
+- **releases.** what’s attached to a gitlab release is a list of links, so
+  divinate has their names and no checksums. a release dated in the future
+  is left out.
 - **merges.** gitlab’s push events don’t say whether a push was a merge.
   divinate counts a push as a merge when it ends on a commit of a merged merge
   request. force pushes look like ordinary pushes.

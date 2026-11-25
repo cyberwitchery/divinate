@@ -149,6 +149,7 @@ fn derive_project(about: &Transcript, transcripts: &[Transcript]) -> Result<Deri
         transcripts,
         &mut work,
     )?;
+    super::work::releases(&entity, id, transcripts, &mut work)?;
     for branch in &branches {
         super::work::updates(branch, transcripts, &mut work)?;
     }

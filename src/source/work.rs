@@ -48,6 +48,29 @@ pub(crate) struct Item {
     pub author: Option<Actor>,
     /// for a change, the branch it goes into.
     pub target: Option<Target>,
+    /// the text its author gave it, or null where the source has none.
+    pub description: Value,
+    /// for a change, the paths of the files it touches, or why they could
+    /// not be read. `None` where they are not read at all.
+    pub files: Option<std::result::Result<Vec<String>, String>>,
+    /// the reading the files came from, when there was one.
+    pub files_from: Option<String>,
+}
+
+/// a release, as its source listed it.
+pub(crate) struct Release {
+    /// the source's own id.
+    pub id: String,
+    /// how people refer to it, such as `github:owner/repository release v1.2.0`.
+    pub name: String,
+    pub tag: Value,
+    pub title: Value,
+    pub prerelease: Value,
+    pub published_at: String,
+    pub author: Option<Actor>,
+    /// what is attached to it: each with a `name`, and where the source says
+    /// so a `size` and a `digest`.
+    pub assets: Vec<Value>,
 }
 
 /// the branch a change goes into.
@@ -210,7 +233,9 @@ impl<'a> Work<'a> {
             population: None,
             reading: Reading::recorded(value)?,
             note: None,
-            transcripts: vec![listing.id.clone()],
+            transcripts: std::iter::once(listing.id.clone())
+                .chain(item.files_from)
+                .collect(),
         });
         let mut events = Vec::new();
         if let Some(opened_at) = item.opened_at.as_str() {
@@ -344,6 +369,56 @@ impl<'a> Work<'a> {
         });
     }
 
+    /// record one release: what it is, who published it, and when.
+    pub fn release(&mut self, release: Release, aspect: &str, listing: &Transcript) -> Result<()> {
+        let id = self.host.uid(kind::RELEASE, &release.id);
+        self.derived.entities.push(Entity {
+            uid: id.clone(),
+            class: Class::Product,
+            kind: kind::RELEASE.into(),
+            native_kind: kind::RELEASE.into(),
+            name: release.name,
+            parent: Some(self.scope.uid.clone()),
+            occurred_at: None,
+        });
+        self.derived.statements.push(build::state(
+            &id,
+            aspect::RELEASE,
+            Reading::recorded(json!({
+                "tag": release.tag,
+                "title": release.title,
+                "prerelease": release.prerelease,
+                "published_at": release.published_at,
+                "assets": release.assets,
+            }))?,
+            &[listing],
+        ));
+        let published = Happened::new(
+            event::PUBLISHED,
+            format!("published/{}", release.id),
+            release.published_at,
+        );
+        let published = self.event(&id, published, listing);
+        // whoever published it is named on the event alone. a release has no
+        // author for a step to set that person against.
+        if let Some(author) = &release.author {
+            self.by(&published, author, listing);
+        }
+        let mut events = build::state(
+            &id,
+            aspect::EVENTS,
+            Reading::recorded(json!({ "members": [published] }))?,
+            &[listing],
+        );
+        events.population = Some(Population {
+            of: kind::EVENT.into(),
+            interval: None,
+        });
+        self.derived.statements.push(events);
+        self.members.entry(aspect.to_owned()).or_default().push(id);
+        Ok(())
+    }
+
     /// record every update of a branch during the period of a listing, or why
     /// the updates could not be read.
     pub fn updates(
@@ -445,6 +520,16 @@ fn about(item: &Item) -> Value {
     if let Some(target) = &item.target {
         value["target_branch"] = target.branch.clone();
         value["targets_default_branch"] = target.default.into();
+    }
+    if !item.description.is_null() {
+        value["description"] = item.description.clone();
+    }
+    // paths that could not be read are null, so a reader can tell them from
+    // a change that touches nothing.
+    match &item.files {
+        None => {}
+        Some(Ok(paths)) => value["paths"] = paths.clone().into(),
+        Some(Err(_)) => value["paths"] = Value::Null,
     }
     value
 }

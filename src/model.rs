@@ -27,6 +27,8 @@ pub mod kind {
     pub const FINDING: &str = "finding";
     pub const USER: &str = "user";
     pub const EVENT: &str = "event";
+    /// a version of the software as it was given out, with what was attached to it.
+    pub const RELEASE: &str = "release";
 }
 
 /// kinds of event that mean the same in every source that has them.
@@ -60,6 +62,8 @@ pub mod event {
     pub const CHECK_PASSED: &str = "check passed";
     /// a check on a change finished and did not pass.
     pub const CHECK_FAILED: &str = "check failed";
+    /// a release was given out.
+    pub const PUBLISHED: &str = "published";
     /// a branch was updated without merging a change.
     pub const PUSH: &str = "push";
     /// a branch's history was rewritten.
@@ -93,6 +97,10 @@ pub mod aspect {
     pub const MERGED_CHANGES: &str = "merged changes";
     /// the findings opened under a scope during a period.
     pub const FINDINGS: &str = "findings";
+    /// the releases published under a scope during a period.
+    pub const RELEASES: &str = "releases";
+    /// what a release is: its tag, when it was published, and what is attached.
+    pub const RELEASE: &str = "release";
     /// every update of a branch during a period: merges and pushes.
     pub const UPDATES: &str = "updates";
     /// what a ticket is: its title, labels, and whether it is open.
@@ -105,7 +113,7 @@ pub mod aspect {
     pub const EVENTS: &str = "events";
 
     /// the order aspects are shown in under one entity.
-    pub const ORDER: [&str; 13] = [
+    pub const ORDER: [&str; 14] = [
         PROJECTS,
         PROJECT,
         REPOSITORIES,
@@ -114,6 +122,7 @@ pub mod aspect {
         CHANGES,
         MERGED_CHANGES,
         FINDINGS,
+        RELEASES,
         UPDATES,
         BRANCH_PROTECTION,
         BRANCH_RULES,

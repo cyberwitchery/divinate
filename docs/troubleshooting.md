@@ -50,6 +50,20 @@ one gets rarer the more often you collect.
   `--from`
 - with `when: merged`: nothing was merged in the period
 
+## `the pack "…" is not installed`
+
+the definition uses a check from a [pack](packs.md), and divinate can’t find
+the program. a pack called `acme` is a file named `divinate-pack-acme`. put
+its directory in `DIVINATE_PACKS`, or the file somewhere on your `PATH`, and
+make sure it’s executable. `divinate pack acme` tells you whether divinate
+finds it.
+
+## a pattern gives a yaml error
+
+a pattern that starts with `*`, such as `*.cdx.json`, has to be in quotes:
+`asset: '*.cdx.json'`. yaml reads a bare `*` at the start of a value as a
+reference to something else in the file.
+
 ## a scanner shows `no findings`
 
 look for a note under the row. `the scanner is not set up` means the scanner

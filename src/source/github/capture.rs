@@ -31,6 +31,10 @@ pub const WORK_ITEMS: &str = "github/work-items/v1";
 pub const TIMELINE: &str = "github/work-item-timeline/v1";
 /// one pull request, which names the commit it proposes.
 pub const PULL_REQUEST: &str = "github/pull-request/v1";
+/// the files one pull request touches.
+pub const FILES: &str = "github/pull-request-files/v1";
+/// every release of one repository.
+pub const RELEASES: &str = "github/releases/v1";
 /// the check runs on the commit a pull request proposes.
 pub const CHECK_RUNS: &str = "github/check-runs/v1";
 /// the commit statuses on the commit a pull request proposes.
@@ -218,6 +222,12 @@ fn one_repository(
         let head = super::work::head(&pull);
         targets.extend(super::work::base(&pull));
         transcripts.push(pull);
+        transcripts.push(reader.read(
+            FILES,
+            &about,
+            &parameters,
+            format!("{base}/pulls/{number}/files?per_page=100"),
+        )?);
         // without the commit there is nothing to read the checks of, and the
         // missing readings say so.
         let Some(head) = head else {
@@ -240,6 +250,12 @@ fn one_repository(
             governed(reader, &target, transcripts)?;
         }
     }
+    transcripts.push(reader.read(
+        RELEASES,
+        &subject,
+        &period,
+        format!("{base}/releases?per_page=100"),
+    )?);
     for (resource, path) in [
         (CODE_SCANNING, "code-scanning/alerts?state=all&per_page=100"),
         (DEPENDABOT, "dependabot/alerts?per_page=100"),

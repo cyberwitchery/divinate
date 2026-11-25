@@ -1,7 +1,9 @@
 # commands
 
-divinate has five commands. `collect` is the only one that talks to a
-platform. the other four work on what `collect` stored, so they run offline.
+divinate has six commands. `collect` is the only one that talks to a
+platform. `show`, `ledger`, `check`, and `verify` work on what `collect`
+stored, so they run offline. `pack` tells you about an installed
+[pack](packs.md).
 
 all of them use the directory `evidence/` in the current directory. pass
 `--state <path>` to use another one.
@@ -26,8 +28,8 @@ gaps, and the id of the collection:
 
 ```console
 $ divinate collect github:cyberwitchery/divinate
-collected github:cyberwitchery/divinate: 179 records, 0 gaps
-col_6005c5db32e5a3a13363
+collected github:cyberwitchery/divinate: 180 records, 0 gaps
+col_b25ba381174bcdfec8ce
 ```
 
 something divinate can’t read becomes a gap in the collection, and the command
@@ -68,6 +70,8 @@ divinate check <definition> --all [--json]
 ```
 
 checks the rules in a [process definition](processes.md) against a collection.
+`<definition>` is a yaml file, or `<pack>:<name>` for a definition that an
+installed [pack](packs.md) ships.
 
 | option | what you get |
 |---|---|
@@ -79,6 +83,15 @@ checks the rules in a [process definition](processes.md) against a collection.
 
 `check` doesn’t store anything, so you can run it as often as you like and
 with as many definitions as you like.
+
+## `divinate pack`
+
+```text
+divinate pack <name>
+```
+
+prints what an installed pack offers: its version, its checks, and the
+process definitions it ships.
 
 ## `divinate verify`
 
@@ -92,7 +105,7 @@ theirs.
 
 ```console
 $ divinate verify
-verified 1 collections and 215 transcripts
+verified 1 collections and 260 transcripts
 ```
 
 divinate stores every response it got from the platform. `verify` checks each

@@ -44,6 +44,10 @@ pub const MERGED: &str = "gitlab/merged-merge-requests/v1";
 pub const PIPELINES: &str = "gitlab/merge-request-pipelines/v1";
 /// the jobs of one pipeline that ran for a merge request.
 pub const JOBS: &str = "gitlab/pipeline-jobs/v1";
+/// the files one merge request touches.
+pub const DIFFS: &str = "gitlab/merge-request-diffs/v1";
+/// every release of one project.
+pub const RELEASES: &str = "gitlab/releases/v1";
 /// the pushes to one project between two days.
 pub const PUSHES: &str = "gitlab/push-events/v1";
 
@@ -225,7 +229,14 @@ fn project(
         "merge_requests",
         &numbers,
         transcripts,
-    )
+    )?;
+    transcripts.push(reader.read(
+        RELEASES,
+        &subject,
+        &parameters,
+        format!("{base}/releases?per_page=100"),
+    )?);
+    Ok(())
 }
 
 /// what happened to each of a project's issues or merge requests.
@@ -248,6 +259,7 @@ fn details(
         last,
     ];
     if collection != "issues" {
+        readings.push((DIFFS, "diffs?per_page=100"));
         readings.push((PIPELINES, "pipelines?per_page=100"));
     }
     for number in numbers {

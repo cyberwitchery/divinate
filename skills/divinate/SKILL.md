@@ -61,6 +61,12 @@ some more things to keep in mind:
 | were tickets with a label answered or closed in time? | steps on `kind: ticket` with `label` and `within` |
 | was the fix for a ticket reviewed? | a step with `linked: change` |
 | were scanner alerts handled in time? | steps on `kind: finding` (github only) |
+| did a named ci job (a secret scan, say) pass before the merge? | `event: check passed` with `named: [job]` and `before: merge` |
+| were changes to sensitive files approved by certain people? | `items.paths` with a pattern, and a step with `by: [account, ...]` |
+| does every pull request carry one of a set of labels? | a step with `label: [...]` |
+| does every release have an sbom or a signature attached? | steps on `kind: release` with `asset: '<pattern>'` |
+| how long does it take to close a ticket? what share was reviewed? | `measures` with `from`/`to`, or `share: <step>` |
+| is a checklist in the description filled in, or anything else that needs reading text? | a pack, if one is installed: `divinate pack <name>` |
 | what changed in the settings since last time? | `divinate ledger`, rows marked `▣` |
 
 if a part of the question isn’t in this table, tell the user that divinate
@@ -126,13 +132,22 @@ branches:
     without: [push, force push]
 ```
 
-- `items.kind` is `ticket`, `change`, or `finding`. `label` narrows it down.
-  `when` is `opened` (the default) or `merged`. `into` keeps only pull
-  requests into one branch, given by name or as `default branch`.
+- `items.kind` is `ticket`, `change`, `finding`, or `release`. `label` narrows
+  it down. `when` is `opened` (the default) or `merged`. `into` keeps only
+  pull requests into one branch, given by name or as `default branch`.
+  `paths` keeps only pull requests that touch a matching file.
 - a step needs a `name` and an `event`. the events are `comment`, `closed`,
   `reopened`, `dismissed`, `approval`, `changes requested`, `merge`, `check
   passed`, and `check failed`. a list means any one of them.
-- `by: someone else` excludes the author of the item.
+- `by: someone else` excludes the author of the item. `by: [alice, bob]`
+  asks for one of these accounts, also excluding the author.
+- `named: [build, sast]` asks for one event per name, which is how to ask
+  for ci checks by name.
+- a step with `label:` or `asset:` instead of `event:` asks for a label on
+  the item, or a file attached to a release.
+- patterns use `*` and `?`. quote a pattern that starts with `*`.
+- `uses: <pack>/<check>` hands the judging to an installed pack. only use a
+  pack the user has installed and knows about.
 - `at least: 2` asks for two events by different people, and `at least:
   required` for as many as the branch requires.
 - `after: commit` only counts events after the last commit.
@@ -152,6 +167,7 @@ divinate check definition.yaml            # every item and branch, with reasons
 divinate check definition.yaml --all      # a summary per repository
 divinate check definition.yaml --last 8   # one repository over its last collections
 divinate check definition.yaml --json     # the same results as json
+divinate check <pack>:<name>              # a definition an installed pack ships
 divinate ledger                           # settings over time
 ```
 
@@ -177,6 +193,8 @@ notes: <anything from the list below that affects this answer>
 
 things that can affect an answer:
 
+- when a pack took part, the output ends with `packs:` and their versions.
+  name them in your answer, since the pack decided those results.
 - `by: someone else` compares accounts, so a person with two accounts counts
   as two people.
 - deadlines count from when the item was opened, even if its label was added

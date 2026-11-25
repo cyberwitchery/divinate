@@ -11,6 +11,7 @@ pub mod error;
 pub mod facts;
 pub mod ledger;
 pub mod model;
+pub mod pack;
 pub mod process;
 pub mod record;
 pub mod source;

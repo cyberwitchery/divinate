@@ -24,6 +24,8 @@ on what you collected, the directory holds:
 
 - titles and descriptions of tickets and pull requests
 - comments and review threads
+- the diff of every pull request in the period, which means parts of your
+  source code
 - account names, which are email addresses on azure devops
 - repository and organisation settings as the platform returned them. these
   can include things like a billing email address
@@ -50,6 +52,18 @@ can produce one that verifies. for an audit where that matters, the simple
 answer is to give the auditor read access and let them run `divinate collect`
 themselves. it takes a few minutes, and they get a directory they made with
 their own hands.
+
+## packs
+
+a [pack](packs.md) is a program on your machine that divinate starts when a
+definition uses it. it runs with your user’s rights, like any other program
+you install, so only install packs from people you trust.
+
+divinate limits what it hands to a pack. a pack is started with an almost
+empty environment, so the tokens in `GITHUB_TOKEN` and friends aren’t passed
+on. it’s shown the items a definition picked (titles, descriptions, labels,
+events, account names) and nothing else from `evidence/`, and it can’t add to
+or change the directory through divinate.
 
 ## reporting a vulnerability
 

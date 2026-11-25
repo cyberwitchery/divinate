@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
-use super::{Report, Row, When};
+use super::{Measured, Report, Row, When};
 
 const LABELS: [&str; 5] = ["kept", "broken", "pending", "cannot tell", "n/a"];
 
@@ -15,13 +15,14 @@ pub fn render(report: &Report) -> String {
         "{} · {} · as of {}\n",
         report.process, report.scope, report.as_of
     );
-    if !report.steps.is_empty() {
+    if !report.steps.is_empty() || !report.measures.is_empty() || !report.overall.is_empty() {
         match &report.selected {
             Err(reason) => {
                 let _ = writeln!(out, "cannot tell: {reason}");
             }
             Ok(selected) => {
                 let when = match selected.when {
+                    When::Opened if selected.kind == "release" => "published",
                     When::Opened => "opened",
                     When::Merged => "merged",
                 };
@@ -37,18 +38,29 @@ pub fn render(report: &Report) -> String {
                 if let Some(into) = &selected.into {
                     let _ = write!(chosen, ", {} into {into}", report.rows.len());
                 }
+                if let Some(paths) = &selected.paths {
+                    let _ = write!(
+                        chosen,
+                        ", {} touching {}",
+                        report.rows.len(),
+                        paths.join(" or ")
+                    );
+                }
                 let _ = writeln!(
                     out,
                     "{}s{period}: {} read{chosen}",
                     selected.kind, selected.read
                 );
-                table(&mut out, "item", &report.steps, &report.rows);
+                if !report.steps.is_empty() {
+                    table(&mut out, "item", &report.steps, &report.rows);
+                }
             }
         }
     }
     if !report.rules.is_empty() {
         table(&mut out, "branch", &report.rules, &report.branches);
     }
+    together(&mut out, report);
     let mut reasons = String::new();
     for (columns, rows) in [
         (&report.steps, &report.rows),
@@ -67,10 +79,69 @@ pub fn render(report: &Report) -> String {
             }
         }
     }
+    for found in &report.overall {
+        if let Some(detail) = found.outcome.detail() {
+            let _ = writeln!(
+                reasons,
+                "  {}: {}, {detail}",
+                found.name,
+                found.outcome.label()
+            );
+        }
+    }
     if !reasons.is_empty() {
         let _ = write!(out, "\nnot kept\n{reasons}");
     }
+    if !report.references.is_empty() {
+        out.push_str("\nreferences\n");
+        let width = report.references.keys().map(String::len).max().unwrap_or(0);
+        for (name, reference) in &report.references {
+            let _ = writeln!(out, "  {name:<width$}  {reference}");
+        }
+    }
+    if !report.packs.is_empty() {
+        let _ = writeln!(out, "\npacks: {}", report.packs.join(", "));
+    }
     out
+}
+
+/// what the selected items show together: outcomes, then numbers.
+fn together(out: &mut String, report: &Report) {
+    if !report.overall.is_empty() {
+        out.push('\n');
+        let width = report
+            .overall
+            .iter()
+            .map(|found| found.name.len())
+            .max()
+            .unwrap_or(0);
+        for found in &report.overall {
+            let _ = writeln!(out, "{:<width$}  {}", found.name, found.outcome.label());
+        }
+    }
+    if !report.measures.is_empty() {
+        out.push('\n');
+        let width = report
+            .measures
+            .iter()
+            .map(|measure| measure.name.len())
+            .max()
+            .unwrap_or(0);
+        for measure in &report.measures {
+            let _ = writeln!(out, "{:<width$}  {}", measure.name, measured(measure));
+        }
+    }
+}
+
+/// a number in words: `75% (30 of 40 kept; ...)`, `2.5 days (...)`.
+fn measured(measure: &Measured) -> String {
+    let value = match (measure.value, measure.unit.as_str()) {
+        (None, _) => "nothing to count".to_owned(),
+        (Some(value), "percent") => format!("{value:.0}%"),
+        (Some(value), _) if value >= 48.0 => format!("{:.1} days", value / 24.0),
+        (Some(value), _) => format!("{value:.1} hours"),
+    };
+    format!("{value} ({})", measure.basis)
 }
 
 /// one table: a row per item or branch, a column per step or rule, and a
@@ -135,7 +206,23 @@ pub fn summary(reports: &[Report]) -> String {
     let Some(first) = reports.first() else {
         return "no collection to check\n".into();
     };
-    let columns = first.steps.iter().chain(&first.rules).collect::<Vec<_>>();
+    let names = first
+        .measures
+        .iter()
+        .map(|measure| &measure.name)
+        .collect::<Vec<_>>();
+    let overall = first
+        .overall
+        .iter()
+        .map(|found| &found.name)
+        .collect::<Vec<_>>();
+    let columns = first
+        .steps
+        .iter()
+        .chain(&first.rules)
+        .chain(overall)
+        .chain(names)
+        .collect::<Vec<_>>();
     let cells = reports
         .iter()
         .map(|report| {
@@ -149,6 +236,13 @@ pub fn summary(reports: &[Report]) -> String {
             for position in 0..report.rules.len() {
                 cells.push(counted(&report.branches, position));
             }
+            cells.extend(
+                report
+                    .overall
+                    .iter()
+                    .map(|found| found.outcome.label().to_owned()),
+            );
+            cells.extend(report.measures.iter().map(measured));
             cells
         })
         .collect::<Vec<_>>();

@@ -17,5 +17,14 @@ no verdicts.
 - `check` to read a collection against a process definition: steps on work
   items, rules on branches, summaries across collections and scopes, and json
   output
-- remove claims and their five results, the dossier, the pack protocol, the
+- read releases with their attached files, and the files each change touches,
+  on github and gitlab
+- on gitlab, record each job of a merge request's latest pipelines as a check
+  under its own name
+- process definitions: select changes by `paths`, select releases, ask for
+  checks by name with `named`, for approval by named accounts, for a label
+  or an attached file, and for numbers with `measures`
+- packs: external executables that judge items in a `check` and ship process
+  definitions, with `divinate pack` to list what one offers
+- remove claims and their five results, the dossier, the earlier pack protocol, the
   manifest import, and the release workflow

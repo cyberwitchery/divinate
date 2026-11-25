@@ -40,6 +40,7 @@ platform ──requests──▶ transcripts ──derive──▶ entities, sta
    collections are only added, never changed.
 4. the other commands only read collections. `show` and `ledger` print them,
    `check` applies rules to one, and `verify` repeats step 2 and compares.
+   `check` can hand items to a pack, which is a program outside this crate.
 
 step 2 is a pure function. it makes no requests and doesn’t look at the clock,
 so it gives the same result every time it runs on the same transcripts. this
@@ -79,10 +80,12 @@ an **entity** is a thing. there are six classes:
 | actor | someone who does things | user, bot, group |
 | work item | something that gets opened and eventually closed | ticket, change, finding |
 | event | something that happened at a point in time | comment, approval, merge, push, check passed |
-| product | something the process puts out | a release |
-| rule | a requirement that has an identity of its own on the platform | a ruleset |
+| product | something the process puts out | release |
+| rule | a requirement that has an identity of its own on the platform | |
 
-the three platforms in core fill the first four classes.
+the platforms in core fill the first five classes. `rule` is there for
+sources that give a requirement its own id. on the three platforms a
+requirement is recorded as the state of its branch.
 
 an entity’s id is made of the host, its kind, and the id the platform itself
 uses, so it survives a rename. it has a kind in divinate’s words (`change`)
@@ -165,6 +168,32 @@ events a step asks for aren’t there, it matters whether the collection could
 have contained them: if a gap or a note says it couldn’t, the answer is
 `cannot tell`, and `broken` is kept for the cases where the collection is
 complete for that question.
+
+## packs
+
+a pack is an executable named `divinate-pack-<name>` that `check` can call.
+it gets one json request on standard input and answers with one json
+document. [docs/packs.md](docs/packs.md) describes the protocol, and the code
+is in `src/pack.rs`.
+
+packs exist because a rule language that could express everything would be a
+programming language. the definition format stays small, and anything that
+needs real logic (parsing a description, a calculation over many items) goes
+into a pack, in whatever language its author likes.
+
+a few choices keep packs from weakening the rest:
+
+- a pack only takes part in `check`. it never adds to a collection, so
+  `verify` doesn’t depend on any pack, and a collection means the same with
+  or without packs installed.
+- a pack is shown derived items, never transcripts. it works on the same
+  model on every platform.
+- a pack is started with an almost empty environment, so it doesn’t get the
+  tokens.
+- a report names the packs that took part and their versions.
+
+a pack can also ship process definitions, which is how a set of rules for a
+framework or a company policy can be handed around as one thing.
 
 ## verifying
 

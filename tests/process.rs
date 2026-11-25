@@ -73,6 +73,16 @@ fn checked(
             format!(r#"{{"number":{number},"head":{{"sha":"{sha}"}},"base":{{"ref":"{base}"}}}}"#),
         ),
     );
+    // change 2 touches the sign-in code, every other change the readme alone.
+    let files = if number == 2 {
+        r#"[{"filename":"src/auth/login.rs"},{"filename":"README.md","previous_filename":"readme.txt"}]"#
+    } else {
+        r#"[{"filename":"README.md"}]"#
+    };
+    responses.insert(
+        format!("{API}/pulls/{number}/files?per_page=100"),
+        (200, files.to_owned()),
+    );
     responses.insert(
         format!("{API}/commits/{sha}/check-runs?filter=all&per_page=100"),
         (200, format!(
@@ -202,6 +212,38 @@ fn repository(approver: u64) -> BTreeMap<String, (u16, String)> {
 
 /// what github says happened to the default branch, and what its scanners found.
 fn updated_and_scanned(responses: &mut BTreeMap<String, (u16, String)>) {
+    // one release in the period with a bill of materials, one draft, and one
+    // published before the period.
+    let release = |id: u64, tag: &str, draft: bool, at: &str, assets: &str| {
+        format!(
+            r#"{{"id":{id},"tag_name":"{tag}","name":"{tag}","draft":{draft},"prerelease":false,"published_at":"{at}","author":{},"assets":[{assets}]}}"#,
+            user(2)
+        )
+    };
+    responses.insert(
+        format!("{API}/releases?per_page=100"),
+        (
+            200,
+            format!(
+                "[{},{},{}]",
+                release(
+                    93,
+                    "v1.3.0",
+                    true,
+                    "2026-03-21T10:00:00Z",
+                    ""
+                ),
+                release(
+                    92,
+                    "v1.2.0",
+                    false,
+                    "2026-03-20T10:00:00Z",
+                    r#"{"name":"service.cdx.json","size":2048,"digest":"sha256:aa"},{"name":"service.tar.gz","size":4096,"digest":null}"#
+                ),
+                release(91, "v1.1.0", false, "2025-11-01T10:00:00Z", ""),
+            ),
+        ),
+    );
     let update = |id: u64, kind: &str, at: &str| {
         format!(
             r#"{{"id":{id},"ref":"refs/heads/main","timestamp":"{at}","activity_type":"{kind}","actor":{}}}"#,
@@ -824,4 +866,448 @@ fn a_commit_listed_after_a_reviewed_one_was_added_after_that_review() {
         .replace("    before: merge", "    after: commit\n    before: merge");
     let report = checked_with(&text, &collect(&responses).0);
     assert_eq!(report.rows[0].outcomes[0].label(), "broken");
+}
+
+const ALL_MERGED: &str = r"
+process: merged changes
+items:
+  kind: change
+  when: merged
+";
+
+#[test]
+fn changes_are_selected_by_the_files_they_touch() {
+    let definition = format!("{ALL_MERGED}  paths: src/auth/**\nsteps:\n  - name: reviewed\n    event: approval\n    by: someone else\n    before: merge\n");
+    let mut responses = repository(3);
+    let (collection, _) = collect(&responses);
+    let report = checked_with(&definition, &collection);
+    // change 8 touches the readme alone.
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(report.rows[0].item, "github:example/service#2");
+    assert_eq!(labels(&report.rows[0]), ["kept"]);
+    assert!(process::render(&report).contains("1 touching src/auth/**"));
+    // a renamed file counts under the name it had.
+    let renamed = definition.replace("src/auth/**", "'*.txt'");
+    assert_eq!(checked_with(&renamed, &collection).rows.len(), 1);
+
+    // a change whose files could not be read stays in, and nothing is said of it.
+    responses.insert(
+        format!("{API}/pulls/2/files?per_page=100"),
+        (403, r#"{"message":"Resource not accessible"}"#.to_owned()),
+    );
+    let (collection, _) = collect(&responses);
+    let report = checked_with(&definition, &collection);
+    assert_eq!(report.rows.len(), 1);
+    assert_eq!(labels(&report.rows[0]), ["cannot tell"]);
+}
+
+#[test]
+fn a_step_can_ask_for_checks_by_name() {
+    let (collection, _) = collect(&repository(3));
+    let step = |names: &str| {
+        format!("{ALL_MERGED}steps:\n  - name: scanned\n    event: check passed\n    named: {names}\n    before: merge\n")
+    };
+    let report = checked_with(&step("build"), &collection);
+    let found = report
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.item.rsplit('#').next().unwrap(),
+                row.outcomes[0].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(found["2"], Outcome::Kept);
+    // the check on change 8 passed only after the merge.
+    assert_eq!(
+        found["8"],
+        Outcome::Broken("merge without check passed named build before it".into())
+    );
+    // every name must have its own check. `docs` was skipped.
+    let report = checked_with(&step("[build, docs]"), &collection);
+    assert!(report
+        .rows
+        .iter()
+        .all(|row| row.outcomes[0].label() == "broken"));
+    assert_eq!(
+        labels(&checked_with(&step("'b*'"), &collection).rows[0]),
+        ["broken"]
+    );
+}
+
+#[test]
+fn a_step_can_ask_for_named_accounts() {
+    let (collection, _) = collect(&repository(3));
+    let step = |accounts: &str| {
+        format!("{ALL_MERGED}  paths: src/**\nsteps:\n  - name: signed off\n    event: approval\n    by: [{accounts}]\n    before: merge\n")
+    };
+    assert_eq!(
+        labels(&checked_with(&step("user9, User3"), &collection).rows[0]),
+        ["kept"]
+    );
+    let report = checked_with(&step("user9"), &collection);
+    assert_eq!(
+        report.rows[0].outcomes[0],
+        Outcome::Broken("merge without approval by user9 before it".into())
+    );
+    // the author's own approval does not count, even when the author is named.
+    let (collection, _) = collect(&repository(2));
+    assert_eq!(
+        labels(&checked_with(&step("user2"), &collection).rows[0]),
+        ["broken"]
+    );
+}
+
+#[test]
+fn a_step_can_ask_for_a_label() {
+    let (collection, _) = collect(&repository(3));
+    let definition = "process: classified\nitems:\n  kind: ticket\nsteps:\n  - name: classified\n    label: ['sec*', bug]\n";
+    let report = checked_with(definition, &collection);
+    let found = report
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.item.rsplit('#').next().unwrap(),
+                row.outcomes[0].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(found["1"], Outcome::Kept);
+    // ticket 6 is labelled `question` and still open.
+    assert_eq!(
+        found["6"],
+        Outcome::Pending("no label sec* or bug yet".into())
+    );
+}
+
+#[test]
+fn releases_are_read_with_what_is_attached_to_them() {
+    let (collection, _) = collect(&repository(3));
+    let releases = collection
+        .statement_about("github:example/service", "releases")
+        .unwrap();
+    // the draft and the release published before the period are left out.
+    assert_eq!(
+        releases.reading.value().unwrap()["members"],
+        serde_json::json!(["github.com/release/92"])
+    );
+    let step = |pattern: &str| {
+        format!("process: releases\nitems:\n  kind: release\nsteps:\n  - name: has a bill of materials\n    asset: '{pattern}'\n  - name: published by a maintainer\n    event: published\n    by: [user2]\n")
+    };
+    let report = checked_with(&step("*.cdx.json"), &collection);
+    assert_eq!(report.rows[0].item, "github:example/service release v1.2.0");
+    assert_eq!(labels(&report.rows[0]), ["kept", "kept"]);
+    assert!(process::render(&report).contains("releases published 2026-01-01T00:00:00Z"));
+    let report = checked_with(&step("*.sig"), &collection);
+    assert_eq!(
+        report.rows[0].outcomes[0],
+        Outcome::Broken("no attached file *.sig".into())
+    );
+}
+
+#[test]
+fn a_process_can_ask_for_numbers() {
+    let (collection, _) = collect(&repository(3));
+    let definition = format!("{DEFINITION}measures:\n  - name: answered in time\n    share: answered\n  - name: time to close\n    from: opened\n    to: closed\n");
+    let report = checked_with(&definition, &collection);
+    // of the four tickets one was answered in time and one was not. the
+    // other two are pending or unknown.
+    assert_eq!(report.measures[0].value, Some(50.0));
+    assert_eq!(
+        report.measures[0].basis,
+        "1 of 2 kept; 2 pending, unknown, or not applicable left out"
+    );
+    // ticket 1 was closed nineteen days and seven hours after it was opened.
+    assert_eq!(report.measures[1].value, Some(463.0));
+    let rendered = process::render(&report);
+    assert!(rendered.contains("answered in time  50% (1 of 2 kept"));
+    assert!(rendered
+        .contains("time to close     19.3 days (median from opened to closed over 1 of 4 items)"));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["measures"][1]["unit"], "hours");
+}
+
+#[test]
+fn the_new_keys_are_refused_where_they_cannot_be_checked() {
+    let refused = |text: &str, why: &str| {
+        let error = definition(text).unwrap_err().to_string();
+        assert!(error.contains(why), "{error}");
+    };
+    refused(
+        &format!("{ALL_MERGED}steps:\n  - name: s\n    label: a\n    event: approval\n"),
+        "exactly one of",
+    );
+    refused(
+        &format!("{ALL_MERGED}steps:\n  - name: s\n    label: a\n    within: 7d\n"),
+        "stand alone",
+    );
+    refused(
+        &format!(
+            "{ALL_MERGED}steps:\n  - name: s\n    event: check passed\n    named: a\n    at least: 2\n"
+        ),
+        "`named` cannot be used",
+    );
+    refused(
+        &format!("{ALL_MERGED}measures:\n  - name: m\n    share: nothing\n"),
+        "no step named",
+    );
+    refused(
+        &format!("{ALL_MERGED}measures:\n  - name: m\n    from: opened\n"),
+        "use `share`",
+    );
+}
+
+/// a pack that runs in the test: it answers from what it is shown.
+struct Sample;
+
+impl divinate::pack::Packs for Sample {
+    fn call(&self, pack: &str, request: &serde_json::Value) -> Result<serde_json::Value> {
+        use serde_json::json;
+        assert_eq!(pack, "sample");
+        assert_eq!(request["protocol"], 1);
+        if request["request"] == "describe" {
+            return Ok(json!({
+                "protocol": 1,
+                "name": "sample",
+                "version": "1.2.3",
+                "checks": [
+                    {"name": "names a ticket", "answers": "each_item"},
+                    {"name": "enough work", "answers": "all_items"},
+                    {"name": "comments", "answers": "number"},
+                ],
+            }));
+        }
+        let items = request["items"].as_array().unwrap();
+        Ok(match request["check"].as_str().unwrap() {
+            "names a ticket" => json!({
+                "results": items.iter().map(|item| {
+                    let description = item["state"]["description"].as_str().unwrap_or_default();
+                    if description.contains(request["with"]["word"].as_str().unwrap()) {
+                        json!({"item": item["id"], "outcome": "kept"})
+                    } else {
+                        json!({"item": item["id"], "outcome": "broken", "reason": "its description names no ticket"})
+                    }
+                }).collect::<Vec<_>>(),
+            }),
+            "enough work" => json!({
+                "outcome": "broken",
+                "reason": format!("{} items in {}", items.len(), request["collection"]["scope"].as_str().unwrap()),
+            }),
+            _ => json!({
+                "value": items.iter().map(|item| {
+                    // an item whose events could not be read has none to show.
+                    item["events"].as_array().into_iter().flatten().filter(|event| event["kind"] == "comment").count()
+                }).sum::<usize>(),
+                "unit": "comments",
+                "basis": "all of them",
+            }),
+        })
+    }
+}
+
+fn judged(text: &str, collection: &Collection) -> Result<process::Report> {
+    process::check_with(&definition(text)?, collection, &[], &Sample)
+}
+
+#[test]
+fn a_pack_judges_each_item_all_items_together_and_numbers() {
+    let (collection, _) = collect(&repository(3));
+    let text = format!("{ALL_MERGED}steps:\n  - name: traced\n    ref: policy 4.2\n    uses: sample/names a ticket\n    with:\n      word: Fixes\noverall:\n  - name: busy enough\n    uses: sample/enough work\n");
+    let report = judged(&text, &collection).unwrap();
+    let found = report
+        .rows
+        .iter()
+        .map(|row| {
+            (
+                row.item.rsplit('#').next().unwrap(),
+                row.outcomes[0].clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(found["2"], Outcome::Kept);
+    assert_eq!(
+        found["8"],
+        Outcome::Broken("its description names no ticket".into())
+    );
+    assert_eq!(
+        report.overall[0].outcome,
+        Outcome::Broken("2 items in github:example/service".into())
+    );
+    assert_eq!(report.packs, ["sample 1.2.3"]);
+    let rendered = process::render(&report);
+    assert!(rendered.contains("busy enough  broken"));
+    assert!(rendered.contains("references\n  traced  policy 4.2"));
+    assert!(rendered.contains("packs: sample 1.2.3"));
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["overall"][0]["outcome"], "broken");
+
+    // a pack is shown the tickets with what happened to them, and with a
+    // linked step the changes that close them.
+    let tickets = format!("{DEFINITION}  - name: fix traced\n    linked: change\n    uses: sample/names a ticket\n    with:\n      word: Fixes\nmeasures:\n  - name: discussion\n    uses: sample/comments\n");
+    let report = judged(&tickets, &collection).unwrap();
+    assert_eq!(report.rows[0].outcomes[3], Outcome::Kept);
+    assert_eq!(report.rows[1].outcomes[3].label(), "n/a");
+    // ticket 4 could not be read, and has no events to count.
+    assert_eq!(report.measures[0].value, Some(2.0));
+    assert_eq!(report.measures[0].unit, "comments");
+}
+
+#[test]
+fn a_pack_is_asked_only_for_what_it_offers() {
+    let (collection, _) = collect(&repository(3));
+    let refused = |text: &str, why: &str| {
+        let error = judged(text, &collection).unwrap_err().to_string();
+        assert!(error.contains(why), "{error}");
+    };
+    refused(
+        &format!("{ALL_MERGED}steps:\n  - name: s\n    uses: sample/nothing\n"),
+        "has no check \"nothing\"",
+    );
+    refused(
+        &format!("{ALL_MERGED}steps:\n  - name: s\n    uses: sample/enough work\n"),
+        "belongs in `overall`, not in a step",
+    );
+    // without packs, a definition that uses one cannot be checked.
+    let text = format!("{ALL_MERGED}steps:\n  - name: s\n    uses: sample/names a ticket\n");
+    let error = process::check(&definition(&text).unwrap(), &collection, &[]).unwrap_err();
+    assert!(error.to_string().contains("no packs are available"));
+    assert!(definition(&format!(
+        "{ALL_MERGED}steps:\n  - name: s\n    uses: sample/x\n    event: merge\n"
+    ))
+    .is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_installed_pack_is_an_executable_that_is_not_shown_the_credentials() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("divinate-pack-sample");
+    fs::write(
+        &path,
+        r#"#!/bin/sh
+request=$(cat)
+case "$request" in
+  *'"request":"describe"'*)
+    printf '%s\n' '{"protocol":1,"name":"sample","version":"0.1.0","checks":[{"name":"clean","answers":"all_items"}],"processes":[{"name":"merged","definition":"process: merged\nitems:\n  kind: change\n  when: merged\noverall:\n  - name: clean\n    uses: sample/clean\n"}]}' ;;
+  *)
+    if [ -n "$DIVINATE_TEST_SECRET" ]; then
+      echo '{"outcome":"broken","reason":"the environment was passed on"}'
+    else
+      echo '{"outcome":"kept"}'
+    fi ;;
+esac
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    std::env::set_var("DIVINATE_TEST_SECRET", "secret");
+    let packs = divinate::pack::Installed::at(vec![directory.path().to_owned()]);
+    let found = divinate::pack::describe(&packs, "sample").unwrap();
+    assert_eq!(found.version, "0.1.0");
+    let shipped = process::parse(&found.processes[0].definition, &path).unwrap();
+    let (collection, _) = collect(&repository(3));
+    let report = process::check_with(&shipped, &collection, &[], &packs).unwrap();
+    assert_eq!(report.overall[0].outcome, Outcome::Kept);
+
+    let missing = divinate::pack::describe(&packs, "other").unwrap_err();
+    assert!(missing.to_string().contains("is not installed"));
+    assert!(divinate::pack::describe(&packs, "../sample").is_err());
+}
+
+/// run the divinate binary on a state directory and return what it printed.
+fn divinate(state: &std::path::Path, arguments: &[&str]) -> (bool, String) {
+    let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/examples");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_divinate"));
+    command.args(arguments).env("DIVINATE_PACKS", examples);
+    // `pack` reads no record.
+    if arguments[0] != "pack" {
+        command.arg("--state").arg(state);
+    }
+    let output = command.output().unwrap();
+    let mut printed = String::from_utf8(output.stdout).unwrap();
+    printed.push_str(&String::from_utf8(output.stderr).unwrap());
+    (output.status.success(), printed)
+}
+
+#[test]
+fn the_commands_read_a_stored_record() {
+    let (collection, transcripts) = collect(&repository(3));
+    let directory = tempfile::tempdir().unwrap();
+    let state = directory.path().join("evidence");
+    record::store(&state, &collection, &transcripts).unwrap();
+    let file = directory.path().join("security-tickets.yaml");
+    fs::write(&file, DEFINITION).unwrap();
+    let file = file.to_str().unwrap();
+
+    let (ok, shown) = divinate(&state, &["show"]);
+    assert!(ok, "{shown}");
+    assert!(shown.contains("■ releases                1 release"));
+    assert!(divinate(&state, &["show", &collection.id]).0);
+    let (ok, shown) = divinate(&state, &["show", "col_none"]);
+    assert!(!ok && shown.contains("error: no collection col_none"));
+    let (ok, ledger) = divinate(&state, &["ledger"]);
+    assert!(ok && ledger.contains("review policy"), "{ledger}");
+
+    let (ok, checked) = divinate(&state, &["check", file]);
+    assert!(ok, "{checked}");
+    assert!(checked.contains("answered      1 kept, 1 broken, 1 pending, 1 cannot tell"));
+    let (_, summary) = divinate(&state, &["check", file, "--all"]);
+    assert!(summary.contains("github:example/service · as of 2026-03-27T00:00:00Z"));
+    let (_, summary) = divinate(&state, &["check", file, "--last", "3"]);
+    assert!(summary.contains("fix reviewed  1 kept, 3 n/a"));
+    let (_, json) = divinate(&state, &["check", file, "--json"]);
+    let json: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(json["rows"][0]["outcomes"][0]["outcome"], "kept");
+    let (ok, missing) = divinate(&state, &["check", "nothing.yaml"]);
+    assert!(!ok && missing.contains("nothing.yaml"));
+
+    let (ok, verified) = divinate(&state, &["verify"]);
+    assert!(
+        ok && verified.starts_with("verified 1 collections and"),
+        "{verified}"
+    );
+}
+
+/// the example pack is a python script. where there is no python, there is
+/// nothing to run.
+#[cfg(unix)]
+#[test]
+fn the_example_pack_checks_the_checklist_in_a_description() {
+    if std::process::Command::new("python3")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return;
+    }
+    let mut responses = repository(3);
+    let listing = responses
+        .keys()
+        .find(|url| url.contains("/issues?"))
+        .unwrap()
+        .clone();
+    let (status, body) = responses[&listing].clone();
+    // change 2 gets a checklist with one box left open.
+    let body = body.replace("Fixes #1", r"Fixes #1\n\n- [x] tests\n- [ ] docs");
+    responses.insert(listing, (status, body));
+    let (collection, transcripts) = collect(&responses);
+    let directory = tempfile::tempdir().unwrap();
+    record::store(directory.path(), &collection, &transcripts).unwrap();
+
+    let (ok, offered) = divinate(directory.path(), &["pack", "checklist"]);
+    assert!(ok, "{offered}");
+    assert!(offered.contains("checklist/completed  for a step. every box is checked"));
+    assert!(offered.contains("checklist:merged  merged changes have a completed checklist"));
+    let (ok, checked) = divinate(directory.path(), &["check", "checklist:merged"]);
+    assert!(ok, "{checked}");
+    assert!(checked.contains("checklist completed: broken, 1 of 2 boxes are not checked"));
+    assert!(checked.contains("checklist completed: broken, the description has no checklist"));
+    assert!(checked.contains("completed share  0% (0 of 2 items)"));
+    assert!(checked.contains("packs: checklist 0.1.0"));
+    let (ok, missing) = divinate(directory.path(), &["check", "checklist:nothing"]);
+    assert!(!ok && missing.contains("ships no process definition \"nothing\"; it has: merged"));
 }
