@@ -302,8 +302,11 @@ fn definitions_from(argument: &str, packs: &Configured) -> Result<Vec<process::P
     };
     let found = pack::describe(packs, pack)?;
     // a definition a pack ships can map to the frameworks the pack declares.
-    let parsed =
-        |process: &pack::Shipped| process::parse_with(&process.definition, path, &found.frameworks);
+    let parsed = |process: &pack::Shipped| {
+        let mut parsed = process::parse_with(&process.definition, path, &found.frameworks)?;
+        parsed.shipped_by = Some(format!("{} {}", found.name, found.version));
+        Ok(parsed)
+    };
     if name.is_empty() {
         return found.processes.iter().map(parsed).collect();
     }

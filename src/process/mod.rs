@@ -47,6 +47,9 @@ pub struct Process {
     #[serde(default)]
     /// the frameworks the rules of this process map to, by a short name.
     pub frameworks: Frameworks,
+    #[serde(skip)]
+    /// the pack that ships this definition, as `<name> <version>`, when one does.
+    pub shipped_by: Option<String>,
 }
 
 /// frameworks by the short name mappings use for them.
