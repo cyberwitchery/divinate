@@ -174,6 +174,9 @@ a scheduled job that runs `divinate collect` once a day or once a week is the
 easiest way to build up this history. in other words: your ci can check your
 ci.
 
+[collecting on a schedule](schedule.md) has such a job for github actions and
+gitlab ci, and says where to keep `evidence/` between runs.
+
 ## hand it over
 
 the `evidence/` directory is the whole thing! you can copy it, archive it, or

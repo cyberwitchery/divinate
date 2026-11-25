@@ -41,10 +41,10 @@ azure devops projects are `azure:acme/shop`. if you leave out the repository,
 divinate goes through the whole organisation and reads the branch settings of
 every repository in it.
 
-every run is added to the directory, so running `collect` on a schedule gives
-you a history. `divinate show` prints what the latest run found, and
-`divinate ledger` puts the runs side by side and marks what changed between
-them.
+every run is added to the directory, so running `collect` on a
+[schedule](docs/schedule.md) gives you a history. `divinate show` prints what
+the latest run found, and `divinate ledger` puts the runs side by side and
+marks what changed between them.
 
 our case study from above would get this workflow definition:
 
@@ -104,6 +104,7 @@ checks on the same data.
 - [commands](docs/commands.md)
 - [state and formats](docs/state.md)
 - [security](docs/security.md)
+- [collecting on a schedule](docs/schedule.md)
 - [troubleshooting](docs/troubleshooting.md)
 
 there is also an [agent skill](skills/divinate/SKILL.md) for collecting and

@@ -1,0 +1,35 @@
+# collect a project on a schedule and keep the record in git.
+#
+# this goes into a private project that holds nothing but the record, as
+# .gitlab-ci.yml, with a pipeline schedule for its default branch.
+# docs/schedule.md says why, and who should be able to read that project.
+#
+# set SCOPE to the project you collect, and add two masked ci/cd variables to
+# the record's project: GITLAB_TOKEN, a token that can read SCOPE, and
+# RECORD_PUSH_TOKEN, a project access token of the record's project with
+# write_repository, which the job pushes with.
+#
+# there is no release of divinate yet, so the job builds it from a fixed
+# commit. change `--rev` to a newer commit to update it.
+
+collect:
+  image: rust:1
+  # one job at a time, so two runs never write to the record at once.
+  resource_group: divinate
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web"
+  variables:
+    SCOPE: gitlab:acme/shop
+    # the job clones the record itself once it's its turn, so a job that
+    # waited for the one before it still starts from the latest commit.
+    GIT_STRATEGY: none
+  script:
+    - cargo install --locked --git https://github.com/cyberwitchery/divinate --rev fea1623743356ef118bd0eeaf79d16acbc814c82 divinate
+    - rm -rf record
+    - git clone --depth 1 --branch "$CI_COMMIT_BRANCH" "https://oauth2:${RECORD_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" record
+    - cd record
+    - divinate collect "$SCOPE"
+    - divinate verify
+    - git add evidence
+    - git -c user.name="$GITLAB_USER_NAME" -c user.email="$GITLAB_USER_EMAIL" commit --quiet --message "collect $SCOPE"
+    - git push origin "HEAD:$CI_COMMIT_BRANCH"

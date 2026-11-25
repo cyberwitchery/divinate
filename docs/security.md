@@ -37,6 +37,8 @@ so treat the directory like the repository it came from. the people who may
 see the repository’s issues and security alerts are the people who should see
 `evidence/`. have a look through it before you commit it somewhere or send it
 to someone.
+[collecting on a schedule](schedule.md#where-to-keep-evidence) suggests where
+to keep it between runs.
 
 ## what a verified directory tells you
 
