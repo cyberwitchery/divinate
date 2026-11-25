@@ -241,6 +241,101 @@ access. offline verification binds the normalized source to its canonical
 transcript bytes. adjacent complete windows compose; an uncovered interval does
 not disappear merely because later evidence exists.
 
+### what core's evaluators read
+
+a `normalize` result is `claim_key`, `kind`, `evidence_class`, `data`, and
+optional `severity` and `status`. core binds it to the collection plan's
+`subject` and `observed_at`. the response schema leaves `data` untyped. core's
+own evaluators read the `data` fields below and ignore the rest. only
+`pull_request`, `submitted_at`, and `enumeration_complete` may be missing; any
+other missing or mistyped field in a selected observation fails the evaluation.
+
+`every_main_change_reviewed` joins two kinds, selected by `kind`, subject, and
+collection run, not by `claim_key`. the GitHub and Azure DevOps packs'
+`repository-mutations` and `pull-request-reviews` normalizers emit them.
+
+| `kind` | subject | `data` |
+| --- | --- | --- |
+| `mutation_history` | `id` is the repository, `branch` the branch | `events[]`: `event_id`, `kind`, `occurred_at`, `commit`, `pull_request` (number or null) |
+| `review_record` | `id` or `repository` is the repository, `branch` absent or the branch | `pull_requests[]`: `number`, `author`, `merge_commit_sha`, `merged_at`, `approvals[]` (`actor`, `submitted_at`, `state`), `enumeration_complete` |
+
+core reads them only from runs with `repository_mutations` or
+`pull_request_reviews` authority, partial and interrupted runs included; denied,
+failed, unattempted, and out-of-scope runs are ignored. it keeps events with
+`from <= occurred_at < until`. events that share an `event_id` must be
+identical, or they leave a gap.
+
+- event `kind` `direct_push` contradicts. `pull_request_merge` joins the review
+  records whose `number` is `pull_request`. a null `pull_request`, a PR without a
+  record, or any other `kind` leaves a gap. both packs emit `direct_push` only
+  for an integration they established as direct, and an undecided one as
+  `pull_request_merge` with a null `pull_request`.
+- the record's `merge_commit_sha` must equal the event's `commit`, and its
+  `merged_at` must fall in the interval, or the event leaves a gap.
+- an approval qualifies when `state` is `approved`, `actor` is not `author`, and
+  `submitted_at` is before the event's `occurred_at`. one qualifying approval
+  supports the event.
+- otherwise, a state other than `approved`, `changes_requested`, `commented`, or
+  `rejected`, or an `approved` whose `submitted_at` is missing, invalid, or equal
+  to `occurred_at`, leaves it unresolved.
+- otherwise, `enumeration_complete: true` contradicts. both packs set `false`
+  unless they saw the last page of the PR's reviews or vote threads. such a
+  record is set aside for a complete record of the same PR, or else leaves it
+  unresolved. a missing `enumeration_complete` counts as `true`.
+- records of one PR that reach different verdicts leave a gap.
+
+[`fixtures/github-repository-mutations-direct-push.json`](../fixtures/github-repository-mutations-direct-push.json)
+is a `mutation_history` `data` value with one merge and one direct push:
+
+```json
+{"branch":"main","events":[
+  {"event_id":"audit-401","kind":"pull_request_merge","occurred_at":"2026-09-02T12:00:00Z","commit":"1111111111111111111111111111111111111111","pull_request":101},
+  {"event_id":"audit-403","kind":"direct_push","occurred_at":"2026-09-03T14:00:00Z","commit":"cccccccccccccccccccccccccccccccccccccccc"}
+]}
+```
+
+core evaluates `configured_independent_review` for `github:` repositories only.
+it reads the latest `configuration_snapshot` with `evidence_class`
+`configured_intent`, claim key `github:branch-protection` (the GitHub pack's)
+or `github:branch-protection:<branch>`, subject `id` the repository and `branch`
+the branch, from a run with `branch_configuration` authority.
+`data.required_approving_review_count` of 1 or more supports, 0 contradicts.
+`fresh_until` is seven days after the snapshot's `observed_at`, and a supporting
+snapshot older than that is `stale`.
+
+for Azure DevOps, the pack's `approving-review` evaluator returns the same
+assertion type: supported when the latest complete `azure-devops:branch-policy`
+snapshot has an enabled, blocking minimum-reviewers policy with
+`minimum_approver_count` above zero. the two differ on freshness: the pack sets
+`fresh_until: null` and never returns `stale`, while core applies the seven-day
+window.
+
+release-scoped evaluators match an observation to the release by its subject's
+`repository` and `release` qualifiers:
+
+- `release_review_operation` reads the latest `release_membership`
+  (`published_at`, `pull_requests` as numbers, `target_revision`) and the latest
+  `observed_operation` `review_record` whose `revision` qualifier is that
+  `target_revision` (`pull_requests[]` as above, counting `approved` entries by
+  someone other than the author submitted at or before `merged_at`). the
+  required count at each merge comes from the latest `configured_intent`
+  `configuration_history` for the repository and branch with
+  `branch_configuration` authority: `complete_from`, `complete_through`, and
+  `events[]` with `event_id`, `effective_at`, and
+  `required_approving_review_count`. the latest event effective at the merge
+  sets the count, and a merge outside `complete_from` to `complete_through`
+  leaves a gap.
+- `release_supply_chain_policy` reads the latest `change_set` and each
+  observation with claim key `supply-chain-gate:supply-chain/default`. a gate
+  applies when its `base_revision` and `revision` qualifiers and its
+  `data.base_revision` and `data.target_revision` equal the change set's
+  `base_revision` and `revision` qualifiers, and its
+  `data.evaluated_sbom_diff_sha256` equals the change set's source digest. the
+  latest failing gate wins, else the latest. `status` `pass` supports; any other
+  status contradicts.
+- `dependency_change_visibility` needs a `change_set` and reads no `data`.
+  `adequate_human_security_review` reads none and is always `not_automatable`.
+
 ## execution and retained configuration
 
 pack processes receive the request document, an empty environment, and a
