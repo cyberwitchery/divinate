@@ -92,6 +92,27 @@ written by another version of divinate, and its files are intact.
 ## a tls error such as `UnknownIssuer`
 
 something on your network (often a company proxy) opens tls connections and
-re-signs them with its own certificate. divinate only trusts the public
-certificate authorities it ships with, so it won’t connect through that. run
-`collect` from a network that reaches the platform directly.
+re-signs them with its own certificate, which isn’t from one of the public
+certificate authorities divinate ships with.
+
+if you trust the proxy, save its certificate in a pem file, point
+`SSL_CERT_FILE` at it, and collect again:
+
+```sh
+SSL_CERT_FILE=/path/to/proxy.pem divinate collect github:acme/shop
+```
+
+the certificates in that file replace the ones divinate ships with. a file
+with only the proxy’s certificate works behind the proxy and nowhere else. if
+you also collect from other networks, use a bundle with the public authorities
+and the proxy’s certificate, such as `/etc/ssl/certs/ca-certificates.crt` on
+debian and ubuntu, which includes the certificates added with
+`update-ca-certificates`.
+
+when the file can’t be read, isn’t valid pem, or holds no certificate,
+`collect` says so and stops before it sends a request. a [pack](packs.md)
+that reads a system makes its own requests and isn’t affected. it only sees
+`SSL_CERT_FILE` when its entry lists it under `inherit`.
+
+if you can’t get the proxy’s certificate, run `collect` from a network that
+reaches the platform directly.

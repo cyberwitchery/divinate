@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::error::{Error, Result};
 use crate::parse_time;
 use crate::source::reading::{self, failure, linked_page, percent_encode, Api, Reader};
-use crate::source::{Clock, Fetch, Period};
+use crate::source::{Clock, Fetch, Period, Roots};
 use crate::transcript::{Termination, Transcript};
 
 const ORIGIN: &str = "https://api.github.com";
@@ -295,7 +295,7 @@ pub fn token() -> Result<String> {
 }
 
 /// a fetch function that reads the github api with a credential.
-pub fn client(token: &str) -> Box<Fetch<'static>> {
+pub fn client(token: &str, roots: &Roots) -> Box<Fetch<'static>> {
     reading::client(
         ORIGIN,
         Some(format!("Bearer {token}")),
@@ -320,6 +320,7 @@ pub fn client(token: &str) -> Box<Fetch<'static>> {
             "x-ratelimit-resource",
             "x-ratelimit-used",
         ],
+        roots,
     )
 }
 

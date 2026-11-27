@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 use crate::source::reading::{self, diagnostic, failure, percent_encode, Api, Reader};
-use crate::source::{Clock, Fetch, Period};
+use crate::source::{Clock, Fetch, Period, Roots};
 use crate::transcript::{HttpExchange, Termination, Transcript};
 
 const ORIGIN: &str = "https://dev.azure.com";
@@ -427,7 +427,7 @@ pub fn token() -> Result<String> {
 }
 
 /// a fetch function that reads azure devops with what [`token`] found.
-pub fn client(token: &str) -> Box<Fetch<'static>> {
+pub fn client(token: &str, roots: &Roots) -> Box<Fetch<'static>> {
     let (authorization, secrets) = match token.split_once(' ') {
         Some(("bearer", secret)) => (Some(format!("Bearer {secret}")), vec![secret.to_owned()]),
         Some(("pat", secret)) => {
@@ -460,6 +460,7 @@ pub fn client(token: &str) -> Box<Fetch<'static>> {
             "x-ratelimit-resource",
             "x-vss-e2eid",
         ],
+        roots,
     )
 }
 

@@ -5,8 +5,12 @@
 //! how the reading ended. it never returns a failed reading as an error.
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
+
+use ureq::tls::{parse_pem, PemItem, RootCerts, TlsConfig};
 
 use super::{Clock, Fetch};
 use crate::error::{Error, Result};
@@ -19,6 +23,8 @@ const MAX_PAGES: usize = 500;
 const RETRIES: usize = 2;
 /// how often one reading waits for a rate limit to lift.
 const WAITS: usize = 10;
+/// the variable that names a file of certificates to trust, as openssl reads it.
+const CERT_FILE: &str = "SSL_CERT_FILE";
 
 /// how one source's api is read.
 pub(crate) struct Api {
@@ -257,23 +263,80 @@ pub(crate) fn credential(command: &[&str], variable: &str, sign_in: &str) -> Res
     }
 }
 
+/// the certificate authorities a server's certificate has to chain to.
+#[derive(Clone, Debug)]
+pub struct Roots(RootCerts);
+
+impl Default for Roots {
+    /// the public certificate authorities divinate ships with.
+    fn default() -> Self {
+        Self(RootCerts::WebPki)
+    }
+}
+
+impl Roots {
+    /// the certificates in the file `SSL_CERT_FILE` names, in place of the
+    /// ones divinate ships with. unset or empty, the variable leaves the
+    /// [default](Roots::default).
+    ///
+    /// # Errors
+    ///
+    /// returns an error that names the variable and the file when the file
+    /// cannot be read, is not valid pem, or holds no certificate.
+    pub fn from_environment() -> Result<Self> {
+        Self::from_variable(std::env::var_os(CERT_FILE).as_deref())
+    }
+
+    fn from_variable(value: Option<&OsStr>) -> Result<Self> {
+        match value {
+            Some(path) if !path.is_empty() => Self::from_file(Path::new(path)),
+            _ => Ok(Self::default()),
+        }
+    }
+
+    fn from_file(path: &Path) -> Result<Self> {
+        let unusable = |problem: String| {
+            Error::Collection(format!(
+                "{CERT_FILE} is {}, which {problem}",
+                path.display()
+            ))
+        };
+        let pem =
+            std::fs::read(path).map_err(|error| unusable(format!("cannot be read: {error}")))?;
+        let certificates = parse_pem(&pem)
+            .filter_map(|item| match item {
+                Ok(PemItem::Certificate(certificate)) => Some(Ok(certificate)),
+                Ok(_) => None,
+                Err(_) => Some(Err(unusable("is not valid pem".into()))),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if certificates.is_empty() {
+            return Err(unusable("holds no pem certificate".into()));
+        }
+        Ok(Self(certificates.into()))
+    }
+}
+
 /// a fetch function that reads one origin.
 ///
 /// `authorization` is the value of the header that carries the credential, or
-/// `None` to read without one. redirects are not followed, only allow-listed
-/// response headers are kept, and a response that repeats one of `secrets` is
-/// refused instead of retained.
+/// `None` to read without one. the server's certificate has to chain to one of
+/// `roots`. redirects are not followed, only allow-listed response headers are
+/// kept, and a response that repeats one of `secrets` is refused instead of
+/// retained.
 pub(crate) fn client(
     origin: &'static str,
     authorization: Option<String>,
     secrets: Vec<String>,
     request_headers: &'static [(&'static str, &'static str)],
     retained_headers: &'static [&'static str],
+    roots: &Roots,
 ) -> Box<Fetch<'static>> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .max_redirects(0)
         .http_status_as_error(false)
         .timeout_global(Some(Duration::from_secs(30)))
+        .tls_config(TlsConfig::builder().root_certs(roots.0.clone()).build())
         .build()
         .into();
     Box::new(move |url| {
@@ -496,5 +559,138 @@ mod tests {
             next_link(&headers).as_deref(),
             Some("https://api.example.org/things?page=2")
         );
+    }
+
+    /// a file in `tests/tls`: a test certificate authority, and a certificate
+    /// it signed for 127.0.0.1 with its key. the readme there says how they
+    /// were made.
+    fn fixture(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/tls")
+            .join(name)
+    }
+
+    #[test]
+    fn unset_or_empty_keeps_the_bundled_roots() {
+        for value in [None, Some(OsStr::new(""))] {
+            let roots = Roots::from_variable(value).unwrap();
+            assert!(matches!(roots.0, RootCerts::WebPki));
+        }
+    }
+
+    #[test]
+    fn the_file_replaces_the_bundled_roots_with_every_certificate_in_it() {
+        let read = |name| std::fs::read_to_string(fixture(name)).unwrap();
+        let bundle = format!(
+            "test ca\n{}\nserver\n{}{}",
+            read("ca.pem"),
+            read("server.pem"),
+            read("server.key")
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("bundle.pem");
+        std::fs::write(&path, bundle).unwrap();
+        let roots = Roots::from_variable(Some(path.as_os_str())).unwrap();
+        assert!(matches!(&roots.0, RootCerts::Specific(certificates) if certificates.len() == 2));
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_used_is_an_error_naming_the_variable_and_the_file() {
+        let ca = std::fs::read_to_string(fixture("ca.pem")).unwrap();
+        let cut = ca.lines().take(3).collect::<Vec<_>>().join("\n");
+        let garbled = "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
+        let key = std::fs::read_to_string(fixture("server.key")).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let cases = [
+            ("missing.pem", None, "cannot be read: "),
+            ("cut.pem", Some(cut.as_str()), "is not valid pem"),
+            ("garbled.pem", Some(garbled), "is not valid pem"),
+            ("empty.pem", Some(""), "holds no pem certificate"),
+            ("key.pem", Some(key.as_str()), "holds no pem certificate"),
+        ];
+        for (name, contents, problem) in cases {
+            let path = directory.path().join(name);
+            if let Some(contents) = contents {
+                std::fs::write(&path, contents).unwrap();
+            }
+            let error = Roots::from_variable(Some(path.as_os_str()))
+                .unwrap_err()
+                .to_string();
+            let expected = format!("SSL_CERT_FILE is {}, which {problem}", path.display());
+            assert!(error.contains(&expected), "{error}");
+        }
+    }
+
+    /// serve https on 127.0.0.1 with the test certificate, and answer the
+    /// first request on each of `connections` connections with an empty list.
+    fn serve(connections: usize) -> (&'static str, std::thread::JoinHandle<()>) {
+        use rustls::pki_types::pem::PemObject;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        use std::io::{Read, Write};
+
+        let certificates = CertificateDer::pem_file_iter(fixture("server.pem"))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        let key = PrivateKeyDer::from_pem_file(fixture("server.key")).unwrap();
+        let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+        let config = std::sync::Arc::new(
+            rustls::ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(certificates, key)
+                .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!(
+            "https://127.0.0.1:{}",
+            listener.local_addr().unwrap().port()
+        );
+        let server = std::thread::spawn(move || {
+            for stream in listener.incoming().take(connections) {
+                let mut stream = stream.unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(10)))
+                    .unwrap();
+                let mut connection = rustls::ServerConnection::new(config.clone()).unwrap();
+                let mut tls = rustls::Stream::new(&mut connection, &mut stream);
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                // a client that refuses the certificate ends the handshake,
+                // and with it this connection.
+                while !request.ends_with(b"\r\n\r\n") {
+                    match tls.read(&mut buffer) {
+                        Ok(read) if read > 0 => request.extend_from_slice(&buffer[..read]),
+                        _ => break,
+                    }
+                }
+                if request.ends_with(b"\r\n\r\n") {
+                    tls.write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n[]",
+                    )
+                    .unwrap();
+                    tls.flush().unwrap();
+                }
+            }
+        });
+        (Box::leak(origin.into_boxed_str()), server)
+    }
+
+    #[test]
+    fn a_server_signed_by_another_authority_is_read_only_with_it_in_the_file() {
+        let (origin, server) = serve(2);
+        let url = format!("{origin}/things");
+        let fetch = |roots: &Roots| client(origin, None, Vec::new(), &[], &[], roots)(&url);
+
+        let unset = Roots::from_variable(None).unwrap();
+        let refused = fetch(&unset).unwrap_err().to_string();
+        assert!(refused.contains("UnknownIssuer"), "{refused}");
+
+        let set = Roots::from_variable(Some(fixture("ca.pem").as_os_str())).unwrap();
+        let exchange = fetch(&set).unwrap();
+        assert_eq!(exchange.response.status, 200);
+        assert_eq!(exchange.response.body, "[]");
+        server.join().unwrap();
     }
 }

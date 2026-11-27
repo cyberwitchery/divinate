@@ -210,6 +210,7 @@ name = "divinate"
 version = "0.0.1"
 dependencies = [
  "clap",
+ "rustls",
  "serde",
  "serde-saphyr",
  "serde_json",

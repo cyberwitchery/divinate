@@ -31,6 +31,13 @@ saves a request per pull request, and keeps the diffs (and with them your
 source code) out of `evidence/`. rules that use `paths` then answer `cannot
 tell`.
 
+the platform’s certificate has to come from one of the public certificate
+authorities divinate ships with. when `SSL_CERT_FILE` names a pem file,
+divinate trusts the certificates in that file instead. that’s what you need
+behind a proxy that re-signs tls, and
+[troubleshooting](troubleshooting.md#a-tls-error-such-as-unknownissuer) says
+how.
+
 when it’s done it prints how many rows it recorded, how many of them are
 gaps, and the id of the collection:
 
@@ -41,8 +48,8 @@ col_b25ba381174bcdfec8ce
 ```
 
 something divinate can’t read becomes a gap in the collection, and the command
-still succeeds. it only fails when it doesn’t understand the scope or can’t
-find a token.
+still succeeds. it only fails when it doesn’t understand the scope, can’t
+find a token, or can’t use the file `SSL_CERT_FILE` names.
 
 ## `divinate show`
 

@@ -12,6 +12,8 @@ pub mod gitlab;
 pub(crate) mod reading;
 pub(crate) mod work;
 
+pub use reading::Roots;
+
 use crate::error::{Error, Result};
 use crate::model::Derived;
 use crate::transcript::{HttpExchange, Transcript};
@@ -47,8 +49,9 @@ pub trait Source: Sync {
     /// returns an error when there is none.
     fn token(&self) -> Result<String>;
 
-    /// a fetch function that reads this source with a credential.
-    fn client(&self, token: &str) -> Box<Fetch<'static>>;
+    /// a fetch function that reads this source with a credential, from a
+    /// server whose certificate chains to one of `roots`.
+    fn client(&self, token: &str, roots: &Roots) -> Box<Fetch<'static>>;
 
     /// read a scope. a reading that fails is a transcript that says how it
     /// ended, not an error.
@@ -93,8 +96,12 @@ macro_rules! source {
                 token()
             }
 
-            fn client(&self, token: &str) -> Box<$crate::source::Fetch<'static>> {
-                client(token)
+            fn client(
+                &self,
+                token: &str,
+                roots: &$crate::source::Roots,
+            ) -> Box<$crate::source::Fetch<'static>> {
+                client(token, roots)
             }
 
             fn capture(

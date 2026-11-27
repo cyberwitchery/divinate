@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use divinate::error::{Error, Result};
 use divinate::pack::{self, Configured};
 use divinate::record::Collection;
-use divinate::source::{self, Period};
+use divinate::source::{self, Period, Roots};
 use divinate::{format_time, ledger, parse_time, process, record, timestamp, verify};
 
 #[derive(Parser)]
@@ -366,7 +366,8 @@ fn collect(
         (collection, transcripts)
     } else {
         let (source, path) = source::for_scope(scope)?;
-        let mut fetch = source.client(&source.token()?);
+        let roots = Roots::from_environment()?;
+        let mut fetch = source.client(&source.token()?, &roots);
         let transcripts = source.capture(path, &period, &timestamp, &mut *fetch)?;
         let collection = record::seal(scope, started_at, timestamp()?, &transcripts)?;
         (collection, transcripts)
