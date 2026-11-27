@@ -242,5 +242,6 @@ suggest that this person runs `divinate collect` themselves with read access.
 | `rate limited; waiting N seconds` | normal on gitlab. let it run |
 | a check says `cannot tell` | the reason names what’s missing |
 | a check finds nothing to check | the label doesn’t match exactly, or the items are outside the period |
-| `invalid peer certificate: UnknownIssuer` | a proxy on the network intercepts tls. collect from a network with direct access |
+| `invalid peer certificate: UnknownIssuer` | a proxy on the network intercepts tls. set `SSL_CERT_FILE` to a pem file with the proxy’s certificate, or collect from a network with direct access |
+| `SSL_CERT_FILE is …, which …` | the file can’t be used. fix the path or the file, or unset the variable |
 | `verify` fails | a file in `evidence/` was changed or is missing. restore the directory from a copy |

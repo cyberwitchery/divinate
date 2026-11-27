@@ -142,9 +142,10 @@ and it derives the model from the transcripts.
 
 a source never makes a request itself. all requests go through one reader in
 `src/source/reading.rs`, which stores the transcripts, follows pages only on
-the platform’s own host, doesn’t follow redirects, and refuses a response
-that contains the token. keeping this in one place means a new source can’t
-get it wrong.
+the platform’s own host, doesn’t follow redirects, refuses a response that
+contains the token, and trusts only the certificate authorities divinate
+ships with, or the ones in `SSL_CERT_FILE` in their place. keeping this in
+one place means a new source can’t get it wrong.
 
 for the model, every source uses the same two builders: `source/build.rs` for
 scopes and their settings, and `source/work.rs` for tickets, changes,

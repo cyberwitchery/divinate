@@ -16,6 +16,11 @@ variable, and sends it to that platform’s api and nowhere else.
   response.
 - it doesn’t follow redirects, and it only fetches the next page of a list
   from the host it’s already talking to.
+- it checks the platform’s certificate against the public certificate
+  authorities divinate ships with. if you set `SSL_CERT_FILE`, it checks
+  against the certificates in that file instead, and whoever holds the key to
+  one of them, such as a proxy that re-signs tls, can read the token on its
+  way.
 
 ## what’s in `evidence/`
 

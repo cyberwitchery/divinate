@@ -32,5 +32,7 @@ no verdicts.
   `divinate pack` to list what one offers
 - an osv pack that reads the sboms attached to a repository's releases and
   records known vulnerabilities as findings
+- `collect` trusts the certificates in the file `SSL_CERT_FILE` names instead
+  of the bundled ones, so it works behind a proxy that re-signs tls
 - remove claims and their five results, the dossier, the earlier pack protocol, the
   manifest import, and the release workflow
