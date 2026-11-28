@@ -391,6 +391,8 @@ github:cyberwitchery/divinate · as of 2026-11-24T17:23:42Z
 ```
 
 the collection has two branches, so each rule has two results.
+[sources](sources.md#every-repository-of-an-organisation) has a loop that
+collects every repository of an organisation.
 
 `--last 8` does the same for the last eight collections of one repository,
 oldest first, so you can see whether things are getting better.
