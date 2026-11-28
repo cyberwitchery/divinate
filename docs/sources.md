@@ -26,6 +26,42 @@ it as a group first.
 
 divinate talks to `github.com`, `gitlab.com`, and `dev.azure.com`.
 
+## every repository of an organisation
+
+collecting an organisation reads the branch settings of its repositories, but
+not their tickets, pull requests, releases, or findings. for those, collect
+each repository on its own. on github, `gh repo list` gives you their names:
+
+```sh
+for repository in $(gh repo list acme --no-archived --limit 1000 \
+    --json nameWithOwner --jq '.[].nameWithOwner'); do
+  divinate collect "github:$repository"
+done
+divinate check change-governance.yaml --all
+```
+
+without `--limit`, `gh repo list` stops after 30 repositories. `--no-archived`
+skips archived repositories, so leave the flag out if one was archived during
+the period you collect. each repository gets a collection of its own, and
+`check --all` prints a summary for the latest one of each. on gitlab and azure
+devops the loop is the same, over the paths of the projects.
+
+a repository that can’t be read doesn’t stop the loop. what divinate couldn’t
+read becomes a gap in that repository’s collection, and `collect` succeeds as
+usual. if the loop itself is stopped partway, the repository it was reading
+gets no collection, because divinate writes one only at the end of a run. run
+the loop again for that repository and the ones after it.
+
+the loop makes many requests, about five per pull request on github. when the
+platform says to wait a short while, as gitlab.com does, divinate waits, and
+the loop takes longer. when the wait is long or not given, as when a github
+token has used up its requests, divinate stops reading that repository and
+marks the rest of its readings `not attempted`. the repositories after it will
+likely get the same answer until the limit lifts, so the line `collect` prints
+for each of them says `0 records`. collect that repository and the ones after
+it again later. the new collections are the ones `check` uses, and the old
+ones stay where they are.
+
 ## what comes from where
 
 divinate uses the same words on every platform. this is what they stand for:

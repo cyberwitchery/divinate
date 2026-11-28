@@ -24,7 +24,9 @@ start with the name of a [pack](packs.md) that reads another system, such as
 `--from` and `--until` set the period for tickets, pull requests, findings,
 and branch updates. times look like `2026-01-01T00:00:00Z`. without them you
 get the last 90 days. when you collect an organisation, only settings are
-read and the period doesn’t matter.
+read and the period doesn’t matter. to read the tickets and pull requests of
+its repositories, collect each of them, as
+[sources](sources.md#every-repository-of-an-organisation) shows.
 
 `--no-files` leaves out the list of files each pull request touches. that
 saves a request per pull request, and keeps the diffs (and with them your
